@@ -1,0 +1,7 @@
+{
+    "nebulonadmin": {
+        "password": "$2b$12$RYd/FCdpAm34K.Z5/xhFwejH5t3Qxjz9AhfrD8gwHXHmvE8hCN9bC",
+        "role": "super_user",
+        "created_at": "2025-07-12T09:32:47.887616+00:00"
+    }
+}

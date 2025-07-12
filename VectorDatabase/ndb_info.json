@@ -1,0 +1,9 @@
+{
+    "default": {
+        "corpus_name": "default",
+        "created_at": null,
+        "created_by": "nebulon_admin",
+        "status": "system",
+        "segments": []
+    }
+}
