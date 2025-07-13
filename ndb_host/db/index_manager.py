@@ -6,6 +6,8 @@ from string import Template
 from pathlib import Path
 import json
 
+from utils.models import load_data, save_data
+
 
 class NebulonDBConfig:
     """
@@ -81,14 +83,18 @@ class CorpusManager:
         self.user_credential_path = Path(NebulonDBConfig.USER_CREDENTIALS)
         self._validate_paths()
 
-    def _validate_paths(self):
-        """Check that essential paths exist and are valid."""
+    def _validate_paths(self) -> None:
+        """Check that essential paths exist."""
+        errors = []
         if not self.vector_storage_path.exists() or not self.vector_storage_path.is_dir():
-            raise FileNotFoundError(f"Vector storage path not found: {self.vector_storage_path}")
+            errors.append(f"Vector storage path missing: {self.vector_storage_path}")
         if not self.metadata_path.exists():
-            raise FileNotFoundError(f"Metadata file not found: {self.metadata_path}")
+            errors.append(f"Metadata file not found: {self.metadata_path}")
         if not self.user_credential_path.exists():
-            raise FileNotFoundError(f"User credential file not found: {self.user_credential_path}")
+            errors.append(f"User credentials file not found: {self.user_credential_path}")
+
+        if errors:
+            raise FileNotFoundError(" | ".join(errors))
 
     @staticmethod
     def generate_corpus_metadata(corpus_name: str, created_by: str, status:str="active") -> Dict[str, str]:
@@ -120,22 +126,51 @@ class CorpusManager:
         Raises:
             ValueError: If directories or metadata are missing/invalid.
         """
-        vector_dirs = [d.name for d in self.vector_storage_path.iterdir() if d.is_dir()]
-        if not vector_dirs:
-            raise ValueError("No corpus directories found in vector storage.")
-
         try:
-            with open(self.metadata_path, 'r') as file:
-                metadata = json.load(file)
-                metadata_names = [meta.get('corpus_name') for meta in metadata.values()]
-        except json.JSONDecodeError as e:
-            raise ValueError(f"Error parsing metadata JSON: {e}")
+            vector_dirs = [d.name for d in self.vector_storage_path.iterdir() if d.is_dir()]
+            if not vector_dirs:
+                return []
 
-        if not metadata_names:
-            raise ValueError("No corpus names found in metadata.")
+            metadata_names = [meta.get('corpus_name') for meta in load_data(self.metadata_path).values()]
+            if not metadata_names:
+                return []
+            matched_corpora = sorted(set(vector_dirs) & set(metadata_names))
+            return matched_corpora
+        except Exception as _:
+            return []
 
-        matched_corpora = sorted(set(vector_dirs) & set(metadata_names))
-        if not matched_corpora:
-            raise ValueError("No matching corpus names found between storage and metadata.")
 
-        return matched_corpora
+    def get_corpus_status(self, corpus_name: str) -> str:
+        """
+        Retrieve the status of a specified corpus.
+
+        Args:
+            corpus_name (str): Name of the corpus.
+
+        Returns:
+            str: Status of the specified corpus (e.g., 'active', 'deactivate', 'system').
+
+        """
+        try:
+            metadata = load_data(self.metadata_path)
+            return metadata.get(corpus_name, {}).get("status")
+        except Exception as _:
+            return None
+
+
+    def set_corpus_status(self, corpus_name: str, status: str) -> None:
+        """
+        Update the status of a specified corpus.
+
+        Args:
+            corpus_name (str): Name of the corpus to update.
+            status (str): New status value (e.g., 'active', 'deactivate', 'system').
+
+        """
+        try:
+            metadata = load_data(self.metadata_path)
+            metadata[corpus_name]["status"] = status
+            save_data(metadata, self.metadata_path)
+            return True
+        except Exception as _:
+            return False

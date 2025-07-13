@@ -46,3 +46,6 @@ def search_vector(namespace, vector, top_k):
 def list_namespaces():
     return [d.name for d in BASE_DIR.iterdir() if d.is_dir()]
 """
+from db.index_manager import NebulonDBConfig
+corpus_path = NebulonDBConfig.VECTOR_STORAGE / "default_1"
+del corpus_path
