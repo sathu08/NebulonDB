@@ -1,6 +1,4 @@
 import uvicorn
-import logging
-from typing import Optional
 from utils.logger import logger
 
 
@@ -22,7 +20,7 @@ def start_app(reload: bool = False):
         )
     except Exception as e:
         logger.error(f"Failed to start server: {e}", exc_info=True)
-        raise
+        return e
 
 if __name__ == "__main__":
     # Set reload=True during development, False in production

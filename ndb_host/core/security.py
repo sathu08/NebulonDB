@@ -42,5 +42,5 @@ def hash_password(password: str) -> str:
         return password_context.hash(password)
     except Exception as e:
         logger.error(f"Password hashing error: {e}")
-        raise ValueError("Failed to hash password")
+        return {}
     

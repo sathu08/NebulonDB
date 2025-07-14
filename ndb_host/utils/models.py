@@ -4,19 +4,15 @@ from typing import Optional, Dict, Any
 from pathlib import Path
 import json
 
-from fastapi import HTTPException, status
-
 from utils.logger import logger
 
 # === Constants and Configuration ===
 class UserRole(str, Enum):
-    """Enumeration of valid user roles in the system."""
     SUPER_USER = "super_user"
     ADMIN_USER = "admin_user"
     USER = "user"
 
 class AuthenticationConfig:
-    """Configuration constants for authentication module."""
     PASSWORD_HASH_SCHEMES = ["bcrypt"]
     PASSWORD_HASH_DEPRECATED = "auto"
     ENCODING = "utf-8"
@@ -24,30 +20,27 @@ class AuthenticationConfig:
 
 # === Pydantic Models ===
 class UserProfile(BaseModel):
-    """User profile model for internal use."""
     username: str
     role: UserRole
-    
+
 class UserRecord(BaseModel):
-    """User record model for database storage."""
     password: str
     role: UserRole
     created_at: Optional[str] = None
     last_login: Optional[str] = None
 
 class AuthenticationResult(BaseModel):
-    """Authentication result model."""
     username: str
     role: UserRole
     is_authenticated: bool = True
 
 class UserRegistrationRequest(BaseModel):
-    username: str = Field(..., min_length=3, max_length=50, description="Username for the new user")
-    password: str = Field(..., min_length=6, description="Password for the new user")
-    user_role: str = Field(..., description="Role assigned to the user")
+    username: str = Field(..., min_length=3, max_length=50)
+    password: str = Field(..., min_length=6)
+    user_role: str
 
 class CorpusQueryRequest(BaseModel):
-    corpus_name: str = Field(..., min_length=1, description="Name of the corpus to query")
+    corpus_name: str = Field(..., min_length=1)
 
 class UserAuthenticationResponse(BaseModel):
     message: str
@@ -61,69 +54,43 @@ class CorpusExistenceResponse(BaseModel):
 class StandardResponse(BaseModel):
     success: bool
     message: str
-    data: Dict[str, Any] = None
+    data: Optional[Dict[str, Any]] = None
 
 # === Helper Functions ===
 def load_data(path_loc: Path) -> Dict[str, Dict[str, Any]]:
     """
-    Load user database from JSON file.
-    
-    Returns:
-        Dict[str, Dict[str, Any]]: Dictionary containing user data
-        
-    Raises:
-        OSError: If file cannot be read
-        json.JSONDecodeError: If JSON is malformed (handled gracefully)
+    Load JSON data from file, returning an empty dict if empty or invalid.
     """
-    try:        
-        content = path_loc.read_text(
-            encoding=AuthenticationConfig.ENCODING
-        )
-        
+    try:
+        content = path_loc.read_text(encoding=AuthenticationConfig.ENCODING)
+
         if not content.strip():
-            logger.warning("User database file is empty, returning empty dictionary")
+            logger.warning("File is empty. Returning empty dictionary.")
             return {}
-            
-        load_data = json.loads(content)
-        return load_data
-        
+
+        return json.loads(content)
+
     except json.JSONDecodeError as e:
-        logger.error(f"JSON decode error in user database: {e}")
-        logger.warning("Returning empty user database due to corruption")
+        logger.error(f"Malformed JSON in file {path_loc}: {e}")
         return {}
     except OSError as e:
-        logger.error(f"Failed to read user database: {e}")
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Unable to access user database"
-        )
+        logger.error(f"Error reading file {path_loc}: {e}")
+        return {}
 
-def save_data(save_data: Dict[str, Dict[str, Any]], path_loc:Path) -> None:
+def save_data(save_data: Dict[str, Dict[str, Any]], path_loc: Path) -> Dict[str, Any]:
     """
-    Save data to JSON file.
-    
-    Args:
-        save_data: Dictionary containing data to save
-        
-    Raises:
-        OSError: If file cannot be written
-        PermissionError: If insufficient permissions
+    Save JSON data to a file with safe logging.
     """
-    try:        
+    try:
         json_content = json.dumps(
             save_data,
             indent=AuthenticationConfig.JSON_INDENT,
             ensure_ascii=False
         )
-        
-        path_loc.write_text(
-            json_content,
-            encoding=AuthenticationConfig.ENCODING
-        )
-                
+        path_loc.write_text(json_content, encoding=AuthenticationConfig.ENCODING)
+        logger.info(f"Data successfully saved to {path_loc}")
+        return {"success": True, "message": f"Data saved to {path_loc}"}
+
     except (OSError, PermissionError) as e:
-        logger.error(f"Failed to save data : {e}")
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Unable to save data"
-        )
+        logger.error(f"Failed to write to {path_loc}: {e}")
+        return {"success": False, "message": f"Failed to save data to {path_loc}", "error": str(e)}
