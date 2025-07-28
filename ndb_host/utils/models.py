@@ -42,6 +42,10 @@ class UserRegistrationRequest(BaseModel):
 class CorpusQueryRequest(BaseModel):
     corpus_name: str = Field(..., min_length=1)
 
+class SegmentQueryRequest(BaseModel):
+    corpus_name: str = Field(..., min_length=1)
+    segment_name: str = Field(..., min_length=1)
+
 class UserAuthenticationResponse(BaseModel):
     message: str
     user: Dict[str, Any]
@@ -49,6 +53,12 @@ class UserAuthenticationResponse(BaseModel):
 class CorpusExistenceResponse(BaseModel):
     exists: bool
     corpus_name: str
+    message: str
+
+class SegmentExistenceResponse(BaseModel):
+    exists: bool
+    corpus_name: str
+    segment_name: str
     message: str
 
 class StandardResponse(BaseModel):

@@ -4,7 +4,7 @@ import os
 from typing import List, Dict
 from string import Template
 from pathlib import Path
-import json
+import shutil
 
 from utils.models import load_data, save_data
 
@@ -56,6 +56,7 @@ class NebulonDBConfig:
     DEFAULT_CORPUS_STRUCTURES = [
         item.strip() for item in _config['corpus']['DEFAULT_CORPUS_STRUCTURES'].split(',')
     ]
+    CORPUS_SEGMENT =  _config["corpus"]["CORPUS_SEGMENT"]
 
     # === Vector Index Config ===
     DEFAULT_CORPUS_CONFIG_DATA = {
@@ -72,6 +73,9 @@ class NebulonDBConfig:
             "ef_search": int(_config['params']['ef_search']),
         }
     }
+
+    # === Segments ===
+    SEGMENTS_METADATA = _config["segments"]["METADATA_SEGMENTS"]
 
 class CorpusManager:
     """
@@ -123,8 +127,6 @@ class CorpusManager:
         Returns:
             List[str]: Matching corpus names.
 
-        Raises:
-            ValueError: If directories or metadata are missing/invalid.
         """
         try:
             vector_dirs = [d.name for d in self.vector_storage_path.iterdir() if d.is_dir()]
@@ -174,3 +176,74 @@ class CorpusManager:
             return True
         except Exception as _:
             return False
+
+    def create_corpus(self, corpus_name: str, username:str):
+        corpus_path = self.vector_storage_path / corpus_name
+        os.makedirs(corpus_path, exist_ok=True)
+        for corpus_subdir in NebulonDBConfig.DEFAULT_CORPUS_STRUCTURES:
+            (corpus_path / corpus_subdir).mkdir(parents=True, exist_ok=True)
+        corpus_config_path = corpus_path / Path(NebulonDBConfig.DEFAULT_CORPUS_CONFIG_STRUCTURES)
+        config_data = NebulonDBConfig.DEFAULT_CORPUS_CONFIG_DATA
+        save_data(save_data=config_data, path_loc=corpus_path / corpus_config_path)
+
+        # Store the corpus details
+        created_corpus = load_data(path_loc=self.metadata_path)
+        created_corpus[corpus_name] = self.generate_corpus_metadata(
+            corpus_name=corpus_name,
+            created_by=username
+        )
+        save_data(save_data=created_corpus, path_loc=self.metadata_path)
+
+    def delete_corpus(self, corpus_name: str,):
+        corpus_path = self.vector_storage_path / corpus_name
+        shutil.rmtree(corpus_path)
+
+        corpus_info = load_data(path_loc=self.metadata_path)
+        del corpus_info[corpus_name]
+        save_data(path_loc=self.metadata_path, save_data=corpus_info)
+        
+class SegmentManager:
+    """
+    SegmentManager handles validation and retrieval of segment data and metadata.
+    """
+    def __init__(self, corpus_name:str):
+        self.vector_storage_path = Path(NebulonDBConfig.VECTOR_STORAGE) / corpus_name
+        self.segment_metadata_path = self.vector_storage_path / NebulonDBConfig.SEGMENTS_METADATA
+        self._validate_paths()
+        
+
+    def _validate_paths(self) -> None:
+        """Check that essential paths exist."""
+        errors = []
+        if not self.vector_storage_path.exists() or not self.vector_storage_path.is_dir():
+            errors.append(f"Vector storage path missing: {self.vector_storage_path}")
+        if not self.segment_metadata_path.exists():
+            errors.append(f"Metadata file not found: {self.segment_metadata_path}")
+
+        if errors:
+            raise FileNotFoundError(" | ".join(errors))
+
+
+    def get_available_segment_list(self) -> List[str]:
+        """
+        Get list of segment directories that have matching metadata.
+
+        Returns:
+            List[str]: Matching segment names.
+
+        """
+        try:
+            product_names = [meta for meta in load_data(self.segment_metadata_path).keys()]
+            if not product_names:
+                return []
+            metadata_names = [meta.get('segment') for meta in load_data(self.segment_metadata_path).values()]
+            if not metadata_names:
+                return []
+            return {
+                "product_names":product_names,
+                "metadata_names":metadata_names
+            }
+            
+        except Exception as _:
+            return []
+    

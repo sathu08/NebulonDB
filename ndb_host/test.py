@@ -46,3 +46,10 @@ def search_vector(namespace, vector, top_k):
 def list_namespaces():
     return [d.name for d in BASE_DIR.iterdir() if d.is_dir()]
 """
+
+from db.index_manager import SegmentManager
+
+segment_manager = SegmentManager
+print(segment_manager("default").vector_storage_path)
+# demo = segment_manager("default").get_available_segment_list()
+# print(demo.get("product_names"))

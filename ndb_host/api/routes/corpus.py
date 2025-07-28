@@ -2,7 +2,6 @@ from fastapi import Depends
 from fastapi import APIRouter
 from pathlib import Path
 import os
-import shutil
 
 from db.index_manager import NebulonDBConfig, CorpusManager
 from utils.models import StandardResponse, CorpusExistenceResponse, CorpusQueryRequest, AuthenticationResult, UserRole, save_data, load_data
@@ -34,9 +33,7 @@ async def create_corpus(
         
     Returns:
         CorpusExistenceResponse: Corpus creation result
-        
-    Raises:
-        HTTPException: If corpus creation fails
+    
     """
     try:
         corpus_name = corpus_query.corpus_name
@@ -61,22 +58,7 @@ async def create_corpus(
             )
 
         # Create the corpus directory
-        corpus_path = VECTOR_DB_PATH / corpus_name
-        os.makedirs(corpus_path, exist_ok=True)
-        for corpus_subdir in NebulonDBConfig.DEFAULT_CORPUS_STRUCTURES:
-            (corpus_path / corpus_subdir).mkdir(parents=True, exist_ok=True)
-        corpus_config_path = corpus_path / Path(NebulonDBConfig.DEFAULT_CORPUS_CONFIG_STRUCTURES)
-        config_data = NebulonDBConfig.DEFAULT_CORPUS_CONFIG_DATA
-        save_data(save_data=config_data, path_loc=corpus_path / corpus_config_path)
-
-        # Store the corpus details
-        created_corpus = load_data(path_loc=DATABASE_METADATA)
-        created_corpus[corpus_name] = corpus_manager.generate_corpus_metadata(
-            corpus_name=corpus_name,
-            created_by=current_user.username
-        )
-        save_data(save_data=created_corpus, path_loc=DATABASE_METADATA)
-
+        corpus_manager.create_corpus(corpus_name=corpus_name,username=current_user.username)
         logger.info(f"Corpus created successfully: {corpus_name}")
         
         return CorpusExistenceResponse(
@@ -188,12 +170,7 @@ async def delete_corpus(
             )
 
         # Delete the corpus directory (even if it contains files)
-        corpus_path = VECTOR_DB_PATH / corpus_name
-        shutil.rmtree(corpus_path)
-
-        corpus_info = load_data(path_loc=DATABASE_METADATA)
-        del corpus_info[corpus_name]
-        save_data(path_loc=DATABASE_METADATA, save_data=corpus_info)
+        corpus_manager.delete_corpus(corpus_name=corpus_name)
 
         logger.info(f"Corpus '{corpus_name}' deleted successfully.")
 
