@@ -1,13 +1,12 @@
 from datetime import datetime, timezone
 from configobj import ConfigObj
 import os
-from typing import List, Dict
+from typing import List, Dict, Union
 from string import Template
 from pathlib import Path
 import shutil
 
 from utils.models import load_data, save_data
-
 
 class NebulonDBConfig:
     """
@@ -56,7 +55,7 @@ class NebulonDBConfig:
     DEFAULT_CORPUS_STRUCTURES = [
         item.strip() for item in _config['corpus']['DEFAULT_CORPUS_STRUCTURES'].split(',')
     ]
-    CORPUS_SEGMENT =  _config["corpus"]["CORPUS_SEGMENT"]
+    SEGMENT_DIR_NAME = _config["corpus"]["CORPUS_SEGMENT"]
 
     # === Vector Index Config ===
     DEFAULT_CORPUS_CONFIG_DATA = {
@@ -73,6 +72,9 @@ class NebulonDBConfig:
             "ef_search": int(_config['params']['ef_search']),
         }
     }
+
+    # === Segments ===
+    SEGMENTS_METADATA = _config["segments"]["METADATA_SEGMENTS"]
 
     # === Segments ===
     SEGMENTS_METADATA = _config["segments"]["METADATA_SEGMENTS"]
@@ -177,36 +179,12 @@ class CorpusManager:
         except Exception as _:
             return False
 
-    def create_corpus(self, corpus_name: str, username:str):
-        corpus_path = self.vector_storage_path / corpus_name
-        os.makedirs(corpus_path, exist_ok=True)
-        for corpus_subdir in NebulonDBConfig.DEFAULT_CORPUS_STRUCTURES:
-            (corpus_path / corpus_subdir).mkdir(parents=True, exist_ok=True)
-        corpus_config_path = corpus_path / Path(NebulonDBConfig.DEFAULT_CORPUS_CONFIG_STRUCTURES)
-        config_data = NebulonDBConfig.DEFAULT_CORPUS_CONFIG_DATA
-        save_data(save_data=config_data, path_loc=corpus_path / corpus_config_path)
-
-        # Store the corpus details
-        created_corpus = load_data(path_loc=self.metadata_path)
-        created_corpus[corpus_name] = self.generate_corpus_metadata(
-            corpus_name=corpus_name,
-            created_by=username
-        )
-        save_data(save_data=created_corpus, path_loc=self.metadata_path)
-
-    def delete_corpus(self, corpus_name: str,):
-        corpus_path = self.vector_storage_path / corpus_name
-        shutil.rmtree(corpus_path)
-
-        corpus_info = load_data(path_loc=self.metadata_path)
-        del corpus_info[corpus_name]
-        save_data(path_loc=self.metadata_path, save_data=corpus_info)
-        
-class SegmentManager:
+class  SegmentManager:
     """
     SegmentManager handles validation and retrieval of segment data and metadata.
     """
     def __init__(self, corpus_name:str):
+        self.corpus_path = Path(NebulonDBConfig.VECTOR_STORAGE) / corpus_name
         self.vector_storage_path = Path(NebulonDBConfig.VECTOR_STORAGE) / corpus_name
         self.segment_metadata_path = self.vector_storage_path / NebulonDBConfig.SEGMENTS_METADATA
         self._validate_paths()
@@ -233,17 +211,20 @@ class SegmentManager:
 
         """
         try:
-            product_names = [meta for meta in load_data(self.segment_metadata_path).keys()]
-            if not product_names:
-                return []
-            metadata_names = [meta.get('segment') for meta in load_data(self.segment_metadata_path).values()]
-            if not metadata_names:
-                return []
+            metadata = load_data(self.segment_metadata_path)
+
+            if not metadata:
+                return {}
+            product_names = list(metadata.keys())
+            metadata_names = [meta.get('segment') for meta in metadata.values() if isinstance(meta, dict) and 'segment' in meta]
+
             return {
-                "product_names":product_names,
-                "metadata_names":metadata_names
-            }
+                "product_names": product_names,
+                "metadata_names": metadata_names
+            } if product_names and metadata_names else {}
             
         except Exception as _:
-            return []
+            return {}
+    
+
     

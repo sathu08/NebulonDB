@@ -10,3 +10,4 @@ app.include_router(auth_router, prefix="/api/NebulonDB/auth", tags=["Authenticat
 
 app.include_router(corpus_router, prefix="/api/NebulonDB/corpus", tags=["Corpus"])
 
+app.include_router(corpus_router, prefix="/api/NebulonDB/segment", tags=["Segment"])

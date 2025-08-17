@@ -1,5 +1,5 @@
 from enum import Enum
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 from typing import Optional, Dict, Any
 from pathlib import Path
 import json
@@ -45,6 +45,14 @@ class CorpusQueryRequest(BaseModel):
 class SegmentQueryRequest(BaseModel):
     corpus_name: str = Field(..., min_length=1)
     segment_name: str = Field(..., min_length=1)
+    
+    @field_validator("segment_name")
+    def segment_name_must_be_lowercase(cls, v: str) -> str:
+        if not v.islower():
+            raise ValueError("segment_name must be lowercase")
+        return v
+
+    category: Optional[str] = None
 
 class UserAuthenticationResponse(BaseModel):
     message: str
@@ -61,10 +69,18 @@ class SegmentExistenceResponse(BaseModel):
     segment_name: str
     message: str
 
+class SegmentExistenceResponse(BaseModel):
+    exists: bool
+    corpus_name: str
+    segment_name: str
+    message: str
+
 class StandardResponse(BaseModel):
     success: bool
     message: str
     data: Optional[Dict[str, Any]] = None
+    corpus_name: Optional[str] = None
+    segment_name: Optional[str] = None
 
 # === Helper Functions ===
 def load_data(path_loc: Path) -> Dict[str, Dict[str, Any]]:

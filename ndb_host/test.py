@@ -50,6 +50,5 @@ def list_namespaces():
 from db.index_manager import SegmentManager
 
 segment_manager = SegmentManager
-print(segment_manager("default").vector_storage_path)
-# demo = segment_manager("default").get_available_segment_list()
-# print(demo.get("product_names"))
+demo = segment_manager("default").get_available_segment_list()
+print(demo)
