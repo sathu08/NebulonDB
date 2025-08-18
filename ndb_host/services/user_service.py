@@ -4,8 +4,9 @@ from fastapi.security import HTTPBasic, HTTPBasicCredentials
 from typing import Dict, Any
 from datetime import datetime, timezone
 from pathlib import Path
+import os
 
-from utils.models import AuthenticationResult, UserRole, load_data, save_data
+from utils.models import AuthenticationResult, UserRole, StandardErrorResponse, load_data, save_data
 from utils.logger import logger
 from core.security import verify_password, hash_password
 from db.index_manager import NebulonDBConfig
@@ -14,6 +15,7 @@ http_basic_security = HTTPBasic()
 
 # === Database Path Configuration ===
 USER_DATABASE_PATH = Path(NebulonDBConfig.USER_CREDENTIALS)
+os.makedirs(USER_DATABASE_PATH, exist_ok=True)
 
 def _validate_user_role(user_role: str) -> UserRole:
     try:
@@ -31,16 +33,16 @@ def get_current_user(credentials: HTTPBasicCredentials = Depends(http_basic_secu
         
         if not user_record:
             logger.warning("Invalid credentials")
-            return {"success": False, "message": "Invalid username"}
+            return AuthenticationResult(username=credentials.username, is_authenticated=False, message="Invalid username")
         
         hashed_password = user_record.get("password")
         if not hashed_password:
             logger.error(f"User record missing password hash: {credentials.username}")
-            return {"success": False, "message": "Invalid passwords"}
+            return AuthenticationResult(username=credentials.username, is_authenticated=False, message="Invalid passwords")
         
         if not verify_password(credentials.password, hashed_password):
             logger.warning(f"Authentication failed - invalid password: {credentials.username}")
-            return {"success": False, "message": "Invalid passwords"}
+            return AuthenticationResult(username=credentials.username, is_authenticated=False, message="Invalid passwords")
         
         user_role = UserRole(user_record.get("role", UserRole.USER.value))
         
@@ -53,7 +55,11 @@ def get_current_user(credentials: HTTPBasicCredentials = Depends(http_basic_secu
         
     except Exception as e:
         logger.error(f"Unexpected authentication error: {e}")
-        return {"success": False, "message": "Authentication service error"}
+        return StandardErrorResponse(
+            username=credentials.username if credentials  else None, 
+            is_authenticated=False, 
+            message="Authentication service error"
+        )
 
 def create_user(username: str, password: str, user_role: str = UserRole.USER.value) -> Dict[str, str]:
     try:
@@ -61,10 +67,10 @@ def create_user(username: str, password: str, user_role: str = UserRole.USER.val
         
         # Validate input parameters
         if not username or not username.strip():
-            return {"success": False, "message": "Username cannot be empty"}
+            return StandardErrorResponse(success=False, message="Username cannot be empty")
         
         if not password or len(password) < 6:
-            return{"success": False, "message":"Password must be at least 6 characters long"}
+            return StandardErrorResponse(success=False, message="Password must be at least 6 characters long")
         
         validated_role = _validate_user_role(user_role)
         
@@ -74,7 +80,7 @@ def create_user(username: str, password: str, user_role: str = UserRole.USER.val
         # Check if user already exists
         if username in users:
             logger.warning(f"User creation failed - user already exists: {username}")
-            return {"success": False, "message": "User already exists"}
+            return StandardErrorResponse(success=False, message="User already exists")
         
         # Hash password and create user record
         hashed_password = hash_password(password)
@@ -98,7 +104,7 @@ def create_user(username: str, password: str, user_role: str = UserRole.USER.val
         
     except Exception as e:
         logger.error(f"Error creating user: {e}")
-        return {"success": False, "message": "Error creating user"}
+        return StandardErrorResponse(success=False, message="Error creating user")
 
 def delete_user(username: str) -> Dict[str, str]:
     try:
@@ -120,7 +126,7 @@ def delete_user(username: str) -> Dict[str, str]:
         
     except Exception as e:
         logger.error(f"Error deleting user: {e}")
-        return {"success": False, "message": "Error deleting user"}
+        return StandardErrorResponse(success=False, message="Error deleting user")
     
 def get_all_users() -> Dict[str, Any]:
     try:
@@ -146,4 +152,4 @@ def get_all_users() -> Dict[str, Any]:
         
     except Exception as e:
         logger.error(f"Error retrieving users: {e}")
-        return {"success": False, "message": "Error retrieving user list"}
+        return StandardErrorResponse(success=False, message="Error retrieving user list")

@@ -1,13 +1,13 @@
 from fastapi import Depends
 from fastapi import APIRouter
 from pathlib import Path
-import os
 
 from db.index_manager import NebulonDBConfig, CorpusManager
 from utils.models import StandardResponse, CorpusExistenceResponse, CorpusQueryRequest, AuthenticationResult, UserRole, save_data, load_data
 from utils.logger import logger
 from core.permissions import check_user_permission
 from services.user_service import get_current_user
+
 router = APIRouter()
 
 VECTOR_DB_PATH = Path(NebulonDBConfig.VECTOR_STORAGE)
@@ -17,7 +17,7 @@ corpus_manager = CorpusManager()
 @router.post(
     "/create_corpus",
     response_model=CorpusExistenceResponse,
-    summary="create corpus",
+    summary="Create corpus",
     description="Create New corpus to Vector DataBase"
 )
 async def create_corpus(
@@ -37,6 +37,13 @@ async def create_corpus(
     """
     try:
         corpus_name = corpus_query.corpus_name
+        # Check authentication first
+        if not current_user.is_authenticated:
+            return CorpusExistenceResponse(
+                exists=False,
+                corpus_name=corpus_name,
+                message=current_user.message
+            )
         logger.info(f"Attempting to create corpus: {corpus_name} for user: {current_user.username}")
         
         # Check if corpus already exists
@@ -49,6 +56,7 @@ async def create_corpus(
                 message=f"Corpus '{corpus_name}' already exists in the database"
             )
         
+        # Check permissions
         if not check_user_permission(current_user=current_user, required_role=UserRole.ADMIN_USER):
             logger.error(f"User '{current_user.username}' lacks required permission to create corpus")
             return CorpusExistenceResponse(
@@ -92,7 +100,14 @@ async def list_available_corpus(
         CorpusExistenceResponse: Corpus List
     """
     try:
+        if not current_user.is_authenticated:
+            return CorpusExistenceResponse(
+                exists=False,
+                corpus_name=None,
+                message=current_user.message
+            )
         logger.info(f"User '{current_user.username}' requested corpus listing.")
+        
         available_corpus = corpus_manager.get_available_corpus_list()
 
         return StandardResponse(
@@ -134,6 +149,13 @@ async def delete_corpus(
     """
     try:
         corpus_name = corpus_query.corpus_name
+        
+        if not current_user.is_authenticated:
+            return CorpusExistenceResponse(
+                exists=False,
+                corpus_name=corpus_name,
+                message=current_user.message
+            )
         logger.info(f"User '{current_user.username}' requested deletion of corpus '{corpus_name}'.")
 
         if corpus_name not in corpus_manager.get_available_corpus_list():
@@ -210,6 +232,13 @@ async def deactivate_corpus(
     """
     try:
         corpus_name = corpus_query.corpus_name
+        
+        if not current_user.is_authenticated:
+            return CorpusExistenceResponse(
+                exists=False,
+                corpus_name=corpus_name,
+                message=current_user.message
+            )
         logger.info(f"User '{current_user.username}' requested deactivate of corpus '{corpus_name}'.")
 
         if corpus_name not in corpus_manager.get_available_corpus_list():

@@ -55,7 +55,7 @@ class NebulonDBConfig:
     DEFAULT_CORPUS_STRUCTURES = [
         item.strip() for item in _config['corpus']['DEFAULT_CORPUS_STRUCTURES'].split(',')
     ]
-    SEGMENT_DIR_NAME = _config["corpus"]["CORPUS_SEGMENT"]
+    SEGMENTS_NAME = _config["corpus"]["CORPUS_SEGMENT"]
 
     # === Vector Index Config ===
     DEFAULT_CORPUS_CONFIG_DATA = {
@@ -74,10 +74,8 @@ class NebulonDBConfig:
     }
 
     # === Segments ===
-    SEGMENTS_METADATA = _config["segments"]["METADATA_SEGMENTS"]
+    SEGMENTS_METADATA = _config["segments"]["SEGMENT_METADATA"]
 
-    # === Segments ===
-    SEGMENTS_METADATA = _config["segments"]["METADATA_SEGMENTS"]
 
 class CorpusManager:
     """
@@ -143,7 +141,6 @@ class CorpusManager:
         except Exception as _:
             return []
 
-
     def get_corpus_status(self, corpus_name: str) -> str:
         """
         Retrieve the status of a specified corpus.
@@ -161,7 +158,6 @@ class CorpusManager:
         except Exception as _:
             return None
 
-
     def set_corpus_status(self, corpus_name: str, status: str) -> None:
         """
         Update the status of a specified corpus.
@@ -175,33 +171,79 @@ class CorpusManager:
             metadata = load_data(self.metadata_path)
             metadata[corpus_name]["status"] = status
             save_data(metadata, self.metadata_path)
-            return True
         except Exception as _:
             return False
+        
+    def create_corpus(self, corpus_name: str, username:str):
+        """_summary_
 
-class  SegmentManager:
+        Args:
+            corpus_name (str): _description_
+            username (str): _description_
+        """
+        corpus_path = self.vector_storage_path / corpus_name
+        os.makedirs(corpus_path, exist_ok=True)
+        for corpus_subdir in NebulonDBConfig.DEFAULT_CORPUS_STRUCTURES:
+            (corpus_path / corpus_subdir).mkdir(parents=True, exist_ok=True)
+        
+        save_data(save_data={}, path_loc=corpus_path / NebulonDBConfig.SEGMENTS_METADATA)
+        
+        corpus_config_path = corpus_path / Path(NebulonDBConfig.DEFAULT_CORPUS_CONFIG_STRUCTURES)
+        config_data = NebulonDBConfig.DEFAULT_CORPUS_CONFIG_DATA
+        save_data(save_data=config_data, path_loc=corpus_path / corpus_config_path)
+
+        # Store the corpus details
+        created_corpus = load_data(path_loc=self.metadata_path)
+        created_corpus[corpus_name] = self.generate_corpus_metadata(
+            corpus_name=corpus_name,
+            created_by=username
+        )
+        save_data(save_data=created_corpus, path_loc=self.metadata_path)
+
+    def delete_corpus(self, corpus_name: str,):
+        """_summary_
+
+        Args:
+            corpus_name (str): _description_
+        """
+        corpus_path = self.vector_storage_path / corpus_name
+        shutil.rmtree(corpus_path)
+
+        corpus_info = load_data(path_loc=self.metadata_path)
+        del corpus_info[corpus_name]
+        save_data(path_loc=self.metadata_path, save_data=corpus_info)
+      
+class SegmentManager:
     """
     SegmentManager handles validation and retrieval of segment data and metadata.
     """
     def __init__(self, corpus_name:str):
         self.corpus_path = Path(NebulonDBConfig.VECTOR_STORAGE) / corpus_name
-        self.vector_storage_path = Path(NebulonDBConfig.VECTOR_STORAGE) / corpus_name
-        self.segment_metadata_path = self.vector_storage_path / NebulonDBConfig.SEGMENTS_METADATA
+        self.segment_path = self.corpus_path / NebulonDBConfig.SEGMENTS_NAME
+        self.segment_metadata_path = self.corpus_path / NebulonDBConfig.SEGMENTS_METADATA
         self._validate_paths()
         
-
     def _validate_paths(self) -> None:
         """Check that essential paths exist."""
         errors = []
-        if not self.vector_storage_path.exists() or not self.vector_storage_path.is_dir():
-            errors.append(f"Vector storage path missing: {self.vector_storage_path}")
+        if not self.corpus_path.exists() or not self.corpus_path.is_dir():
+            errors.append(f"Vector storage path missing: {self.corpus_path}")
         if not self.segment_metadata_path.exists():
             errors.append(f"Metadata file not found: {self.segment_metadata_path}")
 
         if errors:
             raise FileNotFoundError(" | ".join(errors))
 
-
+    def list_segments(self) -> Dict[str, List[str]]:
+        try:
+            metadata = load_data(self.segment_metadata_path)
+            return {
+                "segment_keys": list(metadata.keys()),
+                "segment_names": [v.get("segment") for v in metadata.values()]
+            }
+        except Exception:
+            return {}
+        
     def get_available_segment_list(self) -> List[str]:
         """
         Get list of segment directories that have matching metadata.
@@ -226,5 +268,29 @@ class  SegmentManager:
         except Exception as _:
             return {}
     
+    def create_segment(self, segment_label: str, category: str = None):
+        """
+        _summary_
 
+        Args:
+            segment_label (str): _description_
+            category (str, optional): _description_. Defaults to None.
+        """
+        segments = self.list_segments()
+        try:
+            last_segment_number = int(segments["segment_names"][-1].split("_")[1])
+            new_segment_name = f"segment_{last_segment_number + 1}"
+        except (IndexError, ValueError, KeyError):
+            new_segment_name = "segment_0"
+
+        segment_metadata = {
+            segment_label: {
+                "segment": new_segment_name,
+                "vector_id": None,
+                "category": category
+            }
+        }
+
+        save_data(segment_metadata, self.segment_metadata_path)
+        os.makedirs(self.segment_path / new_segment_name, exist_ok=True)
     

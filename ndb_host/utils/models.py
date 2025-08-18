@@ -31,9 +31,15 @@ class UserRecord(BaseModel):
 
 class AuthenticationResult(BaseModel):
     username: str
-    role: UserRole
+    role: Optional[UserRole] = None
     is_authenticated: bool = True
+    message: Optional[str] = None
 
+class StandardErrorResponse(BaseModel):
+    success: bool
+    message: str
+    role: Optional[str] = None
+    
 class UserRegistrationRequest(BaseModel):
     username: str = Field(..., min_length=3, max_length=50)
     password: str = Field(..., min_length=6)
@@ -61,12 +67,6 @@ class UserAuthenticationResponse(BaseModel):
 class CorpusExistenceResponse(BaseModel):
     exists: bool
     corpus_name: str
-    message: str
-
-class SegmentExistenceResponse(BaseModel):
-    exists: bool
-    corpus_name: str
-    segment_name: str
     message: str
 
 class SegmentExistenceResponse(BaseModel):
