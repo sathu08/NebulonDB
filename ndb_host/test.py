@@ -1,48 +1,41 @@
-"""
-import faiss, os, yaml, json
-import numpy as np
-from pathlib import Path
+from db.index_manager import SegmentManager
 
-BASE_DIR = Path("NebulonDB")
+import polars as pl
+from typing import Union, List
+from sentence_transformers import SentenceTransformer
 
-def load_config():
-    with open("config.yaml") as f:
-        return yaml.safe_load(f)
+segment_manager = SegmentManager("default")
 
-def ensure_namespace(namespace: str):
-    ns_path = BASE_DIR / namespace / "segments" / "segment_0"
-    ns_path.mkdir(parents=True, exist_ok=True)
-    return ns_path
 
-def load_or_create_index(ns_path, dim, config):
-    index_path = ns_path / "index.faiss"
-    if index_path.exists():
-        return faiss.read_index(str(index_path))
-    # Create HNSW
-    index = faiss.IndexHNSWFlat(dim, config["params"]["hnsw_m"])
-    index.hnsw.efConstruction = config["params"]["ef_construction"]
-    index.hnsw.efSearch = config["params"]["ef_search"]
-    return index
+# Example usage
+segment_dataset = {
+    "text_col1": ["Hello world", "AI is amazing", "null", "Polars is fast"],
+    "text_col2": ["Test sentence", "null", "Another text", "Segment_dataset science"],
+    "numeric_col": [1, 2, 3, 4]
+}
+segment_dataset = {
+    "text_col1": ["call boy","mark"],
+    "text_col2": ["mental","fellow"],
+    "numeric_col": [1, 2]
+}
 
-def insert_vector(namespace, vector, payload):
-    config = load_config()
-    ns_path = ensure_namespace(namespace)
-    index = load_or_create_index(ns_path, config["dimension"], config)
-    vec = np.array([vector], dtype='float32')
-    index.add(vec)
-    faiss.write_index(index, str(ns_path / "index.faiss"))
-    with open(ns_path / "payloads.json", "a") as f:
-        f.write(json.dumps(payload) + "\n")
-    return {"message": "Inserted successfully."}
+print(segment_manager.insert_segment(segment_dataset=segment_dataset,
+                               segment_name="sample",
+                               set_columns=["text_col1","text_col2"]))
 
-def search_vector(namespace, vector, top_k):
-    config = load_config()
-    ns_path = ensure_namespace(namespace)
-    index = load_or_create_index(ns_path, config["dimension"], config)
-    vec = np.array([vector], dtype='float32')
-    distances, indices = index.search(vec, top_k)
-    return {"indices": indices.tolist(), "distances": distances.tolist()}
+# Specific column
+# print(load_segment(Segment_dataset,segment_name="sample", set_column_vector=["text_col1","text_col2"]))
+# print(load_segment(Segment_dataset,segment_name="sample", set_column_vector=["numeric_col"]))
 
-def list_namespaces():
-    return [d.name for d in BASE_DIR.iterdir() if d.is_dir()]
-"""
+# # All text columns
+# print(load_segment(Segment_dataset, set_column_vector="all"))
+# print(load_segment(Segment_dataset, set_column_vector=["ALL"]))
+
+# query = ["AI is amazing"]
+# model = SentenceTransformer("all-MiniLM-L6-v2")
+# query_vec = model.encode(query).tolist()
+
+# results = segment_manager.search_vector(vector=query_vec, top_k=2)
+# print(results)
+
+

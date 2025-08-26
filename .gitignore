@@ -1,12 +1,13 @@
-# Ignore the .secure_folder directory
-ndb_host/.secure_folder/*
-
+# Ignore the directory
+**/__pycache__/
+ndb_host/.secure_folder/
 VectorDatabase/default/logs/*
-VectorDatabase/default/metadata/*
 VectorDatabase/default/segments/*
 VectorDatabase/default/snapshots/*
+VectorDatabase/default/metadata/*
+
 
 # Other ignored files/folders
-**/__pycache__/
 *.log
 .env
+**/**test**

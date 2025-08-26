@@ -2,6 +2,7 @@
   "dimension": 384,
   "index_type": "IndexHNSWFlat",     
   "metric": "L2",
+  "segment_max_size": 1000,
   "params": {
     "nlist": 100,
     "nprobe": 10,

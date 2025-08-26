@@ -15,7 +15,7 @@ http_basic_security = HTTPBasic()
 
 # === Database Path Configuration ===
 USER_DATABASE_PATH = Path(NebulonDBConfig.USER_CREDENTIALS)
-os.makedirs(USER_DATABASE_PATH, exist_ok=True)
+os.makedirs(USER_DATABASE_PATH.parent, exist_ok=True)
 
 def _validate_user_role(user_role: str) -> UserRole:
     try:

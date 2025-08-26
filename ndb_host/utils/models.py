@@ -1,6 +1,6 @@
 from enum import Enum
 from pydantic import BaseModel, Field, field_validator
-from typing import Optional, Dict, Any
+from typing import Optional, Dict, Any, Union, List
 from pathlib import Path
 import json
 
@@ -18,6 +18,10 @@ class AuthenticationConfig:
     ENCODING = "utf-8"
     JSON_INDENT = 4
 
+class ColumnPick:
+    FIRST_COLUMN = "First Column"
+    ALL = "All"
+    
 # === Pydantic Models ===
 class UserProfile(BaseModel):
     username: str
@@ -51,6 +55,8 @@ class CorpusQueryRequest(BaseModel):
 class SegmentQueryRequest(BaseModel):
     corpus_name: str = Field(..., min_length=1)
     segment_name: str = Field(..., min_length=1)
+    segment_dataset: Dict[str, List[Any]]
+    set_columns: Union[str, List[str]] = ColumnPick.FIRST_COLUMN
     
     @field_validator("segment_name")
     def segment_name_must_be_lowercase(cls, v: str) -> str:
@@ -72,7 +78,6 @@ class CorpusExistenceResponse(BaseModel):
 class SegmentExistenceResponse(BaseModel):
     exists: bool
     corpus_name: str
-    segment_name: str
     message: str
 
 class StandardResponse(BaseModel):
@@ -81,21 +86,18 @@ class StandardResponse(BaseModel):
     data: Optional[Dict[str, Any]] = None
     corpus_name: Optional[str] = None
     segment_name: Optional[str] = None
+    errors: Optional[List[str]] = None
 
 # === Helper Functions ===
-def load_data(path_loc: Path) -> Dict[str, Dict[str, Any]]:
+def load_data(path_loc: Path, default:Dict = {}) -> Dict[str, Dict[str, Any]]:
     """
     Load JSON data from file, returning an empty dict if empty or invalid.
     """
     try:
-        content = path_loc.read_text(encoding=AuthenticationConfig.ENCODING)
-
-        if not content.strip():
-            logger.warning("File is empty. Returning empty dictionary.")
-            return {}
-
-        return json.loads(content)
-
+        if path_loc.exists():
+            content = path_loc.read_text(encoding=AuthenticationConfig.ENCODING)
+            return json.loads(content)
+        return default
     except json.JSONDecodeError as e:
         logger.error(f"Malformed JSON in file {path_loc}: {e}")
         return {}

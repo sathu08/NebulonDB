@@ -1,11 +1,12 @@
 from fastapi import APIRouter, Depends
 from pathlib import Path
+import polars as pl
 
 from db.index_manager import NebulonDBConfig, SegmentManager
-from utils.models import SegmentExistenceResponse, SegmentQueryRequest, AuthenticationResult, UserRole
 from utils.logger import logger
 from core.permissions import check_user_permission
 from services.user_service import get_current_user
+from utils.models import SegmentQueryRequest, AuthenticationResult, StandardResponse, UserRole
 
 router = APIRouter()
 
@@ -13,79 +14,135 @@ VECTOR_DB_PATH = Path(NebulonDBConfig.VECTOR_STORAGE)
 DATABASE_METADATA = Path(NebulonDBConfig.VECTOR_METADATA)
 
 @router.post(
-    "/create_segment",
-    response_model=SegmentExistenceResponse,
-    summary="Create segment",
-    description="Create new segment in a corpus"
+    "/load_segment",
+    response_model=StandardResponse,
+    summary="Load segment",
+    description="Load new segment in a corpus"
 )
-async def create_segment(
+async def load_segment(
     segment_query: SegmentQueryRequest,
     current_user: AuthenticationResult = Depends(get_current_user)
-) -> SegmentExistenceResponse:
+) -> StandardResponse:
     """
-    Create a new segment in the specified corpus.
-    
+    Load a new segment into the specified corpus.
+
     Args:
-        segment_query: Segment creation details including corpus_name, segment_name, and category
-        current_user: Authenticated user making the request
-        
+        segment_query: Segment creation details including corpus_name,
+                       segment_dataset, and set_column_vector.
+        current_user: Authenticated user making the request.
+
     Returns:
-        SegmentExistenceResponse: Result of segment creation attempt
+        StandardResponse: Result of the segment load attempt.
     """
     try:
         corpus_name = segment_query.corpus_name
         segment_name = segment_query.segment_name
-        category_name = segment_query.category
+        segment_dataset = segment_query.segment_dataset
+        set_columns = segment_query.set_columns
+        
+        segment_manager = SegmentManager(corpus_name=corpus_name)
+        
         # Check authentication first
         if not current_user.is_authenticated:
-            return SegmentExistenceResponse(
-                exists=False,
+            return StandardResponse(
+                success=False,
                 corpus_name=corpus_name,
-                segment_name=segment_name,
                 message=current_user.message
             )
 
-        logger.info(f"Attempting to create segment '{segment_name}' in corpus '{corpus_name}' for user '{current_user.username}'")
-
+        logger.info(
+            f"User '{current_user.username}' is attempting to load a segment into corpus '{corpus_name}'"
+        )
+        
         # Check permissions
         if not check_user_permission(current_user=current_user, required_role=UserRole.ADMIN_USER):
-            logger.warning(f"Permission denied for user '{current_user.username}'")
-            return SegmentExistenceResponse(
-                exists=True,
+            logger.warning(
+                f"Permission denied: user '{current_user.username}' attempted to load a segment into corpus '{corpus_name}'"
+            )
+            return StandardResponse(
+                success=False,
                 corpus_name=corpus_name,
-                segment_name=segment_name,
                 message="Permission denied"
             )
-
-        # Check if segment exists
-        segment_manager = SegmentManager(corpus_name)
-        available_segments = segment_manager.get_available_segment_list()
+            
+        # available_segments = segment_manager.get_available_segment_list()
+        # if available_segments and segment_name in available_segments.get("product_names", []):
+        #     logger.warning(f"Segment '{segment_name}' already exists in corpus '{corpus_name}'")
+        #     return SegmentExistenceResponse(
+        #         exists=True,
+        #         corpus_name=corpus_name,
+        #         segment_name=segment_name,
+        #         message=f"Segment '{segment_name}' already exists in corpus '{corpus_name}'"
+        #     )
         
-        if available_segments and segment_name in available_segments.get("product_names", []):
-            logger.warning(f"Segment '{segment_name}' already exists in corpus '{corpus_name}'")
-            return SegmentExistenceResponse(
-                exists=True,
-                corpus_name=corpus_name,
-                segment_name=segment_name,
-                message=f"Segment '{segment_name}' already exists in corpus '{corpus_name}'"
-            )
-
-        # Create the segment
-        segment_manager.create_segment(segment_label=segment_name, category=category_name)
-        logger.info(f"Successfully created segment '{segment_name}' in corpus '{corpus_name}'")
+        # Validate  the Dataset 
+        if isinstance(segment_dataset, dict):
+            try:
+                segment_dataset = pl.DataFrame(segment_dataset)
+            except Exception as e:
+                return StandardResponse(success=False, message=f"Failed to convert dataset to DataFrame: {str(e)}")
         
-        return SegmentExistenceResponse(
-            exists=False,
+        if not isinstance(segment_dataset, pl.DataFrame) or segment_dataset.height == 0:
+            return StandardResponse(success=False, message="Invalid or empty dataset")
+
+        # Process each column
+        total_inserted = 0
+        total_skipped = 0
+        errors = []
+        columns = segment_manager.determine_columns_to_process(segment_dataset=segment_dataset, set_columns=set_columns)
+        if not columns["success"]:
+            return columns["message"]
+        for col in columns.get("columns",""):
+            if col not in segment_dataset.columns:
+                errors.append(f"Column '{col}' not found in dataset")
+                continue
+            texts = segment_dataset[col].fill_null("").to_list()
+            if not any(texts):
+                errors.append(f"Column '{col}' not found in dataset")
+                continue
+            try:
+                embeddings = segment_manager.model.encode(texts).tolist()
+
+                # Insert row-by-row into SegmentManager
+                for idx, (txt, vec) in enumerate(zip(texts, embeddings)):
+                    if not txt.strip():  # Skip empty texts
+                        continue
+                    
+                    key = segment_manager.get_next_vector_id(column_name=col)
+                    vector = vec
+                    payload = {col: txt, "row_index": idx}
+
+                    result = segment_manager.load_segment(
+                        segment_name=segment_name,
+                        key=key,  
+                        vector=vector,
+                        payload=payload
+                    )
+                    
+                    if result["success"]:
+                        total_inserted += 1
+                    else:
+                        total_skipped += 1
+                        if "Duplicate entry" not in result["message"]:
+                            errors.append(f"Failed to insert {key}: {result['message']}")
+                            
+            except Exception as e:
+                errors.append(f"Failed to process column '{col}': {str(e)}")
+          
+        logger.info(f"Successfully segment loaded into corpus '{corpus_name}'")
+        
+        return StandardResponse(
+            success=True,
             corpus_name=corpus_name,
             segment_name=segment_name,
-            message=f"Segment '{segment_name}' created successfully in corpus '{corpus_name}'"
+            errors=errors,
+            message=f"Processed {total_inserted} vectors, skipped {total_skipped}"
         )
 
     except Exception as e:
-        logger.exception(f"Failed to create segment '{segment_name}': {str(e)}")
-        return SegmentExistenceResponse(
-            exists=True,
+        logger.exception(f"Failed to load segment into corpus '{segment_query.corpus_name}': {str(e)}")
+        return StandardResponse(
+            success=False,
             corpus_name=corpus_name,
-            segment_name=segment_name,
             message=f"Internal server error while creating segment: {str(e)}"
         )
