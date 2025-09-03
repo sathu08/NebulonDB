@@ -1,4 +1,4 @@
-from fastapi import Depends, HTTPException, status
+from fastapi import Depends
 from fastapi.security import HTTPBasic, HTTPBasicCredentials
 
 from typing import Dict, Any

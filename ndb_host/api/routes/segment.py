@@ -6,7 +6,8 @@ from db.index_manager import NebulonDBConfig, SegmentManager
 from utils.logger import logger
 from core.permissions import check_user_permission
 from services.user_service import get_current_user
-from utils.models import SegmentQueryRequest, AuthenticationResult, StandardResponse, UserRole
+from utils.models import (SegmentQueryRequest, AuthenticationResult, ColumnPick,
+                          StandardResponse, UserRole, SemanticEmbeddingModel)
 
 router = APIRouter()
 
@@ -38,8 +39,8 @@ async def load_segment(
         corpus_name = segment_query.corpus_name
         segment_name = segment_query.segment_name
         segment_dataset = segment_query.segment_dataset
-        set_columns = segment_query.set_columns
-        
+        set_columns = segment_query.set_columns if segment_query.set_columns else ColumnPick.FIRST_COLUMN
+
         segment_manager = SegmentManager(corpus_name=corpus_name)
         
         # Check authentication first
@@ -64,18 +65,8 @@ async def load_segment(
                 corpus_name=corpus_name,
                 message="Permission denied"
             )
-            
-        # available_segments = segment_manager.get_available_segment_list()
-        # if available_segments and segment_name in available_segments.get("product_names", []):
-        #     logger.warning(f"Segment '{segment_name}' already exists in corpus '{corpus_name}'")
-        #     return SegmentExistenceResponse(
-        #         exists=True,
-        #         corpus_name=corpus_name,
-        #         segment_name=segment_name,
-        #         message=f"Segment '{segment_name}' already exists in corpus '{corpus_name}'"
-        #     )
-        
-        # Validate  the Dataset 
+                   
+        # Validate the Dataset 
         if isinstance(segment_dataset, dict):
             try:
                 segment_dataset = pl.DataFrame(segment_dataset)
@@ -101,7 +92,8 @@ async def load_segment(
                 errors.append(f"Column '{col}' not found in dataset")
                 continue
             try:
-                embeddings = segment_manager.model.encode(texts).tolist()
+                embeddings = SemanticEmbeddingModel().encode(texts).tolist()
+                # embeddings = segment_manager.model.encode(texts).tolist()
 
                 # Insert row-by-row into SegmentManager
                 for idx, (txt, vec) in enumerate(zip(texts, embeddings)):
@@ -139,6 +131,82 @@ async def load_segment(
             message=f"Processed {total_inserted} vectors, skipped {total_skipped}"
         )
 
+    except Exception as e:
+        logger.exception(f"Failed to load segment into corpus '{segment_query.corpus_name}': {str(e)}")
+        return StandardResponse(
+            success=False,
+            corpus_name=corpus_name,
+            message=f"Internal server error while creating segment: {str(e)}"
+        )
+
+@router.post(
+    "/search_segment",
+    response_model=StandardResponse,
+    summary="search segment",
+    description="Search within a segment in a corpus"
+)
+async def search_segment(
+    segment_query: SegmentQueryRequest,
+    current_user: AuthenticationResult = Depends(get_current_user)
+) -> StandardResponse:
+    """
+    search a segment into the specified corpus.
+
+    Args:
+        segment_query: Segment creation details including corpus_name,
+                       segment_dataset, and set_column_vector.
+        current_user: Authenticated user making the request.
+
+    Returns:
+        StandardResponse: Result of the segment search attempt.
+    """
+    try:
+        corpus_name = segment_query.corpus_name
+        segment_name = segment_query.segment_name
+        search_item = segment_query.search_item
+        
+        segment_manager = SegmentManager(corpus_name=corpus_name)
+        
+        # Check authentication first
+        if not current_user.is_authenticated:
+            return StandardResponse(
+                success=False,
+                corpus_name=corpus_name,
+                message=current_user.message
+            )
+
+        if not search_item or not search_item.strip():
+            return StandardResponse(
+                success=False,
+                corpus_name=corpus_name,
+                segment_name=segment_name,
+                message="search_item must not be empty"
+            )
+            
+        logger.info(
+            f"User '{current_user.username}' is attempting to load a segment into corpus '{corpus_name}'"
+        )
+        
+        # Encode query into embedding
+        query_vec = SemanticEmbeddingModel().encode(
+            search_item,
+            convert_to_numpy=True,
+            normalize_embeddings=True
+        ).astype("float32")
+        
+        results = segment_manager.search_vector(
+            segment_name=segment_name,
+            query_vec=query_vec
+        )
+        
+        return StandardResponse(
+            success=True,
+            corpus_name=corpus_name,
+            segment_name=segment_name,
+            data=results,
+            message=f"Found {len(results)} results"
+        )
+        
     except Exception as e:
         logger.exception(f"Failed to load segment into corpus '{segment_query.corpus_name}': {str(e)}")
         return StandardResponse(

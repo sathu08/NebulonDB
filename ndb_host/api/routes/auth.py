@@ -1,7 +1,7 @@
 from fastapi import Depends, HTTPException, status
 from fastapi import APIRouter
-from services.user_service import create_user, get_current_user
 
+from services.user_service import create_user, get_current_user
 from utils.models import StandardResponse, UserRegistrationRequest, UserAuthenticationResponse
 from utils.logger import logger
 

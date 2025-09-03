@@ -1,4 +1,5 @@
 from passlib.context import CryptContext
+
 from utils.models import AuthenticationConfig
 from utils.logger import logger
 

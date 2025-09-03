@@ -8,7 +8,6 @@ import shutil
 import faiss, os
 import numpy as np
 import polars as pl 
-from sentence_transformers import SentenceTransformer
 
 from utils.models import load_data, save_data
 from utils.models import ColumnPick 
@@ -68,6 +67,7 @@ class NebulonDBConfig:
         "index_type": _config['vector_index']['index_type'],
         "metric": _config['vector_index']['metric'],
         "segment_max_size":_config['vector_index']["segment_max_size"],
+        "top_matches":_config['vector_index']["top_matches"],
         "params": {
             "nlist": int(_config['params']['nlist']),
             "nprobe": int(_config['params']['nprobe']),
@@ -224,16 +224,14 @@ class SegmentManager:
     SegmentManager handles dynamic creation/loading of FAISS segments,
     along with vectors, payloads, and ID mapping.
     """
-    model = SentenceTransformer("all-MiniLM-L6-v2")
-    def __init__(self, corpus_name:str, model=model):
+    
+    def __init__(self, corpus_name:str):
         """
         Initialize SegmentManager for a specific corpus.
 
         Args:
             corpus_name (str): Name of the corpus to manage.
-            model (_type_, optional): Model to use for embeddings. Defaults to model.
         """
-        self.model = model
         self.corpus_path = Path(NebulonDBConfig.VECTOR_STORAGE) / corpus_name
         self.segment_path = self.corpus_path / NebulonDBConfig.SEGMENTS_NAME
         self.segment_metadata_path = self.corpus_path / NebulonDBConfig.SEGMENTS_METADATA
@@ -249,10 +247,6 @@ class SegmentManager:
             errors.append(f"Vector storage path missing: {self.corpus_path}")
         if not self.segment_metadata_path.exists():
             errors.append(f"Metadata file not found: {self.segment_metadata_path}")
-        try:
-            _ = self.model
-        except Exception as e:
-            errors.append(f"Model loading failed: {str(e)}")
         if errors:
             raise FileNotFoundError(" | ".join(errors))
 
@@ -262,6 +256,19 @@ class SegmentManager:
             return load_data(self.corpus_config)
         except Exception as _:
             return None
+    
+    def _get_segment_list(self,segment_name:str)-> List[str]:
+        """
+        Get a list of segments for a given segment name.
+
+        Args:
+            segment_name (str): Name of the segment
+
+        Returns:
+            Optional[List]: List of segment IDs or None if not found
+        """
+        segment_map = load_data(self.segment_map_path)
+        return segment_map.get(segment_name, {}).get("segment_ids", [])
     
     def _get_next_segment_id(self) -> str:
         """Get the next available segment name."""
@@ -317,9 +324,9 @@ class SegmentManager:
             Tuple[Path, str]: Path to segment and segment ID
         """
         latest = self._get_latest_segment_id()
-        segment_map = load_data(self.segment_map_path)
+        existing_segments = self._get_segment_list(segment_name)
 
-        if segment_name and segment_name in segment_map and latest:
+        if segment_name and existing_segments and latest:
             seg_path, seg_name = latest
             index = self._load_index(seg_path)
             max_size = self.config["segment_max_size"]
@@ -528,133 +535,66 @@ class SegmentManager:
             return {"success": True, "message": f"Inserted vector for key '{key}'"}
         except Exception as e:
             return {"success": False, "message": f"Failed to insert vector: {str(e)}"}
-    
-    # def insert_segment(self, segment_dataset: Dict[str, List[Any]], segment_name: str, set_columns) -> Dict[str, Any]:
-    #     """
-    #         Load multiple vectors from a dataset into segments.
+
+    def search_vector(self, segment_name:str, query_vec:np.ndarray, top_k: Optional[int] = None) ->Dict[str, Any]:
+        """
+        Search for nearest neighbors of a vector across all segments in a namespace.
+
+        Args:
+            segment_name (str): Name of the segment group/namespace
+            query_vec (np.ndarray): Query vector (1D float32 array)
+            top_k (int): Number of top results to return.
+
+        Returns:
+            List[Dict]: Search results with id, distance, and payload.
+        """
+        existing_segments = self._get_segment_list(segment_name)
+        results = {}
+        search_id = 0
+        # Ensure query_vec is 2D for FAISS
+        if query_vec.ndim == 1:
+            query_vec = query_vec.reshape(1, -1)
             
-    #         Args:
-    #             segment_dataset (Dict[str, List[Any]]): Dataset containing text data
-    #             segment_name (str): Name of the segment to load data into
-    #             set_columns : Columns to process
+        # Load metadata mapping once
+        id_map = load_data(self.segment_metadata_path)
+
+        # Build quick lookup for external_id
+        id_lookup = {(v["segment_id"], v["vector_id"]): k for k, v in id_map.items()}
+        
+        num_matches = top_k if top_k is not None else self.config.get("top_matches", 3)
+        
+        for segment_id in existing_segments:
+            segment_id_path = self.segment_path / segment_id
+            index = self._load_index(segment_id_path)
+            
+            if index.ntotal == 0:
+                continue  # skip empty index
+            
+            # FAISS search
+            distances, indices = index.search(query_vec, num_matches)
+
+            # Load payloads (text/data attached to vectors)
+            payloads_file = segment_id_path / "payloads.json"
+            payloads = load_data(payloads_file)
+            
+            # Collect results
+            for dist, idx in zip(distances[0], indices[0]):
+                if idx == -1:
+                    continue
+
+                # Match external_id from metadata
+                external_id = id_lookup.get((segment_id, idx))
+
+                # Get payload (the actual sentence/data stored)
+                payload = payloads.get(str(idx), {})
+
+                results[str(search_id)] = {
+                    "segment_id": segment_id,
+                    "external_id": external_id,
+                    "distance": float(dist),
+                    "payload": payload
+                }
+                search_id += 1
                 
-    #         Returns:
-    #             Dict[str, Any]: Result dictionary with statistics and status
-    #     """
-    #     if isinstance(segment_dataset, dict):
-    #         try:
-    #             segment_dataset = pl.DataFrame(segment_dataset)
-    #         except Exception as e:
-    #             return {"success": False, "message": f"Failed to convert dataset to DataFrame: {str(e)}"}
-        
-    #     if not isinstance(segment_dataset, pl.DataFrame) or segment_dataset.height == 0:
-    #         return {"success": False, "message": "Invalid or empty dataset"}
-        
-    #     # Process each column
-    #     total_inserted = 0
-    #     total_skipped = 0
-    #     errors = []
-    #     columns = self.determine_columns_to_process(segment_dataset=segment_dataset, set_columns=set_columns)
-    #     if not columns["success"]:
-    #         return columns["message"]
-    #     for col in columns.get("columns",""):
-    #         if col not in segment_dataset.columns:
-    #             errors.append(f"Column '{col}' not found in dataset")
-    #             continue
+        return results
             
-    #         texts = segment_dataset[col].fill_null("").to_list()
-    #         if not any(texts):
-    #             errors.append(f"Column '{col}' not found in dataset")
-    #             continue
-    #         try:
-    #             embeddings = self.model.encode(texts).tolist()
-
-    #             # Insert row-by-row into SegmentManager
-    #             for idx, (txt, vec) in enumerate(zip(texts, embeddings)):
-    #                 if not txt.strip():  # Skip empty texts
-    #                     continue
-                    
-    #                 key = self._get_next_vector_id(column_name=col)
-    #                 vector = vec
-    #                 payload = {col: txt, "row_index": idx}
-
-    #                 result = self._load_segment(
-    #                     segment_name=segment_name,
-    #                     key=key,  
-    #                     vector=vector,
-    #                     payload=payload
-    #                 )
-                    
-    #                 if result["success"]:
-    #                     total_inserted += 1
-    #                 else:
-    #                     total_skipped += 1
-    #                     if "Duplicate entry" not in result["message"]:
-    #                         errors.append(f"Failed to insert {key}: {result['message']}")
-                            
-    #         except Exception as e:
-    #             errors.append(f"Failed to process column '{col}': {str(e)}")
-    #     return {
-    #         "success": True,
-    #         "total_inserted": total_inserted,
-    #         "total_skipped": total_skipped,
-    #         "errors": errors,
-    #         "message": f"Processed {total_inserted} vectors, skipped {total_skipped}"
-    #     }
-                            
-    # def search_vector(self, vector: np.ndarray, top_k: int = 3) -> List[Dict[str, Any]]:
-    #     """
-    #     Search for nearest neighbors of a vector within the latest segment.
-
-    #     Args:
-    #         vector (np.ndarray): Query embedding (1D float32 array).
-    #         top_k (int): Number of nearest results.
-
-    #     Returns:
-    #         List[Dict]: Search results with id, distance, and payload.
-    #     """
-    #     if not isinstance(vector, np.ndarray):
-    #         vector = np.array(vector, dtype="float32")
-
-    #     # Get last (latest) segment path
-    #     seg_path, segment_id = self._ensure_namespace()
-    #     index = self._load_index(seg_path)
-
-    #     if index.ntotal == 0:
-    #         return []
-
-    #     # Reshape query vector
-    #     vec = np.array([vector], dtype="float32")
-
-    #     # Perform FAISS search
-    #     distances, indices = index.search(vec, top_k)
-
-    #     # Load mappings
-    #     payloads_file = seg_path / "payloads.json"
-    #     payloads = load_data(payloads_file)
-
-    #     id_map = load_data(self.segment_metadata_path)
-
-    #     results = []
-    #     for dist, idx in zip(distances[0], indices[0]):
-    #         if idx == -1:  # FAISS may return -1 if fewer results
-    #             continue
-
-    #         # Find external key for this vector_id
-    #         external_id = None
-    #         for k, v in id_map.items():
-    #             if v["segment"] == segment_id and v["vector_id"] == idx:
-    #                 external_id = k
-    #                 break
-
-    #         payload = payloads.get(str(idx), {})
-
-    #         results.append({
-    #             "id": external_id,
-    #             "distance": float(dist),
-    #             "payload": payload
-    #         })
-
-    #     return results
-
-        

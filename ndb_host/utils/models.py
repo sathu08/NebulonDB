@@ -6,6 +6,18 @@ import json
 
 from utils.logger import logger
 
+class SemanticEmbeddingModel:
+    def __init__(self, model_name: str = "all-MiniLM-L6-v2"):
+        from sentence_transformers import SentenceTransformer
+        try:
+            self.model = SentenceTransformer(model_name)
+        except Exception as e:
+            raise RuntimeError(f"Model loading failed: {str(e)}")
+
+    def encode(self, texts, **kwargs):
+        """Encode text(s) into embeddings."""
+        return self.model.encode(texts, **kwargs)
+        
 # === Constants and Configuration ===
 class UserRole(str, Enum):
     SUPER_USER = "super_user"
@@ -55,34 +67,35 @@ class CorpusQueryRequest(BaseModel):
 class SegmentQueryRequest(BaseModel):
     corpus_name: str = Field(..., min_length=1)
     segment_name: str = Field(..., min_length=1)
-    segment_dataset: Dict[str, List[Any]]
-    set_columns: Union[str, List[str]] = ColumnPick.FIRST_COLUMN
-    
-    @field_validator("segment_name")
-    def segment_name_must_be_lowercase(cls, v: str) -> str:
-        if not v.islower():
-            raise ValueError("segment_name must be lowercase")
-        return v
+    segment_dataset: Optional[Dict[str, List[Any]]] = None
+    set_columns: Optional[Union[str, List[str]]] = None
+    search_item: Optional[str] = None
 
-    category: Optional[str] = None
+    @field_validator("segment_dataset", mode="before")
+    def ensure_dict(cls, v):
+        # If None or already dict, keep as-is
+        if v is None or isinstance(v, dict):
+            return v
+        # If it's a DataFrame or list, try converting to dict
+        try:
+            return dict(v)
+        except Exception:
+            return None   # fallback, let your route handle it
+
+    @field_validator("segment_name", mode="before")
+    def ensure_lowercase(cls, v: str) -> str:
+        if isinstance(v, str):
+            return v.lower()
+        return v
 
 class UserAuthenticationResponse(BaseModel):
     message: str
     user: Dict[str, Any]
 
-class CorpusExistenceResponse(BaseModel):
-    exists: bool
-    corpus_name: str
-    message: str
-
-class SegmentExistenceResponse(BaseModel):
-    exists: bool
-    corpus_name: str
-    message: str
-
 class StandardResponse(BaseModel):
     success: bool
     message: str
+    exists: bool = False
     data: Optional[Dict[str, Any]] = None
     corpus_name: Optional[str] = None
     segment_name: Optional[str] = None
