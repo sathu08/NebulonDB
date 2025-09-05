@@ -67,20 +67,27 @@ class CorpusQueryRequest(BaseModel):
 class SegmentQueryRequest(BaseModel):
     corpus_name: str = Field(..., min_length=1)
     segment_name: str = Field(..., min_length=1)
-    segment_dataset: Optional[Dict[str, List[Any]]] = None
+    segment_dataset: Optional[Union[Dict[str, List[Any]], List[Dict[str, Any]]]] = None
     set_columns: Optional[Union[str, List[str]]] = None
     search_item: Optional[str] = None
+    top_matches: Optional[str] = None
 
     @field_validator("segment_dataset", mode="before")
-    def ensure_dict(cls, v):
-        # If None or already dict, keep as-is
-        if v is None or isinstance(v, dict):
+    def ensure_dict_or_list(cls, v):
+        # Case 1: None → keep None
+        if v is None:
+            return None
+
+        # Case 2: Already a dict → keep as-is
+        if isinstance(v, dict):
             return v
-        # If it's a DataFrame or list, try converting to dict
-        try:
-            return dict(v)
-        except Exception:
-            return None   # fallback, let your route handle it
+
+        # Case 3: Already a list of dicts → keep as-is
+        if isinstance(v, list) and all(isinstance(i, dict) for i in v):
+            return v
+
+        # Case 4: Anything else → reject (return None, let route handle)
+        return None
 
     @field_validator("segment_name", mode="before")
     def ensure_lowercase(cls, v: str) -> str:
@@ -102,21 +109,20 @@ class StandardResponse(BaseModel):
     errors: Optional[List[str]] = None
 
 # === Helper Functions ===
-def load_data(path_loc: Path, default:Dict = {}) -> Dict[str, Dict[str, Any]]:
+def load_data(path_loc: Path, default:Dict = None) -> Dict[str, Dict[str, Any]]:
     """
     Load JSON data from file, returning an empty dict if empty or invalid.
     """
+    if default is None:
+        default = {}
     try:
         if path_loc.exists():
             content = path_loc.read_text(encoding=AuthenticationConfig.ENCODING)
             return json.loads(content)
         return default
-    except json.JSONDecodeError as e:
-        logger.error(f"Malformed JSON in file {path_loc}: {e}")
-        return {}
-    except OSError as e:
-        logger.error(f"Error reading file {path_loc}: {e}")
-        return {}
+    except (json.JSONDecodeError, OSError) as e:
+        logger.error(f"Failed to load {path_loc}: {e}")
+        return default
 
 def save_data(save_data: Dict[str, Dict[str, Any]], path_loc: Path) -> Dict[str, Any]:
     """

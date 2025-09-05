@@ -65,16 +65,42 @@ async def load_segment(
                 corpus_name=corpus_name,
                 message="Permission denied"
             )
-                   
+        
         # Validate the Dataset 
-        if isinstance(segment_dataset, dict):
+        if segment_dataset is None:
+            return StandardResponse(success=False, message="Dataset cannot be None")
+        
+        elif isinstance(segment_dataset, pl.DataFrame):
+            segment_dataset = segment_dataset
+
+        elif isinstance(segment_dataset, dict):
             try:
                 segment_dataset = pl.DataFrame(segment_dataset)
             except Exception as e:
-                return StandardResponse(success=False, message=f"Failed to convert dataset to DataFrame: {str(e)}")
-        
+                return StandardResponse(
+                    success=False,
+                    message=f"Failed to convert dict to DataFrame: {str(e)}"
+                )
+
+        elif isinstance(segment_dataset, list):
+            try:
+                segment_dataset = pl.DataFrame(segment_dataset)
+            except Exception as e:
+                return StandardResponse(
+                    success=False,
+                    message=f"Failed to convert list of dicts to DataFrame: {str(e)}"
+                )
+
+        else:
+            return StandardResponse(
+                success=False,
+                message=f"Unsupported dataset type: {type(segment_dataset)}"
+            )
+
+        # Final check
         if not isinstance(segment_dataset, pl.DataFrame) or segment_dataset.height == 0:
             return StandardResponse(success=False, message="Invalid or empty dataset")
+
 
         # Process each column
         total_inserted = 0
@@ -93,7 +119,6 @@ async def load_segment(
                 continue
             try:
                 embeddings = SemanticEmbeddingModel().encode(texts).tolist()
-                # embeddings = segment_manager.model.encode(texts).tolist()
 
                 # Insert row-by-row into SegmentManager
                 for idx, (txt, vec) in enumerate(zip(texts, embeddings)):
@@ -164,6 +189,8 @@ async def search_segment(
         corpus_name = segment_query.corpus_name
         segment_name = segment_query.segment_name
         search_item = segment_query.search_item
+        set_columns = segment_query.set_columns if segment_query.set_columns else ColumnPick.ALL
+        top_matches = segment_query.top_matches if segment_query.top_matches else None
         
         segment_manager = SegmentManager(corpus_name=corpus_name)
         
@@ -196,7 +223,9 @@ async def search_segment(
         
         results = segment_manager.search_vector(
             segment_name=segment_name,
-            query_vec=query_vec
+            query_vec=query_vec,
+            set_columns=set_columns,
+            top_k=top_matches
         )
         
         return StandardResponse(

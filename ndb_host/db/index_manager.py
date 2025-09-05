@@ -88,9 +88,13 @@ class CorpusManager:
     CorpusManager handles validation and retrieval of corpus data and metadata.
     """
     def __init__(self):
-        self.vector_storage_path = Path(NebulonDBConfig.VECTOR_STORAGE)
-        self.metadata_path = Path(NebulonDBConfig.VECTOR_METADATA)
-        self.user_credential_path = Path(NebulonDBConfig.USER_CREDENTIALS)
+        """
+        Initialize CorpusManager.
+        """
+        self.vector_storage_path:Path = Path(NebulonDBConfig.VECTOR_STORAGE)
+        self.metadata_path:Path = Path(NebulonDBConfig.VECTOR_METADATA)
+        self.user_credential_path:Path = Path(NebulonDBConfig.USER_CREDENTIALS)
+        
         self._validate_paths()
 
     def _validate_paths(self) -> None:
@@ -232,11 +236,14 @@ class SegmentManager:
         Args:
             corpus_name (str): Name of the corpus to manage.
         """
-        self.corpus_path = Path(NebulonDBConfig.VECTOR_STORAGE) / corpus_name
-        self.segment_path = self.corpus_path / NebulonDBConfig.SEGMENTS_NAME
-        self.segment_metadata_path = self.corpus_path / NebulonDBConfig.SEGMENTS_METADATA
-        self.segment_map_path = self.corpus_path / NebulonDBConfig.SEGMENT_MAP
-        self.corpus_config = self.corpus_path / NebulonDBConfig.DEFAULT_CORPUS_CONFIG_STRUCTURES
+        self.corpus_name: str = corpus_name
+        self.metadata_path:Path = Path(NebulonDBConfig.VECTOR_METADATA)
+        self.corpus_path: Path = Path(NebulonDBConfig.VECTOR_STORAGE) / self.corpus_name
+        self.segment_path: Path = self.corpus_path / NebulonDBConfig.SEGMENTS_NAME
+        self.segment_metadata_path: Path = self.corpus_path / NebulonDBConfig.SEGMENTS_METADATA
+        self.segment_map_path: Path = self.corpus_path / NebulonDBConfig.SEGMENT_MAP
+        self.corpus_config: Path = self.corpus_path / NebulonDBConfig.DEFAULT_CORPUS_CONFIG_STRUCTURES
+ 
         self.config = self._load_config()
         self._validate_paths()
         
@@ -333,9 +340,15 @@ class SegmentManager:
             if index.ntotal < max_size:
                 return seg_path, seg_name
 
+        metadata = load_data(self.metadata_path)
+        if segment_name not in metadata[self.corpus_name]["segments"]:
+            metadata[self.corpus_name]["segments"].append(segment_name)
+        save_data(metadata, self.metadata_path)
+        
         segment_id = self._get_next_segment_id()
         ns_path = self.segment_path / segment_id
         ns_path.mkdir(parents=True, exist_ok=True)
+        
         return ns_path, segment_id
     
     def _check_duplicate_entry(self, key: str, vector: np.ndarray, payload: Dict[str, Any]) -> bool: 
@@ -384,6 +397,43 @@ class SegmentManager:
         
         return False
     
+    @staticmethod
+    def _determine_column_mode(set_columns) -> tuple[str, list]:
+        """
+        Determine column selection mode and normalize set_columns.
+
+        Args:
+            set_columns (str | list | None): User's column selection
+
+        Returns:
+            (mode, columns): A tuple where mode is one of ColumnPick.FIRST_COLUMN, 
+                            ColumnPick.ALL, "LIST", or None; and columns is a list of column names (if applicable).
+        """
+        mode = None
+        
+        if isinstance(set_columns, str):
+            val = set_columns.strip().lower()
+            if val in ("first column", "first"):
+                mode = ColumnPick.FIRST_COLUMN
+            elif val == "all":
+                mode = ColumnPick.ALL
+            else:
+                mode = "LIST"
+                return mode, [set_columns]
+
+        elif isinstance(set_columns, list):
+            if len(set_columns) == 1 and str(set_columns[0]).strip().lower() in ("first column", "first", "all"):
+                val = str(set_columns[0]).strip().lower()
+                if val in ("first column", "first"):
+                    mode = ColumnPick.FIRST_COLUMN
+                elif val == "all":
+                    mode = ColumnPick.ALL
+            else:
+                mode = "LIST"
+                return mode, set_columns
+
+        return mode, []
+
     def get_next_vector_id(self, column_name: str) -> str:
         """
         Get next available ID for a column.
@@ -428,25 +478,8 @@ class SegmentManager:
         # Check if dataset is empty
         if segment_dataset.height == 0:
             return {"success": False, "message": "Dataset is empty","columns": []}
-        mode = None
         
-        if isinstance(set_columns, str):
-            val = set_columns.strip().lower()
-            if val in ("first column", "first"):
-                mode = ColumnPick.FIRST_COLUMN
-            elif val == "all":
-                mode = ColumnPick.ALL
-        elif isinstance(set_columns, list):
-            if len(set_columns) == 1 and str(set_columns[0]).strip().lower() in (
-                "first column", "first", "all"
-            ):
-                val = str(set_columns[0]).strip().lower()
-                if val in ("first column", "first"):
-                    mode = ColumnPick.FIRST_COLUMN
-                elif val == "all":
-                    mode = ColumnPick.ALL
-            else:
-                mode = "LIST"
+        mode, set_columns = SegmentManager._determine_column_mode(set_columns)
         
         if mode == ColumnPick.FIRST_COLUMN:
             if not segment_dataset.columns:
@@ -536,7 +569,7 @@ class SegmentManager:
         except Exception as e:
             return {"success": False, "message": f"Failed to insert vector: {str(e)}"}
 
-    def search_vector(self, segment_name:str, query_vec:np.ndarray, top_k: Optional[int] = None) ->Dict[str, Any]:
+    def search_vector(self, segment_name:str, query_vec:np.ndarray, top_k: Optional[int] = None, set_columns: Optional[List[str]] = None) ->Dict[str, Any]:
         """
         Search for nearest neighbors of a vector across all segments in a namespace.
 
@@ -548,9 +581,13 @@ class SegmentManager:
         Returns:
             List[Dict]: Search results with id, distance, and payload.
         """
+        
+        mode, set_columns = SegmentManager._determine_column_mode(set_columns)
+                
         existing_segments = self._get_segment_list(segment_name)
         results = {}
         search_id = 0
+        
         # Ensure query_vec is 2D for FAISS
         if query_vec.ndim == 1:
             query_vec = query_vec.reshape(1, -1)
@@ -587,7 +624,24 @@ class SegmentManager:
 
                 # Get payload (the actual sentence/data stored)
                 payload = payloads.get(str(idx), {})
+                
+                row_index = payload.get("row_index")
 
+                if row_index is not None and set_columns:
+                    matching_entries = [entry for entry in payloads.values() if entry.get("row_index") == row_index]
+                    if matching_entries:
+                        # Merge all entries with the same row_index
+                        merged_payload = {}
+                        for entry in matching_entries:
+                            merged_payload.update(entry)
+
+                        if mode == "LIST":
+                            payload = {col: merged_payload.get(col) for col in set_columns if col in merged_payload}
+                        elif mode == ColumnPick.FIRST_COLUMN:
+                            if merged_payload:
+                                first_col = next(iter(merged_payload))
+                                payload = {first_col: merged_payload[first_col]}  
+                               
                 results[str(search_id)] = {
                     "segment_id": segment_id,
                     "external_id": external_id,
