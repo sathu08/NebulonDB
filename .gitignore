@@ -11,3 +11,4 @@ VectorDatabase/default/metadata/*
 *.log
 .env
 **/**test**
+**/**dev**

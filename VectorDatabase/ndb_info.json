@@ -4,6 +4,6 @@
         "created_at": null,
         "created_by": "nebulon_admin",
         "status": "system",
-        "segments": []
+        "segments": ["sample"]
     }
 }

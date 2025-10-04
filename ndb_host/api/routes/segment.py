@@ -2,18 +2,141 @@ from fastapi import APIRouter, Depends
 from pathlib import Path
 import polars as pl
 
-from db.index_manager import NebulonDBConfig, SegmentManager
+from db.index_manager import SegmentManager
+from db.NebulonDBConfig import NebulonDBConfig
 from utils.logger import logger
 from core.permissions import check_user_permission
 from services.user_service import get_current_user
 from utils.models import (SegmentQueryRequest, AuthenticationResult, ColumnPick,
-                          StandardResponse, UserRole, SemanticEmbeddingModel)
+                          StandardResponse, UserRole, SemanticEmbeddingModel, CorpusQueryRequest)
 
 router = APIRouter()
 
 VECTOR_DB_PATH = Path(NebulonDBConfig.VECTOR_STORAGE)
 DATABASE_METADATA = Path(NebulonDBConfig.VECTOR_METADATA)
 
+@router.post(
+    "/list_segments",
+    response_model=StandardResponse,
+    summary="List segments in a corpus",
+    description="Retrieve a list of all segments available in a specific corpus"
+)
+async def list_segments_in_corpus(
+    segment_query: CorpusQueryRequest,
+    current_user: AuthenticationResult = Depends(get_current_user)
+) -> StandardResponse:
+    """
+    Lists all segments available in a specific corpus.
+
+    Args:
+        segment_query: Contains corpus_name to query
+        current_user: Current authenticated user
+
+    Returns:
+        StandardResponse: List of segments in the corpus
+    """
+    try:
+        corpus_name = segment_query.corpus_name
+        if not current_user.is_authenticated:
+            return StandardResponse(
+                success=False,
+                message=current_user.message,
+                data={
+                    "segment_list": [],
+                    "total_count": 0
+                }
+            )
+
+        logger.info(
+            f"User '{current_user.username}' requested segments for corpus '{corpus_name}'."
+        )
+
+        segment_manager = SegmentManager(corpus_name=corpus_name)
+        segment_list = segment_manager.get_segment_list()
+
+        return StandardResponse(
+            success=True,
+            message=f"Retrieved {len(segment_list)} segments from corpus '{corpus_name}'.",
+            data={
+                "segment_list": segment_list,
+                "total_count": len(segment_list)
+            }
+        )
+
+    except Exception as e:
+        logger.exception(f"[LIST] Error listing segments: {e}")
+        return StandardResponse(
+            success=False,
+            message=f"Error listing segments for corpus '{segment_query.corpus_name}'.",
+            data={
+                "segment_list": [],
+                "total_count": 0
+            }
+        )
+
+
+@router.post(
+    "/list_segment_ids",
+    response_model=StandardResponse,
+    summary="Get segment IDs",
+    description="Retrieve segment IDs for a specific segment in a corpus"
+)
+async def list_available_segment_id(
+    segment_query: SegmentQueryRequest,
+    current_user: AuthenticationResult = Depends(get_current_user)
+) -> StandardResponse:
+    """
+    Retrieves segment IDs for a specific segment.
+
+    Args:
+        segment_query: Contains corpus_name and segment_name to query
+        current_user: Current authenticated user
+
+    Returns:
+        StandardResponse: Segment IDs information
+    """
+    try:
+        corpus_name = segment_query.corpus_name
+        segment_name = segment_query.segment_name
+
+        if not current_user.is_authenticated:
+            return StandardResponse(
+                success=False,
+                message=current_user.message,
+                data={
+                    "segment_ids": [],
+                    "total_count": 0
+                }
+            )
+
+        logger.info(
+            f"User '{current_user.username}' requested IDs for segment '{segment_name}' in corpus '{corpus_name}'."
+        )
+
+        segment_manager = SegmentManager(corpus_name=corpus_name)
+        segment_ids = segment_manager.get_segment_id_list(segment_name=segment_name)
+
+        return StandardResponse(
+            success=True,
+            message=f"Retrieved {len(segment_ids)} IDs for segment '{segment_name}'.",
+            data={
+                "segment_ids": segment_ids,
+                "total_count": len(segment_ids)
+            }
+        )
+
+    except Exception as e:
+        logger.exception(f"[SEGMENT IDS] Error getting segment IDs: {e}")
+        return StandardResponse(
+            success=False,
+            message=f"Error retrieving IDs for segment '{segment_query.segment_name}'.",
+            data={
+                "segment_ids": [],
+                "total_count": 0
+            }
+        )
+
+        
 @router.post(
     "/load_segment",
     response_model=StandardResponse,

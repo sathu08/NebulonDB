@@ -2,7 +2,8 @@ from fastapi import Depends
 from fastapi import APIRouter
 from pathlib import Path
 
-from db.index_manager import NebulonDBConfig, CorpusManager
+from db.index_manager import CorpusManager
+from db.NebulonDBConfig import NebulonDBConfig
 from utils.models import StandardResponse, CorpusQueryRequest, AuthenticationResult, UserRole
 from utils.logger import logger
 from core.permissions import check_user_permission
@@ -91,7 +92,7 @@ async def list_available_corpus(
     current_user: AuthenticationResult = Depends(get_current_user)
 ) -> StandardResponse:
     """
-    Lists all available corpora for the authenticated user.
+    Lists all available corpus for the authenticated user.
 
     Args:
         current_user: Current authenticated user
@@ -119,11 +120,15 @@ async def list_available_corpus(
             }
         )
     except Exception as e:
-        logger.exception(f"[LIST] Error listing corpora: {e}")
+        logger.exception(f"[LIST] Error listing corpus: {e}")
         return StandardResponse(
             success=False, 
-            message="Error listing corpora.", 
-            data={}
+            message="Error listing corpus.", 
+            data={
+                "corpus_list": [],
+                "total_count": 0
+            }
+                
             )
 
 @router.post(

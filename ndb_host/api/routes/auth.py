@@ -2,7 +2,7 @@ from fastapi import Depends, HTTPException, status
 from fastapi import APIRouter
 
 from services.user_service import create_user, get_current_user
-from utils.models import StandardResponse, UserRegistrationRequest, UserAuthenticationResponse
+from utils.models import StandardResponse, UserRegistrationRequest, UserAuthenticationResponse, AuthenticationResult
 from utils.logger import logger
 
 router = APIRouter()
@@ -59,7 +59,7 @@ async def register_user(
     description="Verify the current user's authentication status and return user details"
 )
 async def verify_authentication(
-    current_user: dict = Depends(get_current_user)
+    current_user: AuthenticationResult = Depends(get_current_user)
 ) -> UserAuthenticationResponse:
     """
     Verify user authentication and return user details.
@@ -70,8 +70,8 @@ async def verify_authentication(
     Returns:
         UserAuthenticationResponse: Authentication verification result
     """
-    logger.info(f"Authentication verified for user: {current_user.get('username', 'unknown')}")
+    logger.info(f"Authentication verified for user: {current_user.username}")
     return UserAuthenticationResponse(
-        message="Authentication verified successfully",
-        user=current_user
+        message=current_user.message if current_user.message else "Authentication verified successfully",
+        user=current_user.model_dump()
     )

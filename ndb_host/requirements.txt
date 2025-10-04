@@ -1,0 +1,8 @@
+uvicorn
+fastapi
+faiss-cpu
+polars
+numpy
+configobj
+passlib
+gunicorn
