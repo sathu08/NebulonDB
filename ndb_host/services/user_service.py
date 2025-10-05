@@ -9,12 +9,14 @@ import os
 from utils.models import AuthenticationResult, UserRole, StandardErrorResponse, load_data, save_data
 from utils.logger import logger
 from core.security import verify_password, hash_password
-from db.index_manager import NebulonDBConfig
+from db.NebulonDBConfig import NebulonDBConfig
 
 http_basic_security = HTTPBasic()
 
+config_settings = NebulonDBConfig()
+
 # === Database Path Configuration ===
-USER_DATABASE_PATH = Path(NebulonDBConfig.USER_CREDENTIALS)
+USER_DATABASE_PATH = Path(config_settings.USER_CREDENTIALS)
 os.makedirs(USER_DATABASE_PATH.parent, exist_ok=True)
 
 def _validate_user_role(user_role: str) -> UserRole:

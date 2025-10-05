@@ -11,6 +11,8 @@ from utils.models import load_data, save_data
 from utils.models import ColumnPick 
 from db.NebulonDBConfig import NebulonDBConfig
 
+config_settings = NebulonDBConfig()
+
 class CorpusManager:
     """
     CorpusManager handles validation and retrieval of corpus data and metadata.
@@ -19,9 +21,9 @@ class CorpusManager:
         """
         Initialize CorpusManager.
         """
-        self.vector_storage_path:Path = Path(NebulonDBConfig.VECTOR_STORAGE)
-        self.metadata_path:Path = Path(NebulonDBConfig.VECTOR_METADATA)
-        self.user_credential_path:Path = Path(NebulonDBConfig.USER_CREDENTIALS)
+        self.vector_storage_path:Path = Path(config_settings.VECTOR_STORAGE)
+        self.metadata_path:Path = Path(config_settings.VECTOR_METADATA)
+        self.user_credential_path:Path = Path(config_settings.USER_CREDENTIALS)
         
         self._validate_paths()
 
@@ -122,11 +124,11 @@ class CorpusManager:
         """
         corpus_path = self.vector_storage_path / corpus_name
         os.makedirs(corpus_path, exist_ok=True)
-        for corpus_subdir in NebulonDBConfig.DEFAULT_CORPUS_STRUCTURES:
+        for corpus_subdir in config_settings.DEFAULT_CORPUS_STRUCTURES:
             (corpus_path / corpus_subdir).mkdir(parents=True, exist_ok=True)
                 
-        corpus_config_path = corpus_path / Path(NebulonDBConfig.DEFAULT_CORPUS_CONFIG_STRUCTURES)
-        config_data = NebulonDBConfig.DEFAULT_CORPUS_CONFIG_DATA
+        corpus_config_path = corpus_path / Path(config_settings.DEFAULT_CORPUS_CONFIG_STRUCTURES)
+        config_data = config_settings.DEFAULT_CORPUS_CONFIG_DATA
         save_data(save_data=config_data, path_loc=corpus_path / corpus_config_path)
 
         # Store the corpus details
@@ -165,12 +167,12 @@ class SegmentManager:
             corpus_name (str): Name of the corpus to manage.
         """
         self.corpus_name: str = corpus_name
-        self.metadata_path:Path = Path(NebulonDBConfig.VECTOR_METADATA)
-        self.corpus_path: Path = Path(NebulonDBConfig.VECTOR_STORAGE) / self.corpus_name
-        self.segment_path: Path = self.corpus_path / NebulonDBConfig.SEGMENTS_NAME
-        self.segment_metadata_path: Path = self.corpus_path / NebulonDBConfig.SEGMENTS_METADATA
-        self.segment_map_path: Path = self.corpus_path / NebulonDBConfig.SEGMENT_MAP
-        self.corpus_config: Path = self.corpus_path / NebulonDBConfig.DEFAULT_CORPUS_CONFIG_STRUCTURES
+        self.metadata_path:Path = Path(config_settings.VECTOR_METADATA)
+        self.corpus_path: Path = Path(config_settings.VECTOR_STORAGE) / self.corpus_name
+        self.segment_path: Path = self.corpus_path / config_settings.SEGMENTS_NAME
+        self.segment_metadata_path: Path = self.corpus_path / config_settings.SEGMENTS_METADATA
+        self.segment_map_path: Path = self.corpus_path / config_settings.SEGMENT_MAP
+        self.corpus_config: Path = self.corpus_path / config_settings.DEFAULT_CORPUS_CONFIG_STRUCTURES
  
         self.config = self._load_config()
         self._validate_paths()

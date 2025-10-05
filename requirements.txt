@@ -6,3 +6,4 @@ numpy
 configobj
 passlib
 gunicorn
+sentence-transformers

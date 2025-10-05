@@ -11,9 +11,11 @@ from utils.models import (SegmentQueryRequest, AuthenticationResult, ColumnPick,
                           StandardResponse, UserRole, SemanticEmbeddingModel, CorpusQueryRequest)
 
 router = APIRouter()
+config_settings = NebulonDBConfig()
 
-VECTOR_DB_PATH = Path(NebulonDBConfig.VECTOR_STORAGE)
-DATABASE_METADATA = Path(NebulonDBConfig.VECTOR_METADATA)
+# === Database Path Configuration ===
+VECTOR_DB_PATH = Path(config_settings.VECTOR_STORAGE)
+DATABASE_METADATA = Path(config_settings.VECTOR_METADATA)
 
 @router.post(
     "/list_segments",
