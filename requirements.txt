@@ -7,3 +7,4 @@ configobj
 passlib
 gunicorn
 sentence-transformers
+keyrings.alt

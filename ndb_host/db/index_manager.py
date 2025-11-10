@@ -6,12 +6,14 @@ import shutil
 import faiss, os
 import numpy as np
 import polars as pl 
+import json
 
 from utils.models import load_data, save_data
-from utils.models import ColumnPick 
-from db.NebulonDBConfig import NebulonDBConfig
+from utils.models import ColumnPick , AuthenticationConfig
+from db.ndb_settings import NDBConfig, NDBCryptoManager
 
-config_settings = NebulonDBConfig()
+config_settings = NDBConfig()
+crypto_manager = NDBCryptoManager()
 
 class CorpusManager:
     """
@@ -23,32 +25,31 @@ class CorpusManager:
         """
         self.vector_storage_path:Path = Path(config_settings.VECTOR_STORAGE)
         self.metadata_path:Path = Path(config_settings.VECTOR_METADATA)
-        self.user_credential_path:Path = Path(config_settings.USER_CREDENTIALS)
         
         self._validate_paths()
 
     def _validate_paths(self) -> None:
         """Check that essential paths exist."""
         errors = []
+
         if not self.vector_storage_path.exists() or not self.vector_storage_path.is_dir():
             errors.append(f"Vector storage path missing: {self.vector_storage_path}")
+
         if not self.metadata_path.exists():
             errors.append(f"Metadata file not found: {self.metadata_path}")
-        if not self.user_credential_path.exists():
-            errors.append(f"User credentials file not found: {self.user_credential_path}")
-
+            
         if errors:
             raise FileNotFoundError(" | ".join(errors))
 
     @staticmethod
-    def generate_corpus_metadata(corpus_name: str, created_by: str, status:str="active") -> Dict[str, str]:
+    def generate_corpus_metadata(corpus_name: str, created_by: str, status:str) -> Dict[str, str]:
         """
         Generate metadata dictionary for a new corpus.
 
         Args:
             corpus_name (str): Name of the corpus.
             created_by (str): User who created the corpus.
-
+            status (str): Status of the corpus (e.g., 'active', 'deactivate', 'system').
         Returns:
             Dict[str, str]: Metadata entry.
         """
@@ -114,7 +115,7 @@ class CorpusManager:
         except Exception as _:
             return False
         
-    def create_corpus(self, corpus_name: str, username:str):
+    def create_corpus(self, corpus_name: str, username:str, status:str="active") -> None:
         """
         Create a new corpus.
 
@@ -129,15 +130,25 @@ class CorpusManager:
                 
         corpus_config_path = corpus_path / Path(config_settings.DEFAULT_CORPUS_CONFIG_STRUCTURES)
         config_data = config_settings.DEFAULT_CORPUS_CONFIG_DATA
-        save_data(save_data=config_data, path_loc=corpus_path / corpus_config_path)
+        save_data(data=config_data, path_loc=corpus_path / corpus_config_path)
 
         # Store the corpus details
         created_corpus = load_data(path_loc=self.metadata_path)
         created_corpus[corpus_name] = self.generate_corpus_metadata(
             corpus_name=corpus_name,
-            created_by=username
+            created_by=username,
+            status=status
         )
-        save_data(save_data=created_corpus, path_loc=self.metadata_path)
+        save_data(data=created_corpus, path_loc=self.metadata_path)
+
+        # Create an segment metadata file
+        segment_metadata_path = corpus_path / Path(config_settings.SEGMENTS_METADATA)
+        segment_metadata = load_data(path_loc=segment_metadata_path)
+        save_data(data=segment_metadata, path_loc=segment_metadata_path)
+
+        segment_map_path = corpus_path / Path(config_settings.SEGMENT_MAP)
+        segment_map = load_data(path_loc=segment_map_path)
+        save_data(data=segment_map, path_loc=segment_map_path)
 
     def delete_corpus(self, corpus_name: str,):
         """
@@ -151,7 +162,7 @@ class CorpusManager:
 
         corpus_info = load_data(path_loc=self.metadata_path)
         del corpus_info[corpus_name]
-        save_data(path_loc=self.metadata_path, save_data=corpus_info)
+        save_data(path_loc=self.metadata_path, data=corpus_info)
       
 class SegmentManager:
     """
@@ -184,6 +195,10 @@ class SegmentManager:
             errors.append(f"Vector storage path missing: {self.corpus_path}")
         if not self.segment_metadata_path.exists():
             errors.append(f"Metadata file not found: {self.segment_metadata_path}")
+        if not self.segment_map_path.exists():
+            errors.append(f"Metadata file not found: {self.segment_map_path}")
+        if not self.corpus_config.exists():
+            errors.append(f"Metadata file not found: {self.corpus_config}")
         if errors:
             raise FileNotFoundError(" | ".join(errors))
 
@@ -280,7 +295,8 @@ class SegmentManager:
             seg_path, seg_name = latest
             index = self._load_index(seg_path)
             max_size = self.config["segment_max_size"]
-            if index.ntotal < max_size:
+            
+            if int(index.ntotal) < int(max_size):
                 return seg_path, seg_name
 
         metadata = load_data(self.metadata_path)
@@ -318,7 +334,7 @@ class SegmentManager:
         vector_id = existing_entry["vector_id"]
         
         # Load existing vector
-        seg_path = self.segment_path / segment_id
+        seg_path = self.segment_path / Path(segment_id)
         vectors_file = seg_path / "vectors.npy"
         if vectors_file.exists():
             existing_vectors = np.load(vectors_file)
@@ -472,7 +488,7 @@ class SegmentManager:
             seg_path, segment_id = self._ensure_namespace(segment_name=segment_name)
             index = self._load_index(seg_path)
             
-            # Add vector
+            # # Add vector
             vec = vector.reshape(1, -1).astype("float32")
             index.add(vec)
             faiss.write_index(index, str(seg_path / "index.faiss"))
@@ -488,10 +504,16 @@ class SegmentManager:
             
             # Update payloads.json
             payloads_file = seg_path / "payloads.json"
-            payloads = load_data(payloads_file) 
-            vector_id = index.ntotal - 1
+            payloads = load_data(payloads_file)
+            if payloads and "ndb_data" in payloads and "ndb_key" in payloads:
+                decrypted_bytes = crypto_manager.decrypt_data(payloads)
+                decrypted_str = decrypted_bytes.decode(AuthenticationConfig.ENCODING)
+                payloads = json.loads(decrypted_str)
+            vector_id = int(index.ntotal - 1)
             payloads[str(vector_id)] = payload
-            save_data(payloads, payloads_file)
+            payload_bytes = save_data(payloads, return_bytes=True)
+            encrypted_payloads = crypto_manager.encrypt_data(payload_bytes)
+            save_data(encrypted_payloads, payloads_file)
 
             # Update id_map.json
             id_map = load_data(self.segment_metadata_path)
@@ -508,6 +530,7 @@ class SegmentManager:
                 if segment_id not in segment_map[segment_name]["segment_ids"]:
                     segment_map[segment_name]["segment_ids"].append(segment_id)
             save_data(segment_map, self.segment_map_path)
+
             return {"success": True, "message": f"Inserted vector for key '{key}'"}
         except Exception as e:
             return {"success": False, "message": f"Failed to insert vector: {str(e)}"}
@@ -551,12 +574,14 @@ class SegmentManager:
                 continue  # skip empty index
             
             # FAISS search
-            distances, indices = index.search(query_vec, num_matches)
+            distances, indices = index.search(query_vec, int(num_matches))
 
             # Load payloads (text/data attached to vectors)
             payloads_file = segment_id_path / "payloads.json"
             payloads = load_data(payloads_file)
-            
+            decrypted_bytes = crypto_manager.decrypt_data(payloads)
+            decrypted_str = decrypted_bytes.decode("utf-8")
+            payloads = json.loads(decrypted_str)
             # Collect results
             for dist, idx in zip(distances[0], indices[0]):
                 if idx == -1:

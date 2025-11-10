@@ -1,0 +1,26 @@
+{
+    "text_col1_0": {
+        "segment_id": "segment_0",
+        "vector_id": 0
+    },
+    "text_col1_1": {
+        "segment_id": "segment_0",
+        "vector_id": 1
+    },
+    "text_col1_2": {
+        "segment_id": "segment_0",
+        "vector_id": 2
+    },
+    "text_col2_0": {
+        "segment_id": "segment_0",
+        "vector_id": 3
+    },
+    "text_col2_1": {
+        "segment_id": "segment_0",
+        "vector_id": 4
+    },
+    "text_col2_2": {
+        "segment_id": "segment_0",
+        "vector_id": 5
+    }
+}

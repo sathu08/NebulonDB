@@ -1,6 +1,6 @@
 # Ignore the directory
 **/__pycache__/
-ndb_host/.secure_folder/
+**/**.ndb
 VectorDatabase/default/logs/*
 VectorDatabase/default/segments/*
 VectorDatabase/default/snapshots/*

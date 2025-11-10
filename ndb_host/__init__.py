@@ -1,7 +1,7 @@
-import os
 import sys
+from pathlib import Path
 
 # Add the current script's directory
-CURRENT_DIR = os.path.dirname(os.path.abspath(__file__))
+CURRENT_DIR = Path(__file__).resolve().parent
 if CURRENT_DIR not in sys.path:
-    sys.path.append(CURRENT_DIR)
+    sys.path.append(str(CURRENT_DIR))

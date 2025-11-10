@@ -3,7 +3,7 @@ from pathlib import Path
 import polars as pl
 
 from db.index_manager import SegmentManager
-from db.NebulonDBConfig import NebulonDBConfig
+from ndb_host.db.ndb_settings import NDBConfig
 from utils.logger import logger
 from core.permissions import check_user_permission
 from services.user_service import get_current_user
@@ -11,7 +11,7 @@ from utils.models import (SegmentQueryRequest, AuthenticationResult, ColumnPick,
                           StandardResponse, UserRole, SemanticEmbeddingModel, CorpusQueryRequest)
 
 router = APIRouter()
-config_settings = NebulonDBConfig()
+config_settings = NDBConfig()
 
 # === Database Path Configuration ===
 VECTOR_DB_PATH = Path(config_settings.VECTOR_STORAGE)
@@ -253,16 +253,20 @@ async def load_segment(
                     key = segment_manager.get_next_vector_id(column_name=col)
                     vector = vec
                     payload = {col: txt, "row_index": idx}
-
+                    logger.info(f"Inserting vector for key '{key}'")
                     result = segment_manager.load_segment(
                         segment_name=segment_name,
                         key=key,  
                         vector=vector,
                         payload=payload
                     )
+                    logger.info(f"Result for key '{key}': {result}")
                     
                     if result["success"]:
                         total_inserted += 1
+                    elif not result["success"]:
+                        errors.append(f"Failed to insert {key}: {result['message']}")
+                        break
                     else:
                         total_skipped += 1
                         if "Duplicate entry" not in result["message"]:
