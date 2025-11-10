@@ -10,6 +10,8 @@ from io import BytesIO
 import base64
 
 from utils.models import AuthenticationConfig
+from utils.logger import logger
+
 # ==========================================================
 #        NDBConfig
 # ==========================================================
@@ -31,7 +33,7 @@ class NDBConfig:
             config_path (str): Path to the configuration file.
         """
 
-        # Determine default path if none is provided
+        # === Determine default path if none is provided ===
         if config_path is None:
             neb_home = os.environ.get('NEBULONDB_HOME', os.getcwd())
             config_path = os.path.join(neb_home, "nebulondb.cfg")
@@ -48,6 +50,7 @@ class NDBConfig:
         self._validate_sections()
         self._apply_env_override()
         self._load_environment()
+        self._validate_packages()
         self._load_paths()
         self._load_corpus()
         self._load_vector_index()
@@ -61,11 +64,14 @@ class NDBConfig:
     @staticmethod
     def _resolve_path(path_vars, value) -> str:
         """Resolve variables using provided path_vars and environment."""
+
         combined = dict(path_vars)
         return os.path.expandvars(Template(value).safe_substitute(combined))
 
     def _validate_sections(self):
-        required_sections = ['paths', 'corpus', 'vector_index', 'params', 'server']
+        """Validate required sections are present in the config file."""
+
+        required_sections = ['paths', 'corpus', 'vector_index', 'params', 'server', 'environment']
         for section in required_sections:
             if section not in self._config:
                 raise KeyError(f"Missing required section: '{section}' in config file.")
@@ -73,43 +79,60 @@ class NDBConfig:
         if 'NEBULONDB_HOME' not in self._config['paths']:
             raise KeyError("Missing 'NEBULONDB_HOME' in [paths] section.")
 
+    def _validate_packages(self):
+        """Validate required packages are installed."""
+
+        if self.KEYRING_ENABLED:
+            try:
+                import keyring
+            except ImportError:
+                logger.error("keyring not installed")
+
     def _apply_env_override(self):
         """Override NEBULONDB_HOME with environment variable if set."""
 
-        # Override NEBULONDB_HOME if environment variable is set
+        # === Override NEBULONDB_HOME if environment variable is set ===
         env_home = os.environ.get('NEBULONDB_HOME')
-        if env_home and self._config['paths'].get('NEBULONDB_HOME') != env_home:  
-            self._config['paths']['NEBULONDB_HOME'] = env_home  
-            self._config.write()
-        
-        
-        if not self._config['environment'].get('NEBULONDB_MASTER_KEY'):  
-            # Ensure NEBULONDB_MASTER_KEY is set
+        updated = False
+
+        if env_home and self._config['paths']['NEBULONDB_HOME'] != env_home:
+            self._config['paths']['NEBULONDB_HOME'] = env_home
+            updated = True
+
+        if not self._config['environment']['NEBULONDB_MASTER_KEY']:
             master_key = os.environ.get('NEBULONDB_MASTER_KEY')
-            if not master_key :
-                # Generate a secure key if missing
+            if not master_key:
                 master_key = Fernet.generate_key().decode()
-                print("Warning: NEBULONDB_MASTER_KEY not found in environment; System Gendrated Key Will be Used.")
-                self._config['environment']['NEBULONDB_MASTER_KEY'] = master_key  
-                self._config.write()
+                logger.warning("Warning: NEBULONDB_MASTER_KEY not found; generated new key.")
+            self._config['environment']['NEBULONDB_MASTER_KEY'] = master_key
+            updated = True
+
+        if updated:
+            self._config.write()
 
     # ------------------------------
     # Load Config Sections
     # ------------------------------
 
     def _load_paths(self):
+        """Load and resolve path variables from the config file."""
+
         self.NEBULONDB_HOME = self._resolve_path(self._config['paths'], self._config['paths']['NEBULONDB_HOME'])  
         self.VECTOR_STORAGE = self._resolve_path(self._config['paths'], self._config['paths']["VECTOR_STORAGE"])  
         self.NEBULONDB_SECRETS = self._resolve_path(self._config['paths'], self._config['paths']["NEBULONDB_SECRETS"])  
         self.VECTOR_METADATA = self._resolve_path(self._config['paths'], self._config['paths']["VECTOR_METADATA"])  
     
     def _load_environment(self):
+        """Load environment-specific configuration from the config file."""
+        
         self.ENVIRONMENT_MASTER_KEY = self._config['environment']['NEBULONDB_MASTER_KEY']
-        self.KEYRING_ENABLED = self._config['environment']['NEBULONDB_KEYRING_ENABLED']
+        self.KEYRING_ENABLED = str(self._config['environment']['NEBULONDB_KEYRING_ENABLED']).lower() in ['true', '1', 'yes']
         self.KEYRING_SERVICE = self._config['environment']['NEBULONDB_KEYRING_SERVICE']
         self.KEYRING_USER = self._config['environment']['NEBULONDB_KEYRING_USER']
     
-    def _load_corpus(self): 
+    def _load_corpus(self):
+        """Load corpus-specific configuration from the config file."""
+
         self.DEFAULT_CORPUS_CONFIG_STRUCTURES = self._resolve_path(
             self._config['paths'], self._config["corpus"]["DEFAULT_CORPUS_CONFIG_STRUCTURES"]
         )
@@ -119,6 +142,8 @@ class NDBConfig:
         self.SEGMENTS_NAME = self._config["corpus"]["CORPUS_SEGMENT"]  
 
     def _load_vector_index(self):
+        """Load vector index-specific configuration from the config file."""
+
         self.DEFAULT_CORPUS_CONFIG_DATA = {
             "dimension": int(self._config['vector_index']['dimension']), 
             "index_type": self._config['vector_index']['index_type'], 
@@ -137,10 +162,14 @@ class NDBConfig:
         }
 
     def _load_segments(self):
+        """Load segment-specific configuration from the config file."""
+
         self.SEGMENTS_METADATA = self._config["segments"]["SEGMENT_METADATA"] 
         self.SEGMENT_MAP = self._config["segments"]["SEGMENT_MAP"]  
     
     def _load_server(self):
+        """Load server-specific configuration from the config file."""
+
         # === Assign values ===
         self.APP_NAME = self._config["server"]["APP_NAME"]  
         self.HOST = self._config["server"]["HOST"]  
@@ -177,17 +206,22 @@ class NDBCryptoManager:
         """
             Retrieve or create a persistent master key.
             Order:
-            1. Environment variable (preferred)
-            2. System keyring (fallback)
-            3. Auto-generate new key if not found
+            1. Environment variable
+            2. Config file
+            3. System keyring (if enabled)
+            4. Fallback: generate temporary key
         """
 
-        key = os.environ.get(self.config.ENVIRONMENT_MASTER_KEY)
-        if key:
-            return key.encode()
+        env_key = os.environ.get("ENVIRONMENT_MASTER_KEY")
+        if env_key:
+            return env_key.encode()
+    
+        config_key = getattr(self.config, "ENVIRONMENT_MASTER_KEY", None)
+        if config_key:
+            return config_key.encode()    
         
-        # Try from keyring if enabled
-        if self.config.KEYRING_ENABLED:
+        # === Try from keyring if enabled ===
+        if getattr(self.config, "KEYRING_ENABLED", False):
             try:
                 import keyring
 
@@ -197,7 +231,7 @@ class NDBCryptoManager:
                 if stored_key:
                     return stored_key.encode()
 
-                # If not found, generate and store a new one
+                # === If not found, generate and store a new one ===
                 new_key = Fernet.generate_key().decode()
                 keyring.set_password(
                     self.config.KEYRING_SERVICE, self.config.KEYRING_USER, new_key
@@ -205,11 +239,11 @@ class NDBCryptoManager:
                 return new_key.encode()
 
             except Exception as e:
-                # Graceful fallback if keyring fails
-                print(f"[Warning] Keyring access failed: {e}")
+                # === Graceful fallback if keyring fails ===
+                logger.warning(f"[Warning] Keyring access failed: {e}")
 
-        # As a last resort, generate a temporary in-memory key
-        print("[Warning] No valid key found — generating temporary master key.")
+        # === As a last resort, generate a temporary in-memory key ===
+        logger.warning("[Warning] No valid key found — generating temporary master key.")
 
     # ------------------------------
     # Encrypt data
@@ -236,9 +270,7 @@ class NDBCryptoManager:
     # Decrypt data
     # ------------------------------
     def decrypt_data(self, encrypted_content: dict):
-        """
-            Decrypt encrypted NDB content and return the original bytes.
-        """
+        """Decrypt encrypted NDB content and return the original bytes."""
         master_key = self.get_master_key()
         fernet_master = Fernet(master_key)
         ndb_key = fernet_master.decrypt(base64.b64decode(encrypted_content["ndb_key"].encode(AuthenticationConfig.ENCODING)))
@@ -281,8 +313,10 @@ class NDBSafeLocker:
     # Encrypt Folder → .ndb file
     # ------------------------------
     def _encrypt_folder_to_ndb(self, src_folder, output_file, force=False, delete_source=True):
+        """Encrypt a folder and save it as an .ndb file."""
+
         if os.path.exists(output_file) and not force:
-            print(f"{output_file} exists. Skipping encryption.")
+            logger.info(f"{output_file} exists. Skipping encryption.")
             return
 
         with tempfile.NamedTemporaryFile(delete=False) as tmp_zip:
@@ -305,7 +339,7 @@ class NDBSafeLocker:
             with open(output_file, 'w', encoding=AuthenticationConfig.ENCODING) as f:
                 json.dump(ndb_content, f, ensure_ascii=False)
 
-            print(f"Folder '{src_folder}' encrypted to '{output_file}'.")
+            logger.info(f"Folder '{src_folder}' encrypted to '{output_file}'.")
             if delete_source:
                 shutil.rmtree(src_folder)
 
@@ -317,6 +351,8 @@ class NDBSafeLocker:
     # Load NDB into memory
     # ------------------------------
     def _load_ndb(self, ndb_file):
+        """Load the encrypted NDB file into memory."""
+
         with open(ndb_file, 'r', encoding=AuthenticationConfig.ENCODING) as f:
             content = json.load(f)
 
@@ -328,10 +364,13 @@ class NDBSafeLocker:
     # File operations
     # ------------------------------
     def list_files(self):
+        """List all files stored in the encrypted NDB."""
+
         return self._zipfile.namelist()
 
     def read_file(self, file_path, as_text=True):
         """Read a file from the encrypted NDB."""
+
         if file_path not in self._zipfile.namelist():
             raise FileNotFoundError(f"{file_path} not found in NDB.")
         data = self._zipfile.read(file_path)
@@ -339,6 +378,7 @@ class NDBSafeLocker:
 
     def write_file(self, file_path, data: bytes):
         """Write or replace a file inside the NDB."""
+
         temp_io = BytesIO()
         with zipfile.ZipFile(temp_io, 'w') as zipf:
             for f in self._zipfile.namelist():
@@ -350,6 +390,7 @@ class NDBSafeLocker:
 
     def delete_file(self, file_path):
         """Remove a file from the NDB."""
+
         if file_path not in self._zipfile.namelist():
             raise FileNotFoundError(f"{file_path} not found in NDB.")
         temp_io = BytesIO()
@@ -365,24 +406,27 @@ class NDBSafeLocker:
     # ------------------------------
     def extract_all(self, output_dir):
         """Extract all files from NDB to the specified output directory."""
+
         if not os.path.exists(output_dir):
             os.makedirs(output_dir)
         self._zipfile.extractall(output_dir)
-        print(f"Extracted all files to '{output_dir}'")
+        logger.info(f"Extracted all files to '{output_dir}'")
 
     def print_summary(self):
-        """Print summary of files and total compressed size."""
+        """logger summary of files and total compressed size."""
+
         total_size = sum(zinfo.file_size for zinfo in self._zipfile.infolist())
-        print(f"NDB Summary:")
-        print(f" - Total Files: {len(self._zipfile.namelist())}")
-        print(f" - Total Size: {total_size / 1024:.2f} KB")
-        print(f" - Path: {self._ndb_path}")
+        logger.info(f"NDB Summary:")
+        logger.info(f" - Total Files: {len(self._zipfile.namelist())}")
+        logger.info(f" - Total Size: {total_size / 1024:.2f} KB")
+        logger.info(f" - Path: {self._ndb_path}")
 
     # ------------------------------
     # Save changes back
     # ------------------------------
     def save(self):
         """Save all changes to the encrypted NDB file."""
+
         if not self._ndb_path:
             raise ValueError("No NDB path specified to save.")
 
@@ -395,7 +439,7 @@ class NDBSafeLocker:
         with open(self._ndb_path, 'w', encoding=AuthenticationConfig.ENCODING) as f:
             json.dump(ndb_content, f, ensure_ascii=False)
 
-        print(f"NDB saved to '{self._ndb_path}'.")
+        logger.info(f"NDB saved to '{self._ndb_path}'.")
 
 
     # ------------------------------
@@ -403,6 +447,7 @@ class NDBSafeLocker:
     # ------------------------------
     def close(self):
         """Close the internal zipfile safely."""
+
         if hasattr(self, '_zipfile'):
             self._zipfile.close()
 

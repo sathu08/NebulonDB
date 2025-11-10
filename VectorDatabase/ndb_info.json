@@ -1,11 +1,9 @@
 {
     "nebulon_origin": {
         "corpus_name": "nebulon_origin",
-        "created_at": "2025-11-09T12:57:58.115590+00:00",
+        "created_at": "2025-11-10T18:07:00.134156+00:00",
         "created_by": "nebulon-supernova",
         "status": "system",
-        "segments": [
-            "sample"
-        ]
+        "segments": []
     }
 }

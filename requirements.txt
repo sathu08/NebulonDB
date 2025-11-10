@@ -8,3 +8,4 @@ passlib
 gunicorn
 sentence-transformers
 keyrings.alt
+cryptography

@@ -619,4 +619,3 @@ class SegmentManager:
                 search_id += 1
                 
         return results
-            

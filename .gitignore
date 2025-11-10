@@ -1,11 +1,8 @@
 # Ignore the directory
 **/__pycache__/
 **/**.ndb
-VectorDatabase/default/logs/*
-VectorDatabase/default/segments/*
-VectorDatabase/default/snapshots/*
-VectorDatabase/default/metadata/*
 
+VectorDatabase/
 
 # Other ignored files/folders
 *.log

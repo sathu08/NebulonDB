@@ -17,6 +17,7 @@ from ndb_host.utils.bootstrap import NebulonInitializer
 
 def _load_config() -> NDBConfig:
     """Load the NebulonDB configuration file."""
+    
     ndb_home = os.environ.get('NEBULONDB_HOME')
     if not ndb_home:
         print(f"NEBULONDB_HOME environment variable is not set. Please set it to the NebulonDB installation directory.")
@@ -32,6 +33,7 @@ def _setup_nebulondb_paths(cfg: NDBConfig):
     Initialize NebulonDB paths and update sys.path.
     Ensures NEBULONDB_HOME is valid and adds it to sys.path.
     """
+
     neb_home = Path(cfg.NEBULONDB_HOME).resolve()
     if not neb_home.is_dir():
         raise EnvironmentError("NEBULONDB_HOME environment variable is not set or invalid")
@@ -49,13 +51,13 @@ def start_server(cfg: NDBConfig):
 
     secrets_path = Path(cfg.NEBULONDB_SECRETS)
     
-    # Ensure user credentials exist
+    # === Ensure user credentials exist ===
     if not secrets_path.exists():
         print("Please create user credentials first using:")
         print("python run.py --create-user")
         return
     
-    # Ensure default corpus is present
+    # === Ensure default corpus is present ===
     NebulonInitializer().ensure_default_corpus()
 
     module_path = "ndb_host.main"
@@ -84,6 +86,7 @@ def start_server(cfg: NDBConfig):
 
 def stop_server(cfg: NDBConfig):
     """Stop the running server."""
+
     print(f"Stopping {cfg.APP_NAME}...")
     system = platform.system()
 
@@ -102,6 +105,7 @@ def stop_server(cfg: NDBConfig):
 
 def restart_server(cfg: NDBConfig):
     """Restart the server."""
+
     stop_server(cfg)
     time.sleep(2)
     start_server(cfg)
@@ -112,9 +116,7 @@ def restart_server(cfg: NDBConfig):
 # ==========================================================
 
 def create_user(cfg: NDBConfig):
-    """
-    Create an initial user credential file in NEBULONDB_SECRETS.
-    """
+    """Create an initial user credential file in NEBULONDB_SECRETS."""
 
     secrets_path = Path(cfg.NEBULONDB_SECRETS)
     
@@ -144,20 +146,20 @@ def create_user(cfg: NDBConfig):
     try:
         from ndb_host.services.user_service import create_user as service_create_user
 
-        # Create internal system user first
+        # === Create internal system user first ===
         system_user_data = service_create_user("nebulon-supernova", password, "system", new_creation=True)
         
-        # Create actual user
+        # === Create actual user ===
         normal_user_data = service_create_user(username, password, user_role, new_creation=True)
 
-        # Merge both user records into one dictionary
+        # === Merge both user records into one dictionary ===
         combined_users = {**system_user_data, **normal_user_data}
 
-        # Save user database
+        # === Save user database ===
         save_data(data=combined_users, path_loc=str(creds_path))
         print(f"User created successfully and saved at: {creds_path}")
 
-        # Encrypt credentials with NDBSafeLocker
+        # === Encrypt credentials with NDBSafeLocker ===
         NDBSafeLocker(str(secrets_dir))
         print("Credentials secured in NDB format.")
 
