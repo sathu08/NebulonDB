@@ -3,7 +3,7 @@ import os
 from typing import List, Dict, Tuple, Any,Optional
 from pathlib import Path
 import shutil
-import faiss, os
+import faiss
 import numpy as np
 import polars as pl 
 import json
@@ -411,6 +411,20 @@ class SegmentManager:
 
         max_id = max([int(k.split("_")[-1]) for k in existing_ids])
         return f"{column_name}_{max_id + 1}"
+
+    def get_next_vector_ids(self, column_name: str, count: int) -> List[str]:
+        """
+        Get next batch of available IDs for a column.
+        """
+        id_map = load_data(self.segment_metadata_path)
+        existing_ids = [k for k in id_map.keys() if k.startswith(f"{column_name}_")]
+
+        if not existing_ids:
+            start_id = 0
+        else:
+            start_id = max([int(k.split("_")[-1]) for k in existing_ids]) + 1
+            
+        return [f"{column_name}_{start_id + i}" for i in range(count)]
         
     @staticmethod   
     def determine_columns_to_process(segment_dataset: pl.DataFrame, set_columns) -> dict:
@@ -534,6 +548,111 @@ class SegmentManager:
             return {"success": True, "message": f"Inserted vector for key '{key}'"}
         except Exception as e:
             return {"success": False, "message": f"Failed to insert vector: {str(e)}"}
+
+    def load_segment_batch(self, segment_name:str, keys: List[str], vectors: np.ndarray, payloads: List[Dict[str, Any]]) -> Dict[str, Any]:
+        """
+        Batch insert vectors with payloads into a segment.
+        Args:
+            segment_name (str): Segment Name
+            keys (List[str]): List of Unique external IDs
+            vectors (np.ndarray): Matrix of Vector embeddings (N, D)
+            payloads (List[Dict]): List of Metadata payloads
+        
+        Return:
+            dict: Success/Failure stats
+        """
+        try:
+            if not isinstance(vectors, np.ndarray):
+                vectors = np.array(vectors, dtype="float32")
+                
+            num_vectors = len(keys)
+            if vectors.shape[0] != num_vectors or len(payloads) != num_vectors:
+                 return {"success": False, "message": "Input lists/arrays must have same length"}
+
+            seg_path, segment_id = self._ensure_namespace(segment_name=segment_name)
+            index = self._load_index(seg_path)
+            
+            # --- Load existing metadata for deduplication ---
+            id_map = load_data(self.segment_metadata_path)
+            
+            # Filter out duplicates
+            new_indices = []
+            skipped_keys = []
+            
+            for i, key in enumerate(keys):
+                if key in id_map:
+                    # For speed, in batch mode we just skip existing keys without checking content equality
+                    # (To allow content check, we'd need to load vectors which is slow)
+                    skipped_keys.append(key)
+                else:
+                    new_indices.append(i)
+            
+            if not new_indices:
+                 return {"success": True, "message": "All items were duplicates", "inserted": 0, "skipped": len(keys)}
+                 
+            # Filter inputs
+            keys_to_add = [keys[i] for i in new_indices]
+            vectors_to_add = vectors[new_indices]
+            payloads_to_add = [payloads[i] for i in new_indices]
+            
+            # --- FAISS Add ---
+            if vectors_to_add.ndim == 1:
+                vectors_to_add = vectors_to_add.reshape(1, -1)
+                
+            index.add(vectors_to_add)
+            faiss.write_index(index, str(seg_path / "index.faiss"))
+            
+            # --- Save Vectors ---
+            vectors_file = seg_path / "vectors.npy"
+            if vectors_file.exists():
+                existing = np.load(vectors_file)
+                updated_vectors = np.vstack([existing, vectors_to_add])
+            else:
+                updated_vectors = vectors_to_add
+            np.save(vectors_file, updated_vectors)
+            
+            # --- Bulk Load & Update Payloads ---
+            payloads_file = seg_path / "payloads.json"
+            existing_payloads = load_data(payloads_file)
+            if existing_payloads and "ndb_data" in existing_payloads and "ndb_key" in existing_payloads:
+                decrypted_bytes = crypto_manager.decrypt_data(existing_payloads)
+                decrypted_str = decrypted_bytes.decode(AuthenticationConfig.ENCODING)
+                existing_payloads = json.loads(decrypted_str)
+                
+            start_vector_id = int(index.ntotal - len(keys_to_add))
+            
+            for i, (key, payload) in enumerate(zip(keys_to_add, payloads_to_add)):
+                vector_id = start_vector_id + i
+                existing_payloads[str(vector_id)] = payload
+                
+                # Update ID Map
+                id_map[key] = {"segment_id": segment_id, "vector_id": vector_id}
+                
+            # Save Payloads (Encrypted)
+            payload_bytes = save_data(existing_payloads, return_bytes=True)
+            encrypted_payloads = crypto_manager.encrypt_data(payload_bytes)
+            save_data(encrypted_payloads, payloads_file)
+            
+            # Save ID Map
+            save_data(id_map, self.segment_metadata_path)
+            
+            # Update segment map
+            segment_map = load_data(self.segment_map_path)
+            if segment_name not in segment_map:
+                segment_map[segment_name] = {"segment_ids": [segment_id]}
+            elif segment_id not in segment_map[segment_name]["segment_ids"]:
+                 segment_map[segment_name]["segment_ids"].append(segment_id)
+            save_data(segment_map, self.segment_map_path)
+            
+            return {
+                "success": True, 
+                "message": f"Batch inserted {len(keys_to_add)} items", 
+                "inserted": len(keys_to_add),
+                "skipped": len(skipped_keys)
+            }
+            
+        except Exception as e:
+            return {"success": False, "message": f"Batch load failed: {str(e)}"}
 
     def search_vector(self, segment_name:str, query_vec:np.ndarray, top_k: Optional[int] = None, set_columns: Optional[List[str]] = None) ->Dict[str, Any]:
         """

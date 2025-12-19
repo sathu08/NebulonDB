@@ -46,7 +46,6 @@ def get_current_user(credentials: HTTPBasicCredentials = Depends(http_basic_secu
         locker = get_user_db_locker()
         users = load_data(path_loc=locker.read_file(file_path="users.json", as_text=False),is_bytes_input=True)
         user_record = users.get(credentials.username)
-
         if not user_record:
             logger.warning("Invalid credentials")
             return AuthenticationResult(username=credentials.username, is_authenticated=False, message="Invalid username")
@@ -67,7 +66,7 @@ def get_current_user(credentials: HTTPBasicCredentials = Depends(http_basic_secu
 
     except Exception as e:
         logger.error(f"Unexpected authentication error: {e}")
-        return StandardErrorResponse(
+        return AuthenticationResult(
             username=credentials.username if credentials else None,
             is_authenticated=False,
             message="Authentication service error"
@@ -80,10 +79,10 @@ def create_user(username: str, password: str, user_role: str = UserRole.USER.val
         logger.info(f"Attempting to create user: {username} with role: {user_role}")
 
         if not username or not username.strip():
-            return StandardErrorResponse(success=False, message="Username cannot be empty")
+            return StandardErrorResponse(success=False, message="Username cannot be empty").model_dump()
 
         if not password or len(password) < 6:
-            return StandardErrorResponse(success=False, message="Password must be at least 6 characters long")
+            return StandardErrorResponse(success=False, message="Password must be at least 6 characters long").model_dump()
 
         validated_role = _validate_user_role(user_role)
         hashed_password = hash_password(password)
@@ -105,7 +104,7 @@ def create_user(username: str, password: str, user_role: str = UserRole.USER.val
 
         if username in users:
             logger.warning(f"User creation failed - user already exists: {username}")
-            return StandardErrorResponse(success=False, message="User already exists")
+            return StandardErrorResponse(success=False, message="User already exists").model_dump()
 
         users[username] = {
             "password": hashed_password,
@@ -118,6 +117,7 @@ def create_user(username: str, password: str, user_role: str = UserRole.USER.val
 
         logger.info(f"User created successfully: {username} with role: {validated_role.value}")
         return {
+            "success":True,
             "message": f"User '{username}' registered successfully with role '{validated_role.value}'",
             "username": username,
             "role": validated_role.value
@@ -125,7 +125,7 @@ def create_user(username: str, password: str, user_role: str = UserRole.USER.val
 
     except Exception as e:
         logger.error(f"Error creating user: {e}")
-        return StandardErrorResponse(success=False, message="Error creating user")
+        return StandardErrorResponse(success=False, message="Error creating user").model_dump()
 
 
 def delete_user(username: str) -> Dict[str, str]:
@@ -148,7 +148,7 @@ def delete_user(username: str) -> Dict[str, str]:
 
     except Exception as e:
         logger.error(f"Error deleting user: {e}")
-        return StandardErrorResponse(success=False, message="Error deleting user")
+        return StandardErrorResponse(success=False, message="Error deleting user").model_dump()
 
 
 def get_all_users() -> Dict[str, Any]:
@@ -169,10 +169,11 @@ def get_all_users() -> Dict[str, Any]:
         logger.info(f"Retrieved {len(safe_users)} users")
 
         return {
+            "success":True,
             "users": safe_users,
             "total_count": len(safe_users)
         }
 
     except Exception as e:
         logger.error(f"Error retrieving users: {e}")
-        return StandardErrorResponse(success=False, message="Error retrieving user list")
+        return StandardErrorResponse(success=False, message="Error retrieving user list").model_dump()

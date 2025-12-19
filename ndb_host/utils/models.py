@@ -81,6 +81,7 @@ class SegmentQueryRequest(BaseModel):
     set_columns: Optional[Union[str, List[str]]] = None
     search_item: Optional[str] = None
     top_matches: Optional[str] = None
+    is_precomputed: Optional[bool] = False
 
     @field_validator("segment_dataset", mode="before")
     def ensure_dict_or_list(cls, v):

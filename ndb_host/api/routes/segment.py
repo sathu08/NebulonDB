@@ -1,6 +1,7 @@
 from fastapi import APIRouter, Depends
 from pathlib import Path
 import polars as pl
+import numpy as np
 
 from db.index_manager import SegmentManager
 from ndb_host.db.ndb_settings import NDBConfig
@@ -166,7 +167,7 @@ async def load_segment(
         segment_dataset = segment_query.segment_dataset
         set_columns = segment_query.set_columns if segment_query.set_columns else ColumnPick.FIRST_COLUMN
 
-        segment_manager = SegmentManager(corpus_name=corpus_name)
+
         
         # Check authentication first
         if not current_user.is_authenticated:
@@ -190,6 +191,8 @@ async def load_segment(
                 corpus_name=corpus_name,
                 message="Permission denied"
             )
+        
+        segment_manager = SegmentManager(corpus_name=corpus_name)
         
         # Validate the Dataset 
         if segment_dataset is None:
@@ -227,6 +230,8 @@ async def load_segment(
             return StandardResponse(success=False, message="Invalid or empty dataset")
 
 
+        is_precomputed = segment_query.is_precomputed
+
         # Process each column
         total_inserted = 0
         total_skipped = 0
@@ -235,42 +240,74 @@ async def load_segment(
         if not columns["success"]:
             return columns["message"]
         for col in columns.get("columns",""):
+            # If standard flow, check if column exists (polars checks this but safe to double check)
             if col not in segment_dataset.columns:
-                errors.append(f"Column '{col}' not found in dataset")
-                continue
-            texts = segment_dataset[col].fill_null("").to_list()
-            if not any(texts):
-                errors.append(f"Column '{col}' not found in dataset")
-                continue
+                 errors.append(f"Column '{col}' not found in dataset")
+                 continue
+                 
             try:
-                embeddings = SemanticEmbeddingModel().encode(texts).tolist()
-
-                # Insert row-by-row into SegmentManager
-                for idx, (txt, vec) in enumerate(zip(texts, embeddings)):
-                    if not txt.strip():  # Skip empty texts
+                if is_precomputed:
+                     # Treat column data as lists of floats (vectors)
+                     # Convert to numpy array of vectors
+                     vectors_list = segment_dataset[col].to_list()
+                     if not vectors_list:
+                         logger.warning(f"No vectors found in column '{col}'")
+                         continue
+                         
+                     embeddings = np.array(vectors_list, dtype="float32")
+                     # Since it's precomputed, we don't have text. Use empty string or placeholder.
+                     texts = [""] * len(embeddings)
+                     
+                     # No filter for empty text in precomputed mode
+                     valid_data_with_idx = [(i, t, v) for i, (t, v) in enumerate(zip(texts, embeddings))]
+                     
+                else:
+                    # Standard Flow: Text -> Model -> Vector
+                    texts = segment_dataset[col].fill_null("").to_list()
+                    if not any(texts):
+                        errors.append(f"Column '{col}' has no valid text")
                         continue
+                        
+                    # Batch Encode
+                    embeddings = SemanticEmbeddingModel().encode(
+                        texts, 
+                        convert_to_numpy=True,
+                        normalize_embeddings=True 
+                    ).astype("float32")
+
+                    # Filter valid entries (non-empty texts)
+                    valid_data_with_idx = [(i, t, v) for i, (t, v) in enumerate(zip(texts, embeddings)) if t.strip()]
+                
+                if not valid_data_with_idx:
+                     logger.warning(f"No valid data found in column '{col}'")
+                     continue
+                
+                indices, valid_texts, valid_vectors = zip(*valid_data_with_idx)
+                valid_vectors = np.array(valid_vectors)
+                
+                # Batch generate ID keys
+                keys = segment_manager.get_next_vector_ids(col, len(valid_texts))
+                
+                # Batch create payloads
+                payloads = [{col: txt, "row_index": original_idx} for txt, original_idx in zip(valid_texts, indices)]
+                
+                logger.info(f"Batch loading {len(keys)} items for column '{col}'")
+                
+                # Batch Insert
+                result = segment_manager.load_segment_batch(
+                    segment_name=segment_name,
+                    keys=keys,
+                    vectors=valid_vectors,
+                    payloads=payloads
+                )
+                
+                logger.info(f"Batch result for '{col}': {result}")
                     
-                    key = segment_manager.get_next_vector_id(column_name=col)
-                    vector = vec
-                    payload = {col: txt, "row_index": idx}
-                    logger.info(f"Inserting vector for key '{key}'")
-                    result = segment_manager.load_segment(
-                        segment_name=segment_name,
-                        key=key,  
-                        vector=vector,
-                        payload=payload
-                    )
-                    logger.info(f"Result for key '{key}': {result}")
-                    
-                    if result["success"]:
-                        total_inserted += 1
-                    elif not result["success"]:
-                        errors.append(f"Failed to insert {key}: {result['message']}")
-                        break
-                    else:
-                        total_skipped += 1
-                        if "Duplicate entry" not in result["message"]:
-                            errors.append(f"Failed to insert {key}: {result['message']}")
+                if result["success"]:
+                    total_inserted += result.get("inserted", 0)
+                    total_skipped += result.get("skipped", 0)
+                else:
+                    errors.append(f"Failed to process column '{col}': {result['message']}")
                             
             except Exception as e:
                 errors.append(f"Failed to process column '{col}': {str(e)}")

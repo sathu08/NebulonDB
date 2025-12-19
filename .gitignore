@@ -4,6 +4,10 @@
 
 VectorDatabase/
 
+# Python files
+benchmark_api.py
+benchmark.py
+
 # Other ignored files/folders
 *.log
 .env
