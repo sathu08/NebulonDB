@@ -12,9 +12,7 @@ from services.user_service import get_current_user
 router = APIRouter()
 config_settings = NDBConfig()
 
-# === Database Path Configuration ===
-VECTOR_DB_PATH = Path(config_settings.VECTOR_STORAGE)
-DATABASE_METADATA = Path(config_settings.VECTOR_METADATA)
+# === Corpus Path Configuration ===
 corpus_manager = CorpusManager()
 
 @router.post(
