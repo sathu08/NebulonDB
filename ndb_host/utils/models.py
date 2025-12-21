@@ -3,29 +3,29 @@ from pydantic import BaseModel, Field, field_validator
 from typing import Optional, Dict, Any, Union, List
 from pathlib import Path
 import json
-import base64
-import threading
+from functools import lru_cache
 
 from utils.logger import logger
 
+# === Embedding Model Loader with Caching ===
+@lru_cache(maxsize=1)
+def get_embedding_model(model_name: str):
+    """Load the embedding model from the cache or load it from the disk."""
+    logger.info(f"Loading embedding model: {model_name} (this happens only once per worker)")
+    from sentence_transformers import SentenceTransformer
+    return SentenceTransformer(model_name)
+
+# === Semantic Embedding Model Wrapper ===
 class SemanticEmbeddingModel:
-    _instance = None
-    _lock = threading.Lock()
-
-    def __new__(cls, model_name: str = "all-MiniLM-L6-v2"):
-        with cls._lock:
-            if cls._instance is None:
-                cls._instance = super().__new__(cls)
-                cls._instance._init_model(model_name)
-            return cls._instance
-
-    def _init_model(self, model_name: str):
-        logger.info(f"Loading embedding model: {model_name} (this happens only once)")
-        from sentence_transformers import SentenceTransformer
-        self.model = SentenceTransformer(model_name)
+    """Wrapper for the embedding model."""
+    def __init__(self):
+        from db.ndb_settings import NDBConfig
+        cfg = NDBConfig()
+        self.model_name = cfg.NEBULONDB_EMBEDDING_MODEL
 
     def encode(self, texts, **kwargs):
-        return self.model.encode(texts, **kwargs)
+        model = get_embedding_model(self.model_name)
+        return model.encode(texts, **kwargs)
         
 # === Constants and Configuration ===
 class UserRole(str, Enum):

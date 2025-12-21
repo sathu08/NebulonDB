@@ -56,6 +56,7 @@ class NDBConfig:
         self._load_vector_index()
         self._load_segments()
         self._load_server()
+        self._load_llm()
 
     # ------------------------------
     #  Private Utility Methods 
@@ -129,6 +130,11 @@ class NDBConfig:
         self.KEYRING_ENABLED = str(self._config['environment']['NEBULONDB_KEYRING_ENABLED']).lower() in ['true', '1', 'yes']
         self.KEYRING_SERVICE = self._config['environment']['NEBULONDB_KEYRING_SERVICE']
         self.NEBULONDB_USER = self._config['environment']['NEBULONDB_USER']
+    
+    def _load_llm(self):
+        """Load LLM-specific configuration from the config file."""
+        
+        self.NEBULONDB_EMBEDDING_MODEL = self._config['llm']['NEBULONDB_EMBEDDING_MODEL']
     
     def _load_corpus(self):
         """Load corpus-specific configuration from the config file."""
