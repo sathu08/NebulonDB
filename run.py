@@ -7,7 +7,7 @@ from getpass import getpass
 from pathlib import Path
 
 from ndb_host.db.ndb_settings import NDBConfig, NDBSafeLocker
-from ndb_host.utils.models import save_data
+from ndb_host.utils.models import load_data, save_data
 from ndb_host.utils.bootstrap import NebulonInitializer
 
 
@@ -163,6 +163,9 @@ def create_user(cfg: NDBConfig):
         NDBSafeLocker(str(secrets_dir))
         print("Credentials secured in NDB format.")
 
+        # === Initialize metadata file ===
+        meta_data = load_data(Path(cfg.VECTOR_METADATA))
+        save_data(data=meta_data, path_loc=str(cfg.VECTOR_METADATA))
 
     except Exception as e:
         print(f"Failed to create user: {e}")

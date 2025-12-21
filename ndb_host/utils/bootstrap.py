@@ -3,6 +3,7 @@ from pathlib import Path
 import shutil
 
 from db.ndb_settings import NDBConfig
+from ndb_host.utils.models import load_data, save_data
 from db.index_manager import CorpusManager
 from utils.logger import logger
 
@@ -25,13 +26,17 @@ class NebulonInitializer:
             corpus_name (str): Name of the default corpus to verify or create.
         """
         corpus_path = Path(self.config.VECTOR_STORAGE) / corpus_name
+        metadata = load_data(self.config.VECTOR_METADATA)
 
         if corpus_path.exists():
             return
 
+        if metadata.get(corpus_name):
+            return
+
         try:
             logger.info(f"Creating default corpus '{corpus_name}'...")
-            self.manager.create_corpus(corpus_name, "nebulon-supernova", status="system")
+            self.manager.create_corpus(corpus_name, self.config.NEBULONDB_USER, status="system")
             logger.info(f"Corpus '{corpus_name}' created successfully.")
         except Exception as e:
             logger.error(f"Failed to create corpus '{corpus_name}': {e}")

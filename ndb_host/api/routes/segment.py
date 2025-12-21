@@ -367,6 +367,15 @@ async def search_segment(
                 message=current_user.message
             )
 
+        segment_list = segment_manager.get_segment_list()
+        if not segment_name in segment_list:
+            return StandardResponse(
+                success=False,
+                corpus_name=corpus_name,
+                segment_name=segment_name,
+                message=f"Segment '{segment_name}' does not exist in corpus '{corpus_name}'"
+            )
+        
         if not search_item or not search_item.strip():
             return StandardResponse(
                 success=False,
