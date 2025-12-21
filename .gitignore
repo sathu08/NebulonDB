@@ -1,7 +1,8 @@
 # Ignore the directory
 **/__pycache__/
 **/**.ndb
-**/ndb_info.json
+
+VectorDatabase
 
 # Python files
 benchmark_api.py
