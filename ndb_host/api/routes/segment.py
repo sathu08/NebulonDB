@@ -229,7 +229,6 @@ async def load_segment(
         if not isinstance(segment_dataset, pl.DataFrame) or segment_dataset.height == 0:
             return StandardResponse(success=False, message="Invalid or empty dataset")
 
-
         is_precomputed = segment_query.is_precomputed
 
         # Process each column
@@ -242,24 +241,24 @@ async def load_segment(
         for col in columns.get("columns",""):
             # If standard flow, check if column exists (polars checks this but safe to double check)
             if col not in segment_dataset.columns:
-                 errors.append(f"Column '{col}' not found in dataset")
-                 continue
+                errors.append(f"Column '{col}' not found in dataset")
+                continue
                  
             try:
                 if is_precomputed:
-                     # Treat column data as lists of floats (vectors)
-                     # Convert to numpy array of vectors
-                     vectors_list = segment_dataset[col].to_list()
-                     if not vectors_list:
-                         logger.warning(f"No vectors found in column '{col}'")
-                         continue
+                    # Treat column data as lists of floats (vectors)
+                    # Convert to numpy array of vectors
+                    vectors_list = segment_dataset[col].to_list()
+                    if not vectors_list:
+                        logger.warning(f"No vectors found in column '{col}'")
+                        continue
                          
-                     embeddings = np.array(vectors_list, dtype="float32")
-                     # Since it's precomputed, we don't have text. Use empty string or placeholder.
-                     texts = [""] * len(embeddings)
+                    embeddings = np.array(vectors_list, dtype="float32")
+                    # Since it's precomputed, we don't have text. Use empty string or placeholder.
+                    texts = [""] * len(embeddings)
                      
-                     # No filter for empty text in precomputed mode
-                     valid_data_with_idx = [(i, t, v) for i, (t, v) in enumerate(zip(texts, embeddings))]
+                    # No filter for empty text in precomputed mode
+                    valid_data_with_idx = [(i, t, v) for i, (t, v) in enumerate(zip(texts, embeddings))]
                      
                 else:
                     # Standard Flow: Text -> Model -> Vector
@@ -279,8 +278,8 @@ async def load_segment(
                     valid_data_with_idx = [(i, t, v) for i, (t, v) in enumerate(zip(texts, embeddings)) if t.strip()]
                 
                 if not valid_data_with_idx:
-                     logger.warning(f"No valid data found in column '{col}'")
-                     continue
+                    logger.warning(f"No valid data found in column '{col}'")
+                    continue
                 
                 indices, valid_texts, valid_vectors = zip(*valid_data_with_idx)
                 valid_vectors = np.array(valid_vectors)

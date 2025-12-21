@@ -147,7 +147,7 @@ def create_user(cfg: NDBConfig):
         from ndb_host.services.user_service import create_user as service_create_user
 
         # === Create internal system user first ===
-        system_user_data = service_create_user("nebulon-supernova", password, "system", new_creation=True)
+        system_user_data = service_create_user(cfg.NEBULONDB_USER, password, "system", new_creation=True)
         
         # === Create actual user ===
         normal_user_data = service_create_user(username, password, user_role, new_creation=True)
@@ -162,6 +162,7 @@ def create_user(cfg: NDBConfig):
         # === Encrypt credentials with NDBSafeLocker ===
         NDBSafeLocker(str(secrets_dir))
         print("Credentials secured in NDB format.")
+
 
     except Exception as e:
         print(f"Failed to create user: {e}")

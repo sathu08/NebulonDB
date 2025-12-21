@@ -128,7 +128,7 @@ class NDBConfig:
         self.ENVIRONMENT_MASTER_KEY = self._config['environment']['NEBULONDB_MASTER_KEY']
         self.KEYRING_ENABLED = str(self._config['environment']['NEBULONDB_KEYRING_ENABLED']).lower() in ['true', '1', 'yes']
         self.KEYRING_SERVICE = self._config['environment']['NEBULONDB_KEYRING_SERVICE']
-        self.KEYRING_USER = self._config['environment']['NEBULONDB_KEYRING_USER']
+        self.NEBULONDB_USER = self._config['environment']['NEBULONDB_USER']
     
     def _load_corpus(self):
         """Load corpus-specific configuration from the config file."""
@@ -226,7 +226,7 @@ class NDBCryptoManager:
                 import keyring
 
                 stored_key = keyring.get_password(
-                    self.config.KEYRING_SERVICE, self.config.KEYRING_USER
+                    self.config.KEYRING_SERVICE, self.config.NEBULONDB_USER
                 )
                 if stored_key:
                     return stored_key.encode()
@@ -234,7 +234,7 @@ class NDBCryptoManager:
                 # === If not found, generate and store a new one ===
                 new_key = Fernet.generate_key().decode()
                 keyring.set_password(
-                    self.config.KEYRING_SERVICE, self.config.KEYRING_USER, new_key
+                    self.config.KEYRING_SERVICE, self.config.NEBULONDB_USER, new_key
                 )
                 return new_key.encode()
 
