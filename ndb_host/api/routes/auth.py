@@ -1,9 +1,21 @@
-from fastapi import Depends, HTTPException, status
-from fastapi import APIRouter
+from fastapi import Depends
+from fastapi import APIRouter, HTTPException, status
 
 from services.user_service import create_user, get_current_user
+
 from utils.models import StandardResponse, UserRegistrationRequest, UserAuthenticationResponse, AuthenticationResult
-from utils.logger import logger
+from utils.logger import NebulonDBLogger
+
+
+# ==========================================================
+#        Initialize Logger
+# ==========================================================
+
+logger = NebulonDBLogger().get_logger("access")
+
+# ==========================================================
+#        API Router for Authentication
+# ==========================================================
 
 router = APIRouter()
 

@@ -1,25 +1,37 @@
 from fastapi import Depends
 from fastapi.security import HTTPBasic, HTTPBasicCredentials
 
-from typing import Dict, Any
-from datetime import datetime, timezone
-from pathlib import Path
 from functools import lru_cache
 
-from utils.models import AuthenticationResult, UserRole, StandardErrorResponse, load_data, save_data
-from utils.logger import logger
-from core.security import verify_password, hash_password
-from db.ndb_settings import NDBConfig, NDBSafeLocker
+from pathlib import Path
+from typing import Dict, Any
+from datetime import datetime, timezone
 
-# ------------------------------
-# Security and Config Initialization 
-# ------------------------------
+from utils.models import load_data, save_data
+from core.security import verify_password, hash_password
+
+from utils.models import AuthenticationResult, UserRole, StandardErrorResponse
+from db.ndb_settings import NDBConfig, NDBSafeLocker
+from utils.logger import NebulonDBLogger
+
+
+# ==========================================================
+#        Initialize Logger
+# ==========================================================
+
+logger = NebulonDBLogger().get_logger()
+
+# ==========================================================
+#        Security and Config Initialization 
+# ==========================================================
+
 http_basic_security = HTTPBasic()
 config_settings = NDBConfig()
 
-# ------------------------------
-# Encrypted User Database 
-# ------------------------------
+# ==========================================================
+#        Encrypted User Database 
+# ==========================================================
+
 @lru_cache(maxsize=1)
 def get_user_db_locker() -> NDBSafeLocker:
     """
@@ -38,7 +50,9 @@ def _validate_user_role(user_role: str) -> UserRole:
         return None
 
 
-# === Authentication Functions ===
+# ==========================================================
+#        Authentication Functions 
+# ==========================================================
 def get_current_user(credentials: HTTPBasicCredentials = Depends(http_basic_security)) -> AuthenticationResult:
     try:
         logger.debug(f"Attempting authentication for user: {credentials.username}")
@@ -73,7 +87,10 @@ def get_current_user(credentials: HTTPBasicCredentials = Depends(http_basic_secu
         )
 
 
-# === User Management ===
+# ==========================================================
+#        User Management 
+# ==========================================================
+
 def create_user(username: str, password: str, user_role: str = UserRole.USER.value, new_creation: bool = False) -> Dict[str, str]:
     try:
         logger.info(f"Attempting to create user: {username} with role: {user_role}")
@@ -87,7 +104,7 @@ def create_user(username: str, password: str, user_role: str = UserRole.USER.val
         validated_role = _validate_user_role(user_role)
         hashed_password = hash_password(password)
 
-        # For first-time creation (no existing DB)
+        # === For first-time creation (no existing DB) ===
         if new_creation:
             users = {}
             users[username] = {
@@ -99,7 +116,7 @@ def create_user(username: str, password: str, user_role: str = UserRole.USER.val
 
         locker = get_user_db_locker()
 
-        # Load existing users
+        # === Load existing users ===
         users = load_data(path_loc=locker.read_file(file_path="users.json", as_text=False),is_bytes_input=True)
 
         if username in users:
@@ -128,6 +145,10 @@ def create_user(username: str, password: str, user_role: str = UserRole.USER.val
         return StandardErrorResponse(success=False, message="Error creating user").model_dump()
 
 
+# ==========================================================
+#        User Deletion
+# ==========================================================
+
 def delete_user(username: str) -> Dict[str, str]:
     try:
         logger.info(f"Attempting to delete user: {username}")
@@ -150,6 +171,10 @@ def delete_user(username: str) -> Dict[str, str]:
         logger.error(f"Error deleting user: {e}")
         return StandardErrorResponse(success=False, message="Error deleting user").model_dump()
 
+
+# ==========================================================
+#        User Retrieval
+# ==========================================================
 
 def get_all_users() -> Dict[str, Any]:
     try:

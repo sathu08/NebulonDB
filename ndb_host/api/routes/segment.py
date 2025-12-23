@@ -1,20 +1,32 @@
-from fastapi import APIRouter, Depends
-from pathlib import Path
-import polars as pl
+from fastapi import  Depends
+from fastapi import APIRouter
+
 import numpy as np
+import polars as pl
+from pathlib import Path
+
+from core.permissions import check_user_permission
+from services.user_service import get_current_user
 
 from db.index_manager import SegmentManager
 from ndb_host.db.ndb_settings import NDBConfig
-from utils.logger import logger
-from core.permissions import check_user_permission
-from services.user_service import get_current_user
 from utils.models import (SegmentQueryRequest, AuthenticationResult, ColumnPick,
                           StandardResponse, UserRole, SemanticEmbeddingModel, CorpusQueryRequest)
+from utils.logger import NebulonDBLogger
+
+
+# ==========================================================
+#        Initialize Logger
+# ==========================================================
+
+logger = NebulonDBLogger().get_logger("audit")
+
+# ==========================================================
+#        API Router for Segment Management
+# ==========================================================
 
 router = APIRouter()
 config_settings = NDBConfig()
-
-# === Database Path Configuration ===
 VECTOR_DB_PATH = Path(config_settings.VECTOR_STORAGE)
 DATABASE_METADATA = Path(config_settings.VECTOR_METADATA)
 
@@ -301,7 +313,6 @@ async def load_segment(
                 )
                 
                 logger.info(f"Batch result for '{col}': {result}")
-                    
                 if result["success"]:
                     total_inserted += result.get("inserted", 0)
                     total_skipped += result.get("skipped", 0)

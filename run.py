@@ -1,18 +1,25 @@
 import sys
 import os
 import subprocess
+import socket
+
 import platform
 import time
-from getpass import getpass
-from pathlib import Path
+import pyfiglet
 
-from ndb_host.db.ndb_settings import NDBConfig, NDBSafeLocker
-from ndb_host.utils.models import load_data, save_data
+from getpass import getpass
+from colorama import init
+
+from pathlib import Path
+from colorama import Fore, Style
+
+from ndb_host.db.ndb_settings import NDBConfig
 from ndb_host.utils.bootstrap import NebulonInitializer
+from ndb_host.utils.logger import NebulonDBLogger
 
 
 # ==========================================================
-# NebulonDB Runner
+#         NebulonDB Runner
 # ==========================================================
 
 def _load_config() -> NDBConfig:
@@ -25,7 +32,34 @@ def _load_config() -> NDBConfig:
     return NDBConfig()
 
 # ==========================================================
-#  Setup NebulonDB Paths
+#        Initialize Colorama
+# ==========================================================
+
+init(autoreset=True)
+
+# ==========================================================
+#        Initialize Logger
+# ==========================================================
+
+cfg = _load_config()
+log_dir = Path(cfg.NEBULONDB_LOG)
+logger_manager = NebulonDBLogger()
+logger_manager.configure_file_logging(log_dir=str(log_dir))
+logger = logger_manager.get_logger()
+
+# ==========================================================
+#       Helper Functions
+# ==========================================================
+
+def _is_server_running(host: str, port: int) -> bool:
+    """Check if the server is running on the specified host and port."""
+    
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+        sock.settimeout(1)
+        return sock.connect_ex((host, port)) == 0
+
+# ==========================================================
+#         Setup NebulonDB Paths
 # ==========================================================
 
 def _setup_nebulondb_paths(cfg: NDBConfig):
@@ -43,7 +77,7 @@ def _setup_nebulondb_paths(cfg: NDBConfig):
         sys.path.append(str(neb_home))  
 
 # ==========================================================
-#  Start Server Command
+#         Start Server Command
 # ==========================================================
 
 def start_server(cfg: NDBConfig):
@@ -53,13 +87,20 @@ def start_server(cfg: NDBConfig):
     
     # === Ensure user credentials exist ===
     if not secrets_path.exists():
-        print("Please create user credentials first using:")
-        print("python run.py --create-user")
+        logger.info("Please create user credentials first using:")
+        logger.info("python run.py --create-user")
         return
     
-    # === Ensure default corpus is present ===
-    NebulonInitializer().ensure_default_corpus()
-
+    # === Check if server is already running ===
+    if _is_server_running(cfg.HOST, cfg.PORT):
+        logger.info("Server is already running.")
+        return
+    
+    # === Initialize log directories ===
+    initializer = NebulonInitializer()
+    initializer.initialize()
+    
+    # === Start server ===
     module_path = "ndb_host.main"
     cmd = [
         sys.executable, "-m", "gunicorn",
@@ -77,17 +118,26 @@ def start_server(cfg: NDBConfig):
     if cfg.LOG_LEVEL: cmd += ["--log-level", str(cfg.LOG_LEVEL)]
 
     print(f"Starting {cfg.APP_NAME} on {cfg.HOST}:{cfg.PORT} with {cfg.WORKERS} workers...")
+    
+    print("\n")
+    print(Fore.CYAN + Style.BRIGHT + pyfiglet.figlet_format((cfg.APP_NAME).upper(), font="smslant"))
+
     print("Command:", " ".join(cmd))
     subprocess.run(cmd)
 
 # ==========================================================
-#  Stop Server Command
+#         Stop Server Command
 # ==========================================================
 
 def stop_server(cfg: NDBConfig):
     """Stop the running server."""
 
-    print(f"Stopping {cfg.APP_NAME}...")
+    # === Check if server is running ===
+    if not _is_server_running(cfg.HOST, cfg.PORT):
+        logger.info("Server is not running.")
+        return
+
+    logger.info(f"Stopping {cfg.APP_NAME}...")
     system = platform.system()
 
     try:
@@ -95,24 +145,28 @@ def stop_server(cfg: NDBConfig):
             subprocess.run(["taskkill", "/F", "/IM", "python.exe"], stdout=subprocess.DEVNULL)
         else:
             subprocess.run(["pkill", "-f", "gunicorn.*main:app"], stdout=subprocess.DEVNULL)
-        print("Server stopped.")
+        logger.info("Server stopped.")
     except Exception as e:
-        print(f"Failed to stop server: {e}")
+        logger.exception(f"Failed to stop server: {e}")
 
 # ==========================================================
-#  Restart Server Command
+#         Restart Server Command
 # ==========================================================
 
 def restart_server(cfg: NDBConfig):
     """Restart the server."""
 
+    # === Check if server is running ===
+    if not _is_server_running(cfg.HOST, cfg.PORT):
+        logger.info("Server is not running.")
+        return
+    
     stop_server(cfg)
     time.sleep(2)
     start_server(cfg)
 
-
 # ==========================================================
-#  Create User Command
+#         Create User Command
 # ==========================================================
 
 def create_user(cfg: NDBConfig):
@@ -121,7 +175,7 @@ def create_user(cfg: NDBConfig):
     secrets_path = Path(cfg.NEBULONDB_SECRETS)
     
     if secrets_path.exists():
-        print("Please start the server and create the user through it")
+        logger.info("Please start the server and create the user through it")
         return
     
     secrets_dir = Path(cfg.VECTOR_STORAGE) / secrets_path.stem
@@ -131,7 +185,7 @@ def create_user(cfg: NDBConfig):
     if creds_path.exists():
         choice = input("User credentials already exist. Overwrite? (y/n): ").strip().lower()
         if choice != "y":
-            print("User creation cancelled.")
+            logger.info("User creation cancelled.")
             return
 
     username = input("Enter username: ").strip()
@@ -140,48 +194,24 @@ def create_user(cfg: NDBConfig):
     user_role = input("Enter role (super_user/admin_user/user) [default=user]: ").strip() or "user"
 
     if password != confirm:
-        print("Passwords do not match. Try again.")
+        logger.info("Passwords do not match. Try again.")
         return
 
-    try:
-        from ndb_host.services.user_service import create_user as service_create_user
-
-        # === Create internal system user first ===
-        system_user_data = service_create_user(cfg.NEBULONDB_USER, password, "system", new_creation=True)
-        
-        # === Create actual user ===
-        normal_user_data = service_create_user(username, password, user_role, new_creation=True)
-
-        # === Merge both user records into one dictionary ===
-        combined_users = {**system_user_data, **normal_user_data}
-
-        # === Save user database ===
-        save_data(data=combined_users, path_loc=str(creds_path))
-        print(f"User created successfully and saved at: {creds_path}")
-
-        # === Encrypt credentials with NDBSafeLocker ===
-        NDBSafeLocker(str(secrets_dir))
-        print("Credentials secured in NDB format.")
-
-        # === Initialize metadata file ===
-        meta_data = load_data(Path(cfg.VECTOR_METADATA))
-        save_data(data=meta_data, path_loc=str(cfg.VECTOR_METADATA))
-
-    except Exception as e:
-        print(f"Failed to create user: {e}")
-
+    initializer = NebulonInitializer()
+    initializer.bootstrap(
+        username=username, password=password, creds_path=creds_path, 
+        secrets_dir=secrets_dir, user_role=user_role)
 
 # ==========================================================
-# Main Entry Point
+#         Main Entry Point
 # ==========================================================
 
 def main():
     if len(sys.argv) < 2:
-        print("Usage: python run.py {start|stop|restart|--create-user}")
+        logger.info("Usage: python run.py {start|stop|restart|--create-user}")
         sys.exit(1)
 
     command = sys.argv[1].lower()
-    cfg = _load_config()
     _setup_nebulondb_paths(cfg)
 
     if command == "start":
@@ -193,7 +223,7 @@ def main():
     elif command == "--create-user":
         create_user(cfg)
     else:
-        print("Invalid command. Usage: python run.py {start|stop|restart|--create-user}")
+        logger.error("Invalid command. Usage: python run.py {start|stop|restart|--create-user}")
         sys.exit(1)
 
 

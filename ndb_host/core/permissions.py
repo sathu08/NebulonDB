@@ -1,6 +1,17 @@
 from utils.models import AuthenticationResult, UserRole
-from utils.logger import logger
 
+from utils.logger import NebulonDBLogger
+
+
+# ==========================================================
+#        Initialize Logger
+# ==========================================================
+
+logger = NebulonDBLogger().get_logger()
+
+# ==========================================================
+#        Permissions
+# ==========================================================
 
 def check_user_permission(current_user: AuthenticationResult, required_role: UserRole) -> bool:
     """

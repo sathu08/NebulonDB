@@ -1,18 +1,27 @@
 from fastapi import Depends
 from fastapi import APIRouter
-from pathlib import Path
+
+from core.permissions import check_user_permission
+from services.user_service import get_current_user
 
 from db.index_manager import CorpusManager
 from ndb_host.db.ndb_settings import NDBConfig
 from utils.models import StandardResponse, CorpusQueryRequest, AuthenticationResult, UserRole
-from utils.logger import logger
-from core.permissions import check_user_permission
-from services.user_service import get_current_user
+from utils.logger import NebulonDBLogger
+
+
+# ==========================================================
+#        Initialize Logger
+# ==========================================================
+
+logger = NebulonDBLogger().get_logger("audit")
+
+# ==========================================================
+#        API Router for Corpus Management
+# ==========================================================
 
 router = APIRouter()
 config_settings = NDBConfig()
-
-# === Corpus Path Configuration ===
 corpus_manager = CorpusManager()
 
 @router.post(

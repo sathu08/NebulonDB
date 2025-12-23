@@ -1,28 +1,32 @@
-from datetime import datetime, timezone
 import os
-from typing import List, Dict, Tuple, Any,Optional
-from pathlib import Path
-import shutil
+import json
 import faiss
+import shutil
+
 import numpy as np
 import polars as pl 
-import json
+from pathlib import Path
+
+from datetime import datetime, timezone
+from typing import List, Dict, Tuple, Any,Optional
 
 from utils.models import load_data, save_data
 from utils.models import ColumnPick , AuthenticationConfig
+from utils.constants import NDBCorpusMeta
 from db.ndb_settings import NDBConfig, NDBCryptoManager
+
 
 config_settings = NDBConfig()
 crypto_manager = NDBCryptoManager()
 
+# ==========================================================
+#        CorpusManager
+# ==========================================================
+
 class CorpusManager:
-    """
-    CorpusManager handles validation and retrieval of corpus data and metadata.
-    """
+    """CorpusManager handles validation and retrieval of corpus data and metadata."""
     def __init__(self):
-        """
-        Initialize CorpusManager.
-        """
+        """Initialize CorpusManager."""
         self.vector_storage_path:Path = Path(config_settings.VECTOR_STORAGE)
         self.metadata_path:Path = Path(config_settings.VECTOR_METADATA)
         
@@ -40,7 +44,7 @@ class CorpusManager:
             
         if errors:
             raise FileNotFoundError(" | ".join(errors))
-
+    
     @staticmethod
     def generate_corpus_metadata(corpus_name: str, created_by: str, status:str) -> Dict[str, str]:
         """
@@ -132,7 +136,7 @@ class CorpusManager:
         config_data = config_settings.DEFAULT_CORPUS_CONFIG_DATA
         save_data(data=config_data, path_loc=corpus_path / corpus_config_path)
 
-        # Store the corpus details
+        # === Store the corpus details ===
         created_corpus = load_data(path_loc=self.metadata_path)
         created_corpus[corpus_name] = self.generate_corpus_metadata(
             corpus_name=corpus_name,
@@ -141,7 +145,7 @@ class CorpusManager:
         )
         save_data(data=created_corpus, path_loc=self.metadata_path)
 
-        # Create an segment metadata file
+        # === Create an segment metadata file ===
         segment_metadata_path = corpus_path / Path(config_settings.SEGMENTS_METADATA)
         segment_metadata = load_data(path_loc=segment_metadata_path)
         save_data(data=segment_metadata, path_loc=segment_metadata_path)
@@ -163,12 +167,15 @@ class CorpusManager:
         corpus_info = load_data(path_loc=self.metadata_path)
         del corpus_info[corpus_name]
         save_data(path_loc=self.metadata_path, data=corpus_info)
-      
+
+# ==========================================================
+#        SegmentManager
+# ==========================================================
+
 class SegmentManager:
     """
     SegmentManager handles dynamic creation/loading of FAISS segments,
-    along with vectors, payloads, and ID mapping.
-    """
+    along with vectors, payloads, and ID mapping."""
     
     def __init__(self, corpus_name:str):
         """
@@ -180,14 +187,23 @@ class SegmentManager:
         self.corpus_name: str = corpus_name
         self.metadata_path:Path = Path(config_settings.VECTOR_METADATA)
         self.corpus_path: Path = Path(config_settings.VECTOR_STORAGE) / self.corpus_name
-        self.segment_path: Path = self.corpus_path / config_settings.SEGMENTS_NAME
+        self.segment_path: Path = self.corpus_path / NDBCorpusMeta.SEGMENTS_NAME
         self.segment_metadata_path: Path = self.corpus_path / config_settings.SEGMENTS_METADATA
         self.segment_map_path: Path = self.corpus_path / config_settings.SEGMENT_MAP
         self.corpus_config: Path = self.corpus_path / config_settings.DEFAULT_CORPUS_CONFIG_STRUCTURES
  
         self.config = self._load_config()
+        self._validate_checks()
         self._validate_paths()
-        
+
+    def _validate_checks(self) -> None:
+        """Check that essential paths exist."""
+        errors = []
+        if not self.corpus_name in self.get_segment_list():
+            errors.append(f"Corpus '{self.corpus_name}' not found in metadata.")
+        if errors:
+            return errors
+
     def _validate_paths(self) -> None:
         """Check that essential paths exist."""
         errors = []

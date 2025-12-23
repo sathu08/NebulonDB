@@ -1,15 +1,33 @@
-# Ignore the directory
-**/__pycache__/
-**/**.ndb
+# ===============================
+# File extensions to ignore
+# ===============================
+*.ndb
+*.json
+*.faiss
+*.npy
 
-VectorDatabase
+# ===============================
+# Python cache
+# ===============================
+__pycache__/
+*.pyc
+*.pyo
 
-# Python files
-benchmark_api.py
+# ===============================
+# Test / Dev directories
+# ===============================
+test/
+tests/
+dev/
+
+# ===============================
+# Benchmark scripts
+# ===============================
 benchmark.py
+benchmark_api.py
 
-# Other ignored files/folders
+# ===============================
+# Logs & environment
+# ===============================
 *.log
 .env
-**/**test**
-**/**dev**

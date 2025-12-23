@@ -1,50 +1,120 @@
-from enum import Enum
-from pydantic import BaseModel, Field, field_validator
-from typing import Optional, Dict, Any, Union, List
-from pathlib import Path
 import json
+import threading
+
+from pathlib import Path
 from functools import lru_cache
 
-from utils.logger import logger
+from typing import Optional, Dict, Any, Union, List, Tuple
+from pydantic import BaseModel, Field, field_validator
 
-# === Embedding Model Loader with Caching ===
+from db.ndb_settings import NDBConfig
+from utils.logger import NebulonDBLogger
+from utils.constants import AuthenticationConfig, UserRole, ColumnPick, NDBCorpusMeta
+
+
+# ==========================================================
+#        Initialize Logger
+# ==========================================================
+
+logger = NebulonDBLogger().get_logger()
+
+# ==========================================================
+#        Thread Lock (per worker)
+# ==========================================================
+
+_model_lock = threading.Lock()
+
+# ==========================================================
+#        Embedding Model Loader with Caching
+# ==========================================================
+
+def get_auto_batch_size() -> Tuple[int, str]:
+    """Decide batch size automatically based on system/device."""
+
+    import torch
+    import psutil
+    
+    device = "cuda" if torch.cuda.is_available() else "cpu"
+    if device == "cuda":
+        # GPU memory based logic
+        total_mem = torch.cuda.get_device_properties(0).total_memory / 1e9  # in GB
+        if total_mem > 16:
+            return 128, device
+        elif total_mem > 8:
+            return 64, device
+        else:
+            return 32, device
+    else:
+        # CPU memory based logic
+        ram_gb = psutil.virtual_memory().total / 1e9
+        if ram_gb > 16:
+            return 32, device
+        elif ram_gb > 8:
+            return 16, device
+        else:
+            return 8, device
+
 @lru_cache(maxsize=1)
-def get_embedding_model(model_name: str):
-    """Load the embedding model from the cache or load it from the disk."""
-    logger.info(f"Loading embedding model: {model_name} (this happens only once per worker)")
-    from sentence_transformers import SentenceTransformer
-    return SentenceTransformer(model_name)
+def get_embedding_model(model_repo_id: str):
+    """ Load SentenceTransformer model (only once per worker).Thread-safe + disk-cached."""
 
-# === Semantic Embedding Model Wrapper ===
+    from sentence_transformers import SentenceTransformer
+
+    cfg = NDBConfig()
+    cache_folder = Path(cfg.NEBULONDB_MODEL_CACHE_DIR)
+
+    # === Update LLM config ===
+    
+    with _model_lock:
+        logger.info(
+            f"Loading embedding model: {model_repo_id} "
+            f"(cache_dir={cache_folder}, once per worker)"
+        )
+
+        return SentenceTransformer(
+            model_repo_id,
+            cache_folder=str(cache_folder),
+            device=cfg.NEBULONDB_MODEL_DEVICE            
+        )
+
+# ==========================================================
+#        Ensure Model Exists + Load
+# ==========================================================
+
+def ensure_embedding_model(model_name: str, prefix: str = "sentence-transformers"):
+    """Ensure embedding model exists and load it."""
+
+    repo_id = f"{prefix}/{model_name}"
+    return get_embedding_model(repo_id)
+    
+
+# ==========================================================
+#        Semantic Embedding Model Wrapper
+# ==========================================================
+
 class SemanticEmbeddingModel:
     """Wrapper for the embedding model."""
+
     def __init__(self):
-        from db.ndb_settings import NDBConfig
         cfg = NDBConfig()
         self.model_name = cfg.NEBULONDB_EMBEDDING_MODEL
 
     def encode(self, texts, **kwargs):
-        model = get_embedding_model(self.model_name)
-        return model.encode(texts, **kwargs)
+        """
+        Encode texts using the embedding model.
+        Args:
+            texts (List[str]): List of texts to encode.
+        Returns:
+            List[List[float]]: List of embeddings.
+        """
         
-# === Constants and Configuration ===
-class UserRole(str, Enum):
-    SYSTEM = "system"
-    SUPER_USER = "super_user"
-    ADMIN_USER = "admin_user"
-    USER = "user"
+        model = get_embedding_model(self.model_name)
+        return model.encode(texts, **kwargs,batch_size=16)
 
-class AuthenticationConfig:
-    PASSWORD_HASH_SCHEMES = ["bcrypt"]
-    PASSWORD_HASH_DEPRECATED = "auto"
-    ENCODING = "utf-8"
-    JSON_INDENT = 4
+# ==========================================================
+#        Pydantic Models
+# ==========================================================
 
-class ColumnPick:
-    FIRST_COLUMN = "First Column"
-    ALL = "All"
-    
-# === Pydantic Models ===
 class UserProfile(BaseModel):
     username: str
     role: UserRole
@@ -85,19 +155,19 @@ class SegmentQueryRequest(BaseModel):
 
     @field_validator("segment_dataset", mode="before")
     def ensure_dict_or_list(cls, v):
-        # Case 1: None → keep None
+        # === Case 1: None → keep None ===
         if v is None:
             return None
 
-        # Case 2: Already a dict → keep as-is
+        # === Case 2: Already a dict → keep as-is ===
         if isinstance(v, dict):
             return v
 
-        # Case 3: Already a list of dicts → keep as-is
+        # === Case 3: Already a list of dicts → keep as-is ===
         if isinstance(v, list) and all(isinstance(i, dict) for i in v):
             return v
 
-        # Case 4: Anything else → reject (return None, let route handle)
+        # === Case 4: Anything else → reject (return None, let route handle) ===
         return None
 
     @field_validator("segment_name", mode="before")
@@ -119,11 +189,21 @@ class StandardResponse(BaseModel):
     segment_name: Optional[str] = None
     errors: Optional[List[str]] = None
 
-# === Helper Functions ===
+# ==========================================================
+#        Helper Functions
+# ==========================================================
+
 def load_data(path_loc: Path, default:Dict = None, is_bytes_input: bool = False) -> Dict[str, Dict[str, Any]]:
     """
     Load JSON data from file, returning an empty dict if empty or invalid.
+    Args:
+        path_loc (Path): Path to the JSON file.
+        default (Dict, optional): Default value to return if file is empty or invalid.
+        is_bytes_input (bool, optional): Whether the input is bytes instead of a file path.
+    Returns:
+        Dict[str, Dict[str, Any]]: Loaded JSON data or default.
     """
+
     if default is None:
         default = {}
     try:
@@ -158,7 +238,16 @@ def load_data(path_loc: Path, default:Dict = None, is_bytes_input: bool = False)
         logger.error(f"Error loading data: {e}")
 
 def save_data(data: Dict[str, Any], path_loc: Union[Path, str, None] = None, return_bytes: bool = False) -> Union[Dict[str, Any], bytes]:
-    """Save JSON data to file OR return as bytes for NDB."""
+    """
+    Save JSON data to file OR return as bytes for NDB.
+    Args:
+        data (Dict[str, Any]): Data to save.
+        path_loc (Union[Path, str, None], optional): Path to save the JSON file. Required if return_bytes is False.
+        return_bytes (bool, optional): Whether to return the JSON data as bytes instead of saving to file.
+    Returns:
+        Union[Dict[str, Any], bytes]: Result dict if saved to file, or bytes if return_bytes is True.
+    """
+
     try:
         json_content = json.dumps(
             data,

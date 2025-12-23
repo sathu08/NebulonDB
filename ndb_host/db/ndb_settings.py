@@ -1,20 +1,33 @@
-from configobj import ConfigObj
-from string import Template
 import os
 import shutil
-import zipfile
-import json
-import tempfile
-from cryptography.fernet import Fernet
-from io import BytesIO
 import base64
 
-from utils.models import AuthenticationConfig
-from utils.logger import logger
+import json
+import zipfile
+import tempfile
+
+from io import BytesIO
+from pathlib import Path
+from string import Template
+
+from configobj import ConfigObj
+from cryptography.fernet import Fernet
+from platformdirs import user_cache_dir
+
+from utils.constants import AuthenticationConfig
+from utils.logger import NebulonDBLogger
+
+
+# ==========================================================
+#        Initialize Logger
+# ==========================================================
+
+logger = NebulonDBLogger().get_logger()
 
 # ==========================================================
 #        NDBConfig
 # ==========================================================
+
 class NDBConfig:
     """
     NebulonDB Configuration Loader
@@ -96,10 +109,12 @@ class NDBConfig:
         env_home = os.environ.get('NEBULONDB_HOME')
         updated = False
 
+        # === Update NEBULONDB_HOME ===
         if env_home and self._config['paths']['NEBULONDB_HOME'] != env_home:
             self._config['paths']['NEBULONDB_HOME'] = env_home
             updated = True
 
+        # === Update NEBULONDB_MASTER_KEY ===
         if not self._config['environment']['NEBULONDB_MASTER_KEY']:
             master_key = os.environ.get('NEBULONDB_MASTER_KEY')
             if not master_key:
@@ -119,9 +134,10 @@ class NDBConfig:
         """Load and resolve path variables from the config file."""
 
         self.NEBULONDB_HOME = self._resolve_path(self._config['paths'], self._config['paths']['NEBULONDB_HOME'])  
-        self.VECTOR_STORAGE = self._resolve_path(self._config['paths'], self._config['paths']["VECTOR_STORAGE"])  
-        self.NEBULONDB_SECRETS = self._resolve_path(self._config['paths'], self._config['paths']["NEBULONDB_SECRETS"])  
-        self.VECTOR_METADATA = self._resolve_path(self._config['paths'], self._config['paths']["VECTOR_METADATA"])  
+        self.VECTOR_STORAGE = self._resolve_path(self._config['paths'], self._config['paths']["VECTOR_STORAGE"])
+        self.NEBULONDB_SECRETS = self._resolve_path(self._config['paths'], self._config['paths']["NEBULONDB_SECRETS"])
+        self.VECTOR_METADATA = self._resolve_path(self._config['paths'], self._config['paths']["VECTOR_METADATA"])
+        self.NEBULONDB_LOG = self._resolve_path(self._config['paths'], self._config['paths']["NEBULONDB_LOG"])
     
     def _load_environment(self):
         """Load environment-specific configuration from the config file."""
@@ -133,8 +149,20 @@ class NDBConfig:
     
     def _load_llm(self):
         """Load LLM-specific configuration from the config file."""
-        
+
+        cache_dir = self._config['llm'].get('NEBULONDB_MODEL_CACHE_DIR')
+
+        if not cache_dir:
+            cache_dir = str(Path(user_cache_dir(self.APP_NAME)))
+            self._config['llm']['NEBULONDB_MODEL_CACHE_DIR'] = cache_dir
+            self._config.write()
+
+        self.NEBULONDB_MODEL_CACHE_DIR = cache_dir
         self.NEBULONDB_EMBEDDING_MODEL = self._config['llm']['NEBULONDB_EMBEDDING_MODEL']
+        self.NEBULONDB_BATCH_SIZE = self._config['llm']['NEBULONDB_BATCH_SIZE']
+        self.NEBULONDB_MODEL_DEVICE = self._config['llm']['NEBULONDB_MODEL_DEVICE']
+
+  
     
     def _load_corpus(self):
         """Load corpus-specific configuration from the config file."""
@@ -143,9 +171,8 @@ class NDBConfig:
             self._config['paths'], self._config["corpus"]["DEFAULT_CORPUS_CONFIG_STRUCTURES"]
         )
         self.DEFAULT_CORPUS_STRUCTURES = [
-            item.strip() for item in self._config['corpus']['DEFAULT_CORPUS_STRUCTURES'].split(',')  
+            item.strip() for item in self._config['corpus']['DEFAULT_CORPUS_STRUCTURES'].split(',')
         ]
-        self.SEGMENTS_NAME = self._config["corpus"]["CORPUS_SEGMENT"]  
 
     def _load_vector_index(self):
         """Load vector index-specific configuration from the config file."""
@@ -153,25 +180,25 @@ class NDBConfig:
         self.DEFAULT_CORPUS_CONFIG_DATA = {
             "dimension": int(self._config['vector_index']['dimension']), 
             "index_type": self._config['vector_index']['index_type'], 
-            "metric": self._config['vector_index']['metric'], 
-            "segment_max_size": self._config['vector_index']["segment_max_size"], 
-            "top_matches": self._config['vector_index']["top_matches"], 
+            "metric": self._config['vector_index']['metric'],
+            "segment_max_size": self._config['vector_index']["segment_max_size"],
+            "top_matches": self._config['vector_index']["top_matches"],
             "params": {
-                "nlist": int(self._config['params']['nlist']), 
-                "nprobe": int(self._config['params']['nprobe']), 
-                "m": int(self._config['params']['m']), 
-                "nbits": int(self._config['params']['nbits']), 
-                "hnsw_m": int(self._config['params']['hnsw_m']), 
-                "ef_construction": int(self._config['params']['ef_construction']), 
-                "ef_search": int(self._config['params']['ef_search']), 
+                "nlist": int(self._config['params']['nlist']),
+                "nprobe": int(self._config['params']['nprobe']),
+                "m": int(self._config['params']['m']),
+                "nbits": int(self._config['params']['nbits']),
+                "hnsw_m": int(self._config['params']['hnsw_m']),
+                "ef_construction": int(self._config['params']['ef_construction']),
+                "ef_search": int(self._config['params']['ef_search'])
             }
         }
 
     def _load_segments(self):
         """Load segment-specific configuration from the config file."""
 
-        self.SEGMENTS_METADATA = self._config["segments"]["SEGMENT_METADATA"] 
-        self.SEGMENT_MAP = self._config["segments"]["SEGMENT_MAP"]  
+        self.SEGMENTS_METADATA = self._config["segments"]["SEGMENT_METADATA"]
+        self.SEGMENT_MAP = self._config["segments"]["SEGMENT_MAP"]
     
     def _load_server(self):
         """Load server-specific configuration from the config file."""
@@ -190,6 +217,24 @@ class NDBConfig:
         self.ERROR_LOGFILE = self._config["server"]["ERROR_LOGFILE"]  
         self.LOG_LEVEL = self._config["server"]["LOG_LEVEL"]  
 
+    def update_llm_config(self, device: str, batch_size: int):
+        """Update LLM configuration in the config file."""
+        
+        # === Update values ===
+        update = False
+        
+        # === Update device ===
+        if self._config['llm']['NEBULONDB_MODEL_DEVICE'] != device:
+            self._config['llm']['NEBULONDB_MODEL_DEVICE'] = device
+            update = True
+        
+        # === Update batch size ===
+        if self._config['llm']['NEBULONDB_BATCH_SIZE'] != str(batch_size):
+            self._config['llm']['NEBULONDB_BATCH_SIZE'] = str(batch_size)
+            update = True
+        
+        if update:
+            self._config.write()
 
 # ==========================================================
 #        NDBCryptoManager
@@ -322,7 +367,6 @@ class NDBSafeLocker:
         """Encrypt a folder and save it as an .ndb file."""
 
         if os.path.exists(output_file) and not force:
-            logger.info(f"{output_file} exists. Skipping encryption.")
             return
 
         with tempfile.NamedTemporaryFile(delete=False) as tmp_zip:
@@ -345,7 +389,6 @@ class NDBSafeLocker:
             with open(output_file, 'w', encoding=AuthenticationConfig.ENCODING) as f:
                 json.dump(ndb_content, f, ensure_ascii=False)
 
-            logger.info(f"Folder '{src_folder}' encrypted to '{output_file}'.")
             if delete_source:
                 shutil.rmtree(src_folder)
 
@@ -445,7 +488,6 @@ class NDBSafeLocker:
         with open(self._ndb_path, 'w', encoding=AuthenticationConfig.ENCODING) as f:
             json.dump(ndb_content, f, ensure_ascii=False)
 
-        logger.info(f"NDB saved to '{self._ndb_path}'.")
 
 
     # ------------------------------

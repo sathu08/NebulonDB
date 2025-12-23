@@ -1,9 +1,19 @@
 from passlib.context import CryptContext
 
 from utils.models import AuthenticationConfig
-from utils.logger import logger
+from utils.logger import NebulonDBLogger
 
-# === Setup Security Context ===
+
+# ==========================================================
+#        Initialize Logger
+# ==========================================================
+
+logger = NebulonDBLogger().get_logger()
+
+# ==========================================================
+#        Security Context
+# ==========================================================
+
 password_context = CryptContext(
     schemes=AuthenticationConfig.PASSWORD_HASH_SCHEMES,
     deprecated=AuthenticationConfig.PASSWORD_HASH_DEPRECATED
