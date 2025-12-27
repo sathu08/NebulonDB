@@ -16,7 +16,16 @@ from utils.constants import NDBCorpusMeta
 from db.ndb_settings import NDBConfig, NDBCryptoManager
 
 
+# ==========================================================
+#        Load Configuration
+# ==========================================================
+
 config_settings = NDBConfig()
+
+# ==========================================================
+#        Load Crypto Manager
+# ==========================================================
+
 crypto_manager = NDBCryptoManager()
 
 # ==========================================================

@@ -26,9 +26,23 @@ logger = NebulonDBLogger().get_logger("audit")
 # ==========================================================
 
 router = APIRouter()
+
+# ==========================================================
+#        Load Configuration
+# ==========================================================
+
 config_settings = NDBConfig()
+
+# ==========================================================
+#        Vector DB and Metadata Paths
+# ==========================================================
+
 VECTOR_DB_PATH = Path(config_settings.VECTOR_STORAGE)
 DATABASE_METADATA = Path(config_settings.VECTOR_METADATA)
+
+# ==========================================================
+#        API Endpoints for Segment Management
+# ==========================================================
 
 @router.post(
     "/list_segments",

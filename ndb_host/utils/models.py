@@ -13,6 +13,12 @@ from utils.constants import AuthenticationConfig, UserRole, ColumnPick, NDBCorpu
 
 
 # ==========================================================
+#        Load Configuration
+# ==========================================================
+
+cfg = NDBConfig()
+
+# ==========================================================
 #        Initialize Logger
 # ==========================================================
 
@@ -35,7 +41,7 @@ def get_auto_batch_size() -> Tuple[int, str]:
     import psutil
     
     device = "cuda" if torch.cuda.is_available() else "cpu"
-    if device == "cuda":
+    if device == "cuda" and cfg.NEBULONDB_DEFAULT_MODE:
         # GPU memory based logic
         total_mem = torch.cuda.get_device_properties(0).total_memory / 1e9  # in GB
         if total_mem > 16:
@@ -60,7 +66,6 @@ def get_embedding_model(model_repo_id: str):
 
     from sentence_transformers import SentenceTransformer
 
-    cfg = NDBConfig()
     cache_folder = Path(cfg.NEBULONDB_MODEL_CACHE_DIR)
 
     # === Update LLM config ===
@@ -96,7 +101,6 @@ class SemanticEmbeddingModel:
     """Wrapper for the embedding model."""
 
     def __init__(self):
-        cfg = NDBConfig()
         self.model_name = cfg.NEBULONDB_EMBEDDING_MODEL
 
     def encode(self, texts, **kwargs):

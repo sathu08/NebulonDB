@@ -32,12 +32,6 @@ def _load_config() -> NDBConfig:
     return NDBConfig()
 
 # ==========================================================
-#        Initialize Colorama
-# ==========================================================
-
-init(autoreset=True)
-
-# ==========================================================
 #        Initialize Logger
 # ==========================================================
 
@@ -46,6 +40,12 @@ log_dir = Path(cfg.NEBULONDB_LOG)
 logger_manager = NebulonDBLogger()
 logger_manager.configure_file_logging(log_dir=str(log_dir))
 logger = logger_manager.get_logger()
+
+# ==========================================================
+#        Initialize Colorama
+# ==========================================================
+
+init(autoreset=True)
 
 # ==========================================================
 #       Helper Functions

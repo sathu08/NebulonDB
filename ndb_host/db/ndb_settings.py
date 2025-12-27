@@ -150,9 +150,10 @@ class NDBConfig:
     def _load_llm(self):
         """Load LLM-specific configuration from the config file."""
 
+        self.NEBULONDB_DEFAULT_MODE = self._config['llm'].get('NEBULONDB_DEFAULT_MODE')
         cache_dir = self._config['llm'].get('NEBULONDB_MODEL_CACHE_DIR')
 
-        if not cache_dir:
+        if not cache_dir or not os.path.exists(cache_dir):
             cache_dir = str(Path(user_cache_dir(self.APP_NAME)))
             self._config['llm']['NEBULONDB_MODEL_CACHE_DIR'] = cache_dir
             self._config.write()
