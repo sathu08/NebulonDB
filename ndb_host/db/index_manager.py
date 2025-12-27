@@ -197,7 +197,7 @@ class SegmentManager:
         self._validate_paths()
 
     def _validate_checks(self) -> None:
-        """Check that essential paths exist."""
+        """Perform validation checks on corpus metadata."""
         errors = []
         if not self.corpus_name in self.get_segment_list():
             errors.append(f"Corpus '{self.corpus_name}' not found in metadata.")

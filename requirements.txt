@@ -11,6 +11,7 @@ polars>=0.20,<1.0
 
 # === Security ===
 passlib[bcrypt]>=1.7.4,<2.0
+bcrypt>=3.2,<4.1
 cryptography>=42.0,<44.0
 keyrings.alt>=5.0,<6.0
 
@@ -18,3 +19,7 @@ keyrings.alt>=5.0,<6.0
 configobj>=5.0.8,<6.0
 pyfiglet>=1.0,<2.0
 colorama>=0.4.6,<1.0
+platformdirs>=4.2,<5.0
+
+# === System / Monitoring ===
+psutil>=5.9,<6.0

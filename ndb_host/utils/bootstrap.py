@@ -144,7 +144,7 @@ class NebulonInitializer:
 
             # === Save user database ===
             save_data(data=combined_users, path_loc=str(creds_path))
-            logger.info(f"User created successfully and saved at: {creds_path}")
+            logger.info(f"User created successfully and saved")
 
             # === Encrypt credentials with NDBSafeLocker ===
             NDBSafeLocker(str(secrets_dir))

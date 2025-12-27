@@ -1,10 +1,9 @@
 from fastapi import Depends
 from fastapi.security import HTTPBasic, HTTPBasicCredentials
 
-from functools import lru_cache
-
+import threading
 from pathlib import Path
-from typing import Dict, Any
+from typing import Dict, Any, Optional
 from datetime import datetime, timezone
 
 from utils.models import load_data, save_data
@@ -29,19 +28,104 @@ http_basic_security = HTTPBasic()
 config_settings = NDBConfig()
 
 # ==========================================================
-#        Encrypted User Database 
+#        User Manager (In-Memory Singleton)
 # ==========================================================
 
-@lru_cache(maxsize=1)
-def get_user_db_locker() -> NDBSafeLocker:
+class UserManager:
     """
-    Safely initialize and cache the NDBSafeLocker instance.
+    Singleton class to manage users in memory for high performance.
+    Reads from disk once (lazy load), writes to disk on change.
+    Thread-safe for writes.
     """
-    secrets_path = Path(config_settings.NEBULONDB_SECRETS)
-    if not secrets_path.exists():
-        raise FileNotFoundError(f"Secrets directory not found: {secrets_path}")
-    return NDBSafeLocker(secrets_path)
+    _instance = None
+    _lock = threading.RLock() 
+    _users_cache: Optional[Dict[str, Any]] = None
 
+    def __new__(cls):
+        if cls._instance is None:
+            with cls._lock:
+                if cls._instance is None:
+                    cls._instance = super(UserManager, cls).__new__(cls)
+        return cls._instance
+
+    def _get_locker(self) -> NDBSafeLocker:
+        """Create a fresh locker instance. DO NOT CACHE THIS."""
+        secrets_path = Path(config_settings.NEBULONDB_SECRETS)
+        return NDBSafeLocker(secrets_path)
+
+    def _ensure_cache_loaded(self):
+        """Load users from disk if not already in memory."""
+        if self._users_cache is None:
+            with self._lock:
+                if self._users_cache is None:
+                    try:
+                        locker = self._get_locker()
+                        self._users_cache = load_data(
+                            path_loc=locker.read_file(file_path="users.json", as_text=False),
+                            is_bytes_input=True
+                        )
+                        logger.info("User cache loaded from disk.")
+                    except Exception as e:
+                        logger.error(f"Failed to load user cache: {e}")
+                        self._users_cache = {} # Fallback to empty to prevent crash loops
+
+    def get_user(self, username: str) -> Optional[Dict[str, Any]]:
+        """Get user from memory cache (Fast)."""
+        self._ensure_cache_loaded()
+        return self._users_cache.get(username)
+
+    def get_all_users(self) -> Dict[str, Any]:
+        """Get all users from memory cache."""
+        self._ensure_cache_loaded()
+        return self._users_cache.copy()
+
+    def create_user(self, username: str, data: Dict[str, Any]) -> bool:
+        """Update memory and write to disk (Thread-safe)."""
+        self._ensure_cache_loaded()
+        
+        with self._lock:
+            if username in self._users_cache:
+                return False 
+            
+            # === 1. Update Memory ===
+            self._users_cache[username] = data
+            
+            # 2. Persist to Disk ===
+            try:
+                locker = self._get_locker()
+                locker.write_file("users.json", save_data(self._users_cache, return_bytes=True))
+                locker.save() # This closes the zip, which is fine as we discard 'locker'
+                return True
+            except Exception as e:
+                logger.error(f"Failed to persist user creation: {e}")
+                del self._users_cache[username]
+                raise e
+
+    def delete_user(self, username: str) -> bool:
+        """Delete from memory and write to disk (Thread-safe)."""
+        self._ensure_cache_loaded()
+        
+        with self._lock:
+            if username not in self._users_cache:
+                return False
+            
+            # === 1. Update Memory ===
+            del self._users_cache[username]
+            
+            # === 2. Persist to Disk ===
+            try:
+                locker = self._get_locker()
+                locker.write_file("users.json", save_data(self._users_cache, return_bytes=True))
+                locker.save()
+                return True
+            except Exception as e:
+                logger.error(f"Failed to persist user deletion: {e}")
+                # Ideally reload cache from disk to restore state
+                self._users_cache = None 
+                raise e
+
+# Global Instance
+user_manager = UserManager()
 
 def _validate_user_role(user_role: str) -> UserRole:
     try:
@@ -55,11 +139,10 @@ def _validate_user_role(user_role: str) -> UserRole:
 # ==========================================================
 def get_current_user(credentials: HTTPBasicCredentials = Depends(http_basic_security)) -> AuthenticationResult:
     try:
-        logger.debug(f"Attempting authentication for user: {credentials.username}")
+        logger.debug(f"Attempting authentication for user: {credentials.username}") 
 
-        locker = get_user_db_locker()
-        users = load_data(path_loc=locker.read_file(file_path="users.json", as_text=False),is_bytes_input=True)
-        user_record = users.get(credentials.username)
+        user_record = user_manager.get_user(credentials.username)
+        
         if not user_record:
             logger.warning("Invalid credentials")
             return AuthenticationResult(username=credentials.username, is_authenticated=False, message="Invalid username")
@@ -104,41 +187,39 @@ def create_user(username: str, password: str, user_role: str = UserRole.USER.val
         validated_role = _validate_user_role(user_role)
         hashed_password = hash_password(password)
 
-        # === For first-time creation (no existing DB) ===
-        if new_creation:
-            users = {}
-            users[username] = {
-                "password": hashed_password,
-                "role": validated_role.value,
-                "created_at": datetime.now(timezone.utc).isoformat()
-            }
-            return users
+        if not hashed_password:
+            return StandardErrorResponse(success=False, message="Password hashing failed").model_dump()
 
-        locker = get_user_db_locker()
-
-        # === Load existing users ===
-        users = load_data(path_loc=locker.read_file(file_path="users.json", as_text=False),is_bytes_input=True)
-
-        if username in users:
-            logger.warning(f"User creation failed - user already exists: {username}")
-            return StandardErrorResponse(success=False, message="User already exists").model_dump()
-
-        users[username] = {
+        user_data = {
             "password": hashed_password,
             "role": validated_role.value,
             "created_at": datetime.now(timezone.utc).isoformat()
         }
 
-        locker.write_file("users.json", save_data(users, return_bytes=True))
-        locker.save()
+        # === For first-time creation (script usage, bypass manager logic potentially?) ===
+        if new_creation:
+            # If new_creation is True, it implies we just want the dict back to initialize the DB file manually
+            # This is likely used by run.py --create-user before the DB even exists.
+            users = {}
+            users[username] = user_data
+            return users
 
-        logger.info(f"User created successfully: {username} with role: {validated_role.value}")
-        return {
-            "success":True,
-            "message": f"User '{username}' registered successfully with role '{validated_role.value}'",
-            "username": username,
-            "role": validated_role.value
-        }
+        if user_manager.get_user(username):
+             logger.warning(f"User creation failed - user already exists: {username}")
+             return StandardErrorResponse(success=False, message="User already exists").model_dump()
+
+        success = user_manager.create_user(username, user_data)
+        
+        if success:
+            logger.info(f"User created successfully: {username} with role: {validated_role.value}")
+            return {
+                "success":True,
+                "message": f"User '{username}' registered successfully with role '{validated_role.value}'",
+                "username": username,
+                "role": validated_role.value
+            }
+        else:
+             return StandardErrorResponse(success=False, message="User already exists (race condition)").model_dump()
 
     except Exception as e:
         logger.error(f"Error creating user: {e}")
@@ -153,16 +234,11 @@ def delete_user(username: str) -> Dict[str, str]:
     try:
         logger.info(f"Attempting to delete user: {username}")
 
-        locker = get_user_db_locker()
-        users = load_data(path_loc=locker.read_file(file_path="users.json", as_text=False), is_bytes_input=True)
-
-        if username not in users:
+        if not user_manager.get_user(username):
             logger.warning(f"User deletion failed - user not found: {username}")
             return {"success": False, "message": "User not found"}
 
-        del users[username]
-        locker.write_file("users.json", save_data(users, return_bytes=True))
-        locker.save()
+        user_manager.delete_user(username)
 
         logger.info(f"User deleted successfully: {username}")
         return {"success": True, "message": f"User '{username}' deleted successfully"}
@@ -180,8 +256,7 @@ def get_all_users() -> Dict[str, Any]:
     try:
         logger.info("Retrieving all users")
 
-        locker = get_user_db_locker()
-        users = load_data(path_loc=locker.read_file(file_path="users.json", as_text=False), is_bytes_input=True)
+        users = user_manager.get_all_users()
 
         safe_users = {
             username: {
@@ -202,3 +277,4 @@ def get_all_users() -> Dict[str, Any]:
     except Exception as e:
         logger.error(f"Error retrieving users: {e}")
         return StandardErrorResponse(success=False, message="Error retrieving user list").model_dump()
+
