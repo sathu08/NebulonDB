@@ -85,13 +85,19 @@ class NDBConfig:
     def _validate_sections(self):
         """Validate required sections are present in the config file."""
 
+        if 'NEBULONDB_HOME' not in self._config['paths']:
+            raise KeyError("Missing 'NEBULONDB_HOME' in [paths] section.")
+        
+        if 'NEBULONDB_MASTER_KEY' not in self._config['environment']:
+            raise KeyError("Missing 'NEBULONDB_MASTER_KEY' in [environment] section.")
+        
         required_sections = ['paths', 'corpus', 'vector_index', 'params', 'server', 'environment']
         for section in required_sections:
             if section not in self._config:
                 raise KeyError(f"Missing required section: '{section}' in config file.")
-
-        if 'NEBULONDB_HOME' not in self._config['paths']:
-            raise KeyError("Missing 'NEBULONDB_HOME' in [paths] section.")
+        
+        if self._config['environment']['NEBULONDB_MASTER_KEY'] :
+            logger.warning("NEBULONDB_MASTER_KEY is set in config file. Add it as environment variable to avoid it")
 
     def _validate_packages(self):
         """Validate required packages are installed."""
@@ -107,6 +113,7 @@ class NDBConfig:
 
         # === Override NEBULONDB_HOME if environment variable is set ===
         env_home = os.environ.get('NEBULONDB_HOME')
+        env_master_key = os.environ.get('NEBULONDB_MASTER_KEY')
         updated = False
 
         # === Update NEBULONDB_HOME ===
@@ -114,13 +121,11 @@ class NDBConfig:
             self._config['paths']['NEBULONDB_HOME'] = env_home
             updated = True
 
-        # === Update NEBULONDB_MASTER_KEY ===
-        if not self._config['environment']['NEBULONDB_MASTER_KEY']:
-            master_key = os.environ.get('NEBULONDB_MASTER_KEY')
-            if not master_key:
-                master_key = Fernet.generate_key().decode()
-                logger.warning("Warning: NEBULONDB_MASTER_KEY not found; generated new key.")
-            self._config['environment']['NEBULONDB_MASTER_KEY'] = master_key
+        # === Update NEBULONDB_MASTER_KEY ===   
+        if not env_master_key and not self._config['environment']['NEBULONDB_MASTER_KEY']:
+            env_master_key = Fernet.generate_key().decode()
+            logger.warning("Warning: NEBULONDB_MASTER_KEY not found; generated new key.")
+            self._config['environment']['NEBULONDB_MASTER_KEY'] = env_master_key
             updated = True
 
         if updated:
@@ -264,7 +269,7 @@ class NDBCryptoManager:
             4. Fallback: generate temporary key
         """
 
-        env_key = os.environ.get("ENVIRONMENT_MASTER_KEY")
+        env_key = os.environ.get("NEBULONDB_MASTER_KEY")
         if env_key:
             return env_key.encode()
     

@@ -9,9 +9,9 @@ import pyfiglet
 
 from getpass import getpass
 from colorama import init
-
 from pathlib import Path
-from colorama import Fore, Style
+
+from ndb_host.utils.logger import Fore, Style
 
 from ndb_host.db.ndb_settings import NDBConfig
 from ndb_host.utils.bootstrap import NebulonInitializer

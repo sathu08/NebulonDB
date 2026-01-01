@@ -40,7 +40,7 @@ def get_auto_batch_size() -> Tuple[int, str]:
     import torch
     import psutil
     
-    device = "cuda" if torch.cuda.is_available() and cfg.NEBULONDB_DEFAULT_MODE else "cpu"
+    device = "cuda" if torch.cuda.is_available() and not cfg.NEBULONDB_DEFAULT_MODE else "cpu"
     if device == "cuda":
         # GPU memory based logic
         total_mem = torch.cuda.get_device_properties(0).total_memory / 1e9  # in GB

@@ -13,6 +13,9 @@ from utils.logger import NebulonDBLogger
 log_dir = Path(NDBConfig().NEBULONDB_LOG)
 NebulonDBLogger().configure_file_logging(log_dir=str(log_dir))
 
+# Configure colored logging for gunicorn/uvicorn
+NebulonDBLogger.configure_server_logging()
+
 app = create_app()
 
 # === Include route modules ===
