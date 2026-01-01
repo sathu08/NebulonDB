@@ -1,9 +1,21 @@
-from fastapi import Depends, HTTPException, status
-from fastapi import APIRouter
+from fastapi import Depends
+from fastapi import APIRouter, HTTPException, status
+
 from services.user_service import create_user, get_current_user
 
-from utils.models import StandardResponse, UserRegistrationRequest, UserAuthenticationResponse
-from utils.logger import logger
+from utils.models import StandardResponse, UserRegistrationRequest, UserAuthenticationResponse, AuthenticationResult
+from utils.logger import NebulonDBLogger
+
+
+# ==========================================================
+#        Initialize Logger
+# ==========================================================
+
+logger = NebulonDBLogger().get_logger("access")
+
+# ==========================================================
+#        API Router for Authentication
+# ==========================================================
 
 router = APIRouter()
 
@@ -15,36 +27,43 @@ router = APIRouter()
     description="Create a new user account with specified username, password, and role" 
 )
 async def register_user(
-    user_data: UserRegistrationRequest
+    user_data: UserRegistrationRequest,
+    current_user: AuthenticationResult = Depends(get_current_user)
 ) -> StandardResponse:
     try:
         logger.info(f"Attempting to register user: {user_data.username}")
+
+        if not current_user.is_authenticated:
+            return StandardResponse(
+                success=False,
+                exists=False,
+                message=current_user.message
+            )
         
         result = create_user(
             username=user_data.username,
             password=user_data.password,
             user_role=user_data.user_role
         )
-
-        if isinstance(result, dict) and "message" in result:
+        if result.get("success"):
             logger.info(f"User registered successfully: {user_data.username}")
             return StandardResponse(
                 success=True,
                 message="User registered successfully",
                 data={"username": user_data.username, "role": user_data.user_role}
             )
-        elif "User already exists." in str(result):
+        elif not result.get("success") and "User already exists" in result.get("message"):
             logger.warning(f"Registration failed - user already exists: {user_data.username}")
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="User already exists"
-            )
+            return StandardResponse(
+                    success=False,
+                    message="User already exists"
+                )
         else:
             logger.error(f"Registration failed for user: {user_data.username}")
-            raise HTTPException(
-                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail="Registration failed due to internal error"
-            )
+            return StandardResponse(
+                    success=False,
+                    message="Registration failed due to internal error"
+                )
     except Exception as e:
         logger.error(f"Unexpected error during registration: {e}")
         raise HTTPException(
@@ -59,7 +78,7 @@ async def register_user(
     description="Verify the current user's authentication status and return user details"
 )
 async def verify_authentication(
-    current_user: dict = Depends(get_current_user)
+    current_user: AuthenticationResult = Depends(get_current_user)
 ) -> UserAuthenticationResponse:
     """
     Verify user authentication and return user details.
@@ -70,8 +89,8 @@ async def verify_authentication(
     Returns:
         UserAuthenticationResponse: Authentication verification result
     """
-    logger.info(f"Authentication verified for user: {current_user.get('username', 'unknown')}")
+    logger.info(f"Authentication verified for user: {current_user.username}")
     return UserAuthenticationResponse(
-        message="Authentication verified successfully",
-        user=current_user
+        message=current_user.message if current_user.message else "Authentication verified successfully",
+        user=current_user.model_dump()
     )
