@@ -154,7 +154,8 @@ class SegmentQueryRequest(BaseModel):
     segment_dataset: Optional[Union[Dict[str, List[Any]], List[Dict[str, Any]]]] = None
     set_columns: Optional[Union[str, List[str]]] = None
     search_item: Optional[str] = None
-    top_matches: Optional[str] = None
+    top_matches: Optional[int] = None
+    min_score: Optional[float] = None
     is_precomputed: Optional[bool] = False
 
     @field_validator("segment_dataset", mode="before")

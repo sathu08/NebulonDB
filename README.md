@@ -109,44 +109,193 @@ python run.py start
 ```
 The server will start on `http://localhost:6969` (default).
 
-### 3. Usage Example (Python)
+### 3. Authentication APIs
 
-Here is how to upload data using the API. You can choose between **Text Mode** (server generates embeddings) or **Raw Mode** (send your own vectors).
+#### 3.1.1 Register User
 
-```python
-import requests
-import numpy as np
+Create a new user with a specific role.
 
-BASE_URL = "http://localhost:6969/api/NebulonDB"
-AUTH = ("admin", "password") # Use credentials created in Step 1
+```bash
+curl -X POST "http://localhost:6969/api/NebulonDB/auth/register" \
+  -u sathya:admin@123 \
+  -H "Content-Type: application/json" \
+  -d '{
+    "username": "ndbadmin1",
+    "password": "ndbadmin",
+    "user_role": "super_user"
+  }'
+```
 
-# 1. Create a Corpus (Collection)
-requests.post(f"{BASE_URL}/corpus/create_corpus", json={"corpus_name": "my_corpus"}, auth=AUTH)
+#### Example Roles
 
-# 2. Upload Data (Batch)
-# OPTION A: Text Mode (Server uses AI model to generate vectors)
-payload = {
-    "corpus_name": "my_corpus",
-    "segment_name": "segment_1",
+* `super_user`
+* `admin`
+* `user`
+
+---
+
+#### 3.1.2 Verify User Login
+
+Verify login credentials for a registered user.
+
+```bash
+curl -X GET "http://localhost:6969/api/NebulonDB/auth/verify" \
+  -u ndbadmin1:ndbadmin \
+  -H "Content-Type: application/json"
+```
+
+---
+
+#### 3.2 Corpus Management APIs
+
+#### 3.2.1 Create Corpus
+
+Create a new corpus.
+
+```bash
+curl -X POST "http://localhost:6969/api/NebulonDB/corpus/create_corpus" \
+  -u ndbadmin1:ndbadmin \
+  -H "Content-Type: application/json" \
+  -d '{
+    "corpus_name": "sample"
+  }'
+```
+
+---
+
+#### 3.2.2 Deactivate Corpus
+
+Deactivate an existing corpus.
+
+```bash
+curl -X POST "http://localhost:6969/api/NebulonDB/corpus/deactivate_corpus" \
+  -u ndbadmin1:ndbadmin \
+  -H "Content-Type: application/json" \
+  -d '{
+    "corpus_name": "sample"
+  }'
+```
+
+---
+
+#### 3.2.3 Activate Corpus
+
+Activate a previously deactivated corpus.
+
+```bash
+curl -X POST "http://localhost:6969/api/NebulonDB/corpus/activate_corpus" \
+  -u ndbadmin1:ndbadmin \
+  -H "Content-Type: application/json" \
+  -d '{
+    "corpus_name": "sample"
+  }'
+```
+
+---
+
+#### 3.2.4 Delete Corpus
+
+Delete an existing corpus permanently.
+
+```bash
+curl -X POST "http://localhost:6969/api/NebulonDB/corpus/delete_corpus" \
+  -u ndbadmin1:ndbadmin \
+  -H "Content-Type: application/json" \
+  -d '{
+    "corpus_name": "sample"
+  }'
+```
+
+---
+
+#### 3.2.5 List All Corpus
+
+Get all available corpus.
+
+```bash
+curl -X GET "http://localhost:6969/api/NebulonDB/corpus/list_corpus" \
+  -u ndbadmin1:ndbadmin \
+  -H "Content-Type: application/json"
+```
+
+---
+
+#### 3.3 Segment Management APIs
+
+#### 3.3.1 Load Segment
+
+Load a new segment into a corpus.
+
+```bash
+curl -X POST "http://localhost:6969/api/NebulonDB/segment/load_segment" \
+  -u ndbadmin1:ndbadmin \
+  -H "Content-Type: application/json" \
+  -d '{
+    "corpus_name": "nebulon_origin",
+    "segment_name": "sample",
     "segment_dataset": {
-        "description": ["This is doc 1", "This is doc 2"]
+      "text_col1": [
+        "Hello world",
+        "AI is amazing",
+        "Polars is fast"
+      ],
+      "text_col2": [
+        "Test sentence",
+        "Another text",
+        "Segment_dataset science"
+      ],
+      "numeric_col": [1, 2, 3]
     },
-    "set_columns": "description"
-}
-requests.post(f"{BASE_URL}/segment/load_segment", json=payload, auth=AUTH)
+    "set_columns": [
+      "text_col1",
+      "text_col2"
+    ]
+  }'
+```
 
-# OPTION B: Raw Vector Mode (Faster / Bring Your Own Vectors)
-vectors = np.random.rand(10, 384).tolist() # 10 vectors of dim 384
-payload_raw = {
-    "corpus_name": "my_corpus",
-    "segment_name": "segment_raw",
-    "segment_dataset": {
-        "vector_col": vectors
-    },
-    "set_columns": "vector_col",
-    "is_precomputed": True  # <--- Critical Flag
-}
-requests.post(f"{BASE_URL}/segment/load_segment", json=payload_raw, auth=AUTH)
+#### Notes
+
+* `segment_dataset` contains the actual records
+* `set_columns` defines which columns are used for vector/text search
+
+---
+
+#### 3.3.2 Search Segment
+
+Search for similar content inside a segment.
+
+```bash
+curl -X POST "http://localhost:6969/api/NebulonDB/segment/search_segment" \
+  -u ndbadmin1:ndbadmin \
+  -H "Content-Type: application/json" \
+  -d '{
+    "corpus_name": "nebulon_origin",
+    "segment_name": "sample",
+    "search_item": "Hello World",
+    "top_matches": "3",
+    "min_score": 0.6
+  }'
+```
+
+#### Parameters
+
+* `search_item` → text to search
+* `top_matches` → number of top results
+* `min_score` → minimum similarity score threshold
+
+---
+
+#### 3.3.3 List Segments
+
+List all segments available inside a corpus.
+
+```bash
+curl -X POST "http://localhost:6969/api/NebulonDB/segment/list_segments" \
+  -u ndbadmin1:ndbadmin \
+  -H "Content-Type: application/json" \
+  -d '{
+    "corpus_name": "nebulon_origin"
+  }'
 ```
 
 ---

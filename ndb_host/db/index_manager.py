@@ -679,7 +679,7 @@ class SegmentManager:
         except Exception as e:
             return {"success": False, "message": f"Batch load failed: {str(e)}"}
 
-    def search_vector(self, segment_name:str, query_vec:np.ndarray, top_k: Optional[int] = None, set_columns: Optional[List[str]] = None) ->Dict[str, Any]:
+    def search_vector(self, segment_name:str, query_vec:np.ndarray, top_k: Optional[int] = None, set_columns: Optional[List[str]] = None, min_score: Optional[float] = None) ->Dict[str, Any]:
         """
         Search for nearest neighbors of a vector across all segments in a namespace.
 
@@ -709,6 +709,7 @@ class SegmentManager:
         id_lookup = {(v["segment_id"], v["vector_id"]): k for k, v in id_map.items()}
         
         num_matches = top_k if top_k is not None else self.config.get("top_matches", 3)
+        min_score = min_score if min_score is not None else self.config.get("min_score", 0.0)
         
         for segment_id in existing_segments:
             segment_id_path = self.segment_path / segment_id
@@ -729,6 +730,10 @@ class SegmentManager:
             # Collect results
             for dist, idx in zip(distances[0], indices[0]):
                 if idx == -1:
+                    continue
+                
+                # Filter by min_score
+                if min_score < dist:
                     continue
 
                 # Match external_id from metadata
