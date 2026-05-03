@@ -381,6 +381,7 @@ async def search_segment(
         search_item = segment_query.search_item
         set_columns = segment_query.set_columns if segment_query.set_columns else ColumnPick.ALL
         top_matches = segment_query.top_matches if segment_query.top_matches else None
+        min_score = segment_query.min_score if segment_query.min_score else None
         
         segment_manager = SegmentManager(corpus_name=corpus_name)
         
@@ -424,7 +425,8 @@ async def search_segment(
             segment_name=segment_name,
             query_vec=query_vec,
             set_columns=set_columns,
-            top_k=top_matches
+            top_k=top_matches,
+            min_score=min_score
         )
         
         return StandardResponse(

@@ -189,6 +189,7 @@ class NDBConfig:
             "metric": self._config['vector_index']['metric'],
             "segment_max_size": self._config['vector_index']["segment_max_size"],
             "top_matches": self._config['vector_index']["top_matches"],
+            "min_score": self._config['vector_index']["min_score"],
             "params": {
                 "nlist": int(self._config['params']['nlist']),
                 "nprobe": int(self._config['params']['nprobe']),
