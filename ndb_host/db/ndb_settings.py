@@ -1,3 +1,11 @@
+"""
+NDB Configuration
+==========================================================
+
+This module handles configuration settings for the NDB API.
+
+"""
+
 import os
 import shutil
 import base64
@@ -10,11 +18,12 @@ from io import BytesIO
 from pathlib import Path
 from string import Template
 
-from configobj import ConfigObj
+from configparser import ConfigParser
 from cryptography.fernet import Fernet
+
 from platformdirs import user_cache_dir
 
-from utils.constants import AuthenticationConfig
+from utils.constants import AuthenticationConfig, NDBMeta
 from utils.logger import NebulonDBLogger
 
 
@@ -38,7 +47,7 @@ class NDBConfig:
     on sensitive directories.
     """
 
-    def __init__(self, config_path: str = None):
+    def __init__(self, config_path: str | Path = None):
         """
         Initialize the NebulonDB configuration loader.
 
@@ -46,27 +55,28 @@ class NDBConfig:
             config_path (str): Path to the configuration file.
         """
 
-        # === Determine default path if none is provided ===
         if config_path is None:
             neb_home = os.environ.get('NEBULONDB_HOME', os.getcwd())
-            config_path = os.path.join(neb_home, "nebulondb.cfg")
+            config_path = Path(neb_home) / "nebulondb.cfg"
+        else:
+            config_path = Path(config_path)
 
-        self.config_path = os.path.abspath(config_path)
-        if not os.path.exists(self.config_path):
+        self.config_path = config_path.resolve()
+        if not self.config_path.exists():
             raise FileNotFoundError(f"Config file not found: {self.config_path}")
 
         try:
-            self._config = ConfigObj(self.config_path, encoding=AuthenticationConfig.ENCODING, list_values=False)
+            self._config = ConfigParser()
+            self._config.read(self.config_path, encoding=AuthenticationConfig.ENCODING)
         except Exception as e:
             raise RuntimeError(f"Failed to load config file '{self.config_path}': {e}")
 
         self._validate_sections()
         self._apply_env_override()
         self._load_environment()
-        self._validate_packages()
         self._load_paths()
-        self._load_corpus()
-        self._load_vector_index()
+        self._load_search_config()
+        self._load_rank_config()
         self._load_segments()
         self._load_server()
         self._load_llm()
@@ -76,172 +86,154 @@ class NDBConfig:
     # ------------------------------
 
     @staticmethod
-    def _resolve_path(path_vars, value) -> str:
-        """Resolve variables using provided path_vars and environment."""
-
-        combined = dict(path_vars)
-        return os.path.expandvars(Template(value).safe_substitute(combined))
+    def _resolve_path(path_vars: dict, value: str) -> Path:
+        """Resolve variables using provided path_vars and environment, return a Path."""
+        resolved = os.path.expandvars(Template(value).safe_substitute(path_vars))
+        return Path(resolved).resolve()
+    
+    def _write(self):
+        """Persist current config state back to disk."""
+        with self.config_path.open('w', encoding=AuthenticationConfig.ENCODING) as f:
+            self._config.write(f)
 
     def _validate_sections(self):
-        """Validate required sections are present in the config file."""
-
-        if 'NEBULONDB_HOME' not in self._config['paths']:
-            raise KeyError("Missing 'NEBULONDB_HOME' in [paths] section.")
-        
-        if 'NEBULONDB_MASTER_KEY' not in self._config['environment']:
-            raise KeyError("Missing 'NEBULONDB_MASTER_KEY' in [environment] section.")
-        
-        required_sections = ['paths', 'corpus', 'vector_index', 'params', 'server', 'environment']
-        for section in required_sections:
-            if section not in self._config:
-                raise KeyError(f"Missing required section: '{section}' in config file.")
-        
-        if self._config['environment']['NEBULONDB_MASTER_KEY'] :
-            logger.warning("NEBULONDB_MASTER_KEY is set in config file. Add it as environment variable to avoid it")
-
-    def _validate_packages(self):
-        """Validate required packages are installed."""
-
-        if self.KEYRING_ENABLED:
-            try:
-                import keyring
-            except ImportError:
-                logger.error("keyring not installed")
+            required_sections = ['paths','vector', 'hnsw', 'server', 'environment']
+            for section in required_sections:
+                if section not in self._config:
+                    raise KeyError(f"Missing required section: '{section}' in config file.")
+    
+            if 'NEBULONDB_HOME' not in self._config['paths']:
+                raise KeyError("Missing 'NEBULONDB_HOME' in [paths] section.")
+    
+            if 'NEBULONDB_MASTER_KEY' not in self._config['environment']:
+                raise KeyError("Missing 'NEBULONDB_MASTER_KEY' in [environment] section.")
 
     def _apply_env_override(self):
-        """Override NEBULONDB_HOME with environment variable if set."""
-
-        # === Override NEBULONDB_HOME if environment variable is set ===
-        env_home = os.environ.get('NEBULONDB_HOME')
-        env_master_key = os.environ.get('NEBULONDB_MASTER_KEY')
         updated = False
 
-        # === Update NEBULONDB_HOME ===
-        if env_home and self._config['paths']['NEBULONDB_HOME'] != env_home:
-            self._config['paths']['NEBULONDB_HOME'] = env_home
+        # Override NEBULONDB_HOME
+        env_home = os.environ.get('NEBULONDB_HOME')
+        if env_home and self._config.get('paths', 'NEBULONDB_HOME') != env_home:
+            self._config.set('paths', 'NEBULONDB_HOME', env_home)
             updated = True
 
-        # === Update NEBULONDB_MASTER_KEY ===   
-        if not env_master_key and not self._config['environment']['NEBULONDB_MASTER_KEY']:
-            env_master_key = Fernet.generate_key().decode()
-            logger.warning("Warning: NEBULONDB_MASTER_KEY not found; generated new key.")
-            self._config['environment']['NEBULONDB_MASTER_KEY'] = env_master_key
+        # Ensure NEBULONDB_MASTER_KEY exists
+        env_master_key = os.environ.get('NEBULONDB_MASTER_KEY')
+        cfg_master_key = self._config.get('environment', 'NEBULONDB_MASTER_KEY', fallback='')
+
+        if not env_master_key and not cfg_master_key:
+            generated = Fernet.generate_key().decode()
+            logger.warning("NEBULONDB_MASTER_KEY not found; generated new key.")
+            self._config.set('environment', 'NEBULONDB_MASTER_KEY', generated)
             updated = True
 
         if updated:
-            self._config.write()
+            self._write()
 
     # ------------------------------
     # Load Config Sections
     # ------------------------------
 
     def _load_paths(self):
-        """Load and resolve path variables from the config file."""
+        paths = dict(self._config['paths'])
+        self.NEBULONDB_HOME = Path(self._resolve_path(paths, self._config.get('paths', 'NEBULONDB_HOME')))
 
-        self.NEBULONDB_HOME = self._resolve_path(self._config['paths'], self._config['paths']['NEBULONDB_HOME'])  
-        self.VECTOR_STORAGE = self._resolve_path(self._config['paths'], self._config['paths']["VECTOR_STORAGE"])
-        self.NEBULONDB_SECRETS = self._resolve_path(self._config['paths'], self._config['paths']["NEBULONDB_SECRETS"])
-        self.VECTOR_METADATA = self._resolve_path(self._config['paths'], self._config['paths']["VECTOR_METADATA"])
-        self.NEBULONDB_LOG = self._resolve_path(self._config['paths'], self._config['paths']["NEBULONDB_LOG"])
-    
+        self.NEBULONDB_STORAGE_PATH = self.NEBULONDB_HOME / NDBMeta.Paths.STORAGE_DIR
+
+        self.NEBULONDB_ACCOUNTHUB_CORPUS_PATH = self.NEBULONDB_STORAGE_PATH / NDBMeta.Paths.SECRETS_DIR
+        self.NEBULONDB_DEFAULT_CORPUS_PATH = self.NEBULONDB_STORAGE_PATH / NDBMeta.Corpus.DEFAULT_CORPUS_NAME
+
+        self.NEBULONDB_LOG_PATH = self.NEBULONDB_HOME / NDBMeta.Paths.LOG_DIR
+        self.NEBULONDB_PID_FILE = self.NEBULONDB_HOME / NDBMeta.Paths.PID_FILE
+        self.NEBULONDB_WEB_DIR =  self.NEBULONDB_HOME / NDBMeta.Paths.WEB_DIR
+
     def _load_environment(self):
-        """Load environment-specific configuration from the config file."""
-        
-        self.ENVIRONMENT_MASTER_KEY = self._config['environment']['NEBULONDB_MASTER_KEY']
-        self.KEYRING_ENABLED = str(self._config['environment']['NEBULONDB_KEYRING_ENABLED']).lower() in ['true', '1', 'yes']
-        self.KEYRING_SERVICE = self._config['environment']['NEBULONDB_KEYRING_SERVICE']
-        self.NEBULONDB_USER = self._config['environment']['NEBULONDB_USER']
-    
+        self.ENVIRONMENT_MASTER_KEY = self._config.get('environment', 'NEBULONDB_MASTER_KEY')
+        self.KEYRING_ENABLED = self._config.getboolean('environment', 'NEBULONDB_KEYRING_ENABLED', fallback=False)
+        self.KEYRING_SERVICE = self._config.get('environment', 'NEBULONDB_KEYRING_SERVICE', fallback='')
+
     def _load_llm(self):
-        """Load LLM-specific configuration from the config file."""
+        self.NEBULONDB_DEFAULT_MODE = self._config.getboolean('llm', 'NEBULONDB_DEFAULT_MODE', fallback=False)
 
-        self.NEBULONDB_DEFAULT_MODE = self._config['llm']['NEBULONDB_DEFAULT_MODE'].lower() in ['true', '1', 'yes']
-        cache_dir = self._config['llm']['NEBULONDB_MODEL_CACHE_DIR']
-
-        if not cache_dir or not os.path.exists(cache_dir):
+        cache_dir = Path(self._config.get('llm', 'NEBULONDB_MODEL_CACHE_DIR', fallback=''))
+        if not cache_dir or not cache_dir.exists():
             cache_dir = str(Path(user_cache_dir(self.APP_NAME)))
-            self._config['llm']['NEBULONDB_MODEL_CACHE_DIR'] = cache_dir
-            self._config.write()
+            self._config.set('llm', 'NEBULONDB_MODEL_CACHE_DIR', cache_dir)
+            self._write()
 
         self.NEBULONDB_MODEL_CACHE_DIR = cache_dir
-        self.NEBULONDB_EMBEDDING_MODEL = self._config['llm']['NEBULONDB_EMBEDDING_MODEL']
-        self.NEBULONDB_BATCH_SIZE = self._config['llm']['NEBULONDB_BATCH_SIZE']
-        self.NEBULONDB_MODEL_DEVICE = self._config['llm']['NEBULONDB_MODEL_DEVICE']
+        self.NEBULONDB_EMBEDDING_MODEL = self._config.get('llm', 'NEBULONDB_EMBEDDING_MODEL')
+        self.NEBULONDB_CROSS_ENCODER_MODEL = self._config.get('llm', 'NEBULONDB_CROSS_ENCODER_MODEL')
+        self.NEBULONDB_EMBEDDING_BATCH_SIZE = self._config.getint('llm', 'NEBULONDB_EMBEDDING_BATCH_SIZE', fallback=0)
+        self.NEBULONDB_CROSS_ENCODER_BATCH_SIZE = self._config.getint('llm', 'NEBULONDB_CROSS_ENCODER_BATCH_SIZE', fallback=0)
+        self.NEBULONDB_EMBEDDING_MODEL_DEVICE = self._config.get('llm', 'NEBULONDB_EMBEDDING_MODEL_DEVICE', fallback='')
+        self.NEBULONDB_CROSS_ENCODER_MODEL_DEVICE = self._config.get('llm', 'NEBULONDB_CROSS_ENCODER_MODEL_DEVICE', fallback='')
 
-  
-    
-    def _load_corpus(self):
-        """Load corpus-specific configuration from the config file."""
-
-        self.DEFAULT_CORPUS_CONFIG_STRUCTURES = self._resolve_path(
-            self._config['paths'], self._config["corpus"]["DEFAULT_CORPUS_CONFIG_STRUCTURES"]
-        )
-        self.DEFAULT_CORPUS_STRUCTURES = [
-            item.strip() for item in self._config['corpus']['DEFAULT_CORPUS_STRUCTURES'].split(',')
-        ]
-
-    def _load_vector_index(self):
-        """Load vector index-specific configuration from the config file."""
-
+    def _load_search_config(self):
         self.DEFAULT_CORPUS_CONFIG_DATA = {
-            "dimension": int(self._config['vector_index']['dimension']), 
-            "index_type": self._config['vector_index']['index_type'], 
-            "metric": self._config['vector_index']['metric'],
-            "segment_max_size": self._config['vector_index']["segment_max_size"],
-            "top_matches": self._config['vector_index']["top_matches"],
-            "min_score": self._config['vector_index']["min_score"],
-            "params": {
-                "nlist": int(self._config['params']['nlist']),
-                "nprobe": int(self._config['params']['nprobe']),
-                "m": int(self._config['params']['m']),
-                "nbits": int(self._config['params']['nbits']),
-                "hnsw_m": int(self._config['params']['hnsw_m']),
-                "ef_construction": int(self._config['params']['ef_construction']),
-                "ef_search": int(self._config['params']['ef_search'])
-            }
+            "dimension": self._config.getint('vector', 'DIMENSION'),
+            "space": self._config.get('vector', 'SPACE'),
+            "top_matches": self._config.getint('vector', 'TOP_MATCHES'),
+            "min_score": self._config.getfloat('vector', 'MIN_SCORE'),
+            "m": self._config.getint('hnsw', 'M'),
+            "ef_construction": self._config.getint('hnsw', 'EF_CONSTRUCTION'),
+            "ef_search": self._config.getint('hnsw', 'EF_SEARCH'),
+            "bloom_enabled": self._config.get('bloom', 'ENABLED', fallback='false'),
+            "bloom_bits_per_key": self._config.getint('bloom', 'BITS_PER_KEY', fallback=10),
+            "bloom_hash_count": self._config.getint('bloom', 'HASH_COUNT', fallback=7),
+        }
+        self.VECTOR_COMPACTION_THRESHOLD = self._config.getfloat("vector", "COMPACTION_THRESHOLD", fallback=0.4)
+        self.VECTOR_SAVE_EVERY_N = self._config.getint("vector", "SAVE_EVERY_N", fallback=100)
+
+    def _load_rank_config(self):
+        self.RANK_TOPK = self._config.getint('rank', 'RANK_TOPK', fallback=20)
+        self.RANK_WEIGHTS = {
+            "vector": self._config.getfloat('rank', 'WEIGHT_VECTOR', fallback=0.55),
+            "bm25": self._config.getfloat('rank', 'WEIGHT_BM25', fallback=0.20),
+            "metadata": self._config.getfloat('rank', 'WEIGHT_METADATA', fallback=0.10),
+            "importance": self._config.getfloat('rank', 'WEIGHT_IMPORTANCE', fallback=0.10),
+            "freshness": self._config.getfloat('rank', 'WEIGHT_FRESHNESS', fallback=0.05),
         }
 
     def _load_segments(self):
-        """Load segment-specific configuration from the config file."""
+        self.FLUSH_RECORD_THRESHOLD = self._config.getint('segments', 'FLUSH_RECORD_THRESHOLD')
+        self.WAL_AUTO_FLUSH = self._config.getboolean('segments', 'WAL_AUTO_FLUSH', fallback=True)
+        self.COMPRESS_SEGMENTS = self._config.getboolean('segments', 'COMPRESS_SEGMENTS', fallback=True)
+        self.BLOOM_FILTER_ENABLED = self._config.getboolean('segments', 'BLOOM_FILTER_ENABLED', fallback=True)
+        self.MAX_OPEN_SEGMENTS = self._config.getint('segments', 'MAX_OPEN_SEGMENTS', fallback=50)
+        self.COMPACTION_INTERVAL = self._config.getfloat('segments', 'COMPACTION_INTERVAL', fallback=60.0)
+        self.MAX_SEGMENTS_BEFORE_COMPACT = self._config.getint('segments', 'MAX_SEGMENTS_BEFORE_COMPACT', fallback=10)
+        self.FLUSH_INTERVAL = self._config.getfloat('segments', 'FLUSH_INTERVAL', fallback=5.0)
 
-        self.SEGMENTS_METADATA = self._config["segments"]["SEGMENT_METADATA"]
-        self.SEGMENT_MAP = self._config["segments"]["SEGMENT_MAP"]
-    
     def _load_server(self):
-        """Load server-specific configuration from the config file."""
+        self.APP_NAME = self._config.get('server', 'APP_NAME')
+        self.HOST = self._config.get('server', 'HOST')
+        self.PORT = self._config.getint('server', 'PORT')
+        self.WORKERS = self._config.getint('server', 'WORKERS')
+        self.TIMEOUT = self._config.getint('server', 'TIMEOUT', fallback=30)
+        self.KEEP_ALIVE = self._config.getint('server', 'KEEP_ALIVE', fallback=5)
+        self.GRACEFUL_TIMEOUT = self._config.getint('server', 'GRACEFUL_TIMEOUT', fallback=30)
+        self.ACCESS_LOGFILE = self._config.get('server', 'ACCESS_LOGFILE', fallback='')
+        self.ERROR_LOGFILE = self._config.get('server', 'ERROR_LOGFILE', fallback='')
+        self.LOG_LEVEL = self._config.get('server', 'LOG_LEVEL', fallback='info')
 
-        # === Assign values ===
-        self.APP_NAME = self._config["server"]["APP_NAME"]  
-        self.HOST = self._config["server"]["HOST"]  
-        self.PORT = int(self._config["server"]["PORT"])  
-        self.WORKERS = int(self._config["server"]["WORKERS"])  
+    def update_model_config(self, device: str, batch_size: int, model_type: str):
+        section = 'llm'
+        prefix = f'NEBULONDB_{model_type.upper()}'
+        updated = False
 
-        # === Optional values with defaults ===
-        self.TIMEOUT = int(self._config["server"]["TIMEOUT"])  
-        self.KEEP_ALIVE = int(self._config["server"]["KEEP_ALIVE"])  
-        self.GRACEFUL_TIMEOUT = int(self._config["server"]["GRACEFUL_TIMEOUT"])  
-        self.ACCESS_LOGFILE = self._config["server"]["ACCESS_LOGFILE"]  
-        self.ERROR_LOGFILE = self._config["server"]["ERROR_LOGFILE"]  
-        self.LOG_LEVEL = self._config["server"]["LOG_LEVEL"]  
+        device_key = f'{prefix}_MODEL_DEVICE'
+        if self._config.get(section, device_key) != device:
+            self._config.set(section, device_key, device)
+            updated = True
 
-    def update_llm_config(self, device: str, batch_size: int):
-        """Update LLM configuration in the config file."""
-        
-        # === Update values ===
-        update = False
-        
-        # === Update device ===
-        if self._config['llm']['NEBULONDB_MODEL_DEVICE'] != device:
-            self._config['llm']['NEBULONDB_MODEL_DEVICE'] = device
-            update = True
-        
-        # === Update batch size ===
-        if self._config['llm']['NEBULONDB_BATCH_SIZE'] != str(batch_size):
-            self._config['llm']['NEBULONDB_BATCH_SIZE'] = str(batch_size)
-            update = True
-        
-        if update:
-            self._config.write()
+        batch_key = f'{prefix}_BATCH_SIZE'
+        if self._config.getint(section, batch_key) != batch_size:
+            self._config.set(section, batch_key, str(batch_size))
+            updated = True
+
+        if updated:
+            self._write()
 
 # ==========================================================
 #        NDBCryptoManager
@@ -276,30 +268,8 @@ class NDBCryptoManager:
     
         config_key = getattr(self.config, "ENVIRONMENT_MASTER_KEY", None)
         if config_key:
-            return config_key.encode()    
+            return config_key.encode()
         
-        # === Try from keyring if enabled ===
-        if getattr(self.config, "KEYRING_ENABLED", False):
-            try:
-                import keyring
-
-                stored_key = keyring.get_password(
-                    self.config.KEYRING_SERVICE, self.config.NEBULONDB_USER
-                )
-                if stored_key:
-                    return stored_key.encode()
-
-                # === If not found, generate and store a new one ===
-                new_key = Fernet.generate_key().decode()
-                keyring.set_password(
-                    self.config.KEYRING_SERVICE, self.config.NEBULONDB_USER, new_key
-                )
-                return new_key.encode()
-
-            except Exception as e:
-                # === Graceful fallback if keyring fails ===
-                logger.warning(f"[Warning] Keyring access failed: {e}")
-
         # === As a last resort, generate a temporary in-memory key ===
         logger.warning("[Warning] No valid key found — generating temporary master key.")
 

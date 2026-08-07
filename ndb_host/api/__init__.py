@@ -1,3 +1,11 @@
+"""
+NDB API
+==========================================================
+
+This module handles the FastAPI application setup and configuration.
+
+"""
+
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 

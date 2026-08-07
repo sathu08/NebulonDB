@@ -1,3 +1,11 @@
+"""
+NDB Logger Utility
+==========================================================
+
+This module handles logging for the NDB API.
+
+"""
+
 import logging
 from datetime import datetime
 from typing import Optional
@@ -9,7 +17,7 @@ from colorama import Fore, Style, init as colorama_init
 # Initialize colorama for cross-platform color support
 colorama_init(autoreset=False)
 
-from utils.constants import NDBCorpusMeta
+from utils.constants import NDBMeta
 
 
 # ==========================================================
@@ -57,7 +65,7 @@ class TZColoredFormatter(logging.Formatter):
 class NebulonDBLogger:
     _instance = None
     _logger = None
-    app_name = NDBCorpusMeta.APP_NAME
+    app_name = NDBMeta.APP_NAME
 
     def __new__(cls, level=logging.INFO):
         if cls._instance is None:
@@ -90,7 +98,7 @@ class NebulonDBLogger:
     def configure_file_logging(
         self,
         log_dir: str,
-        log_structure: list = NDBCorpusMeta.LOG_STRUCTURE
+        log_structure: list = NDBMeta.Logging.STRUCTURE
     ):
         app_name = self.app_name
         log_path = Path(log_dir)

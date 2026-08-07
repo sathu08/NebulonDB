@@ -1,3 +1,12 @@
+"""
+NDB Core Permissions
+==========================================================
+
+This module handles security for the NDB API.
+It provides endpoints for user registration and authentication.
+
+"""
+
 from passlib.context import CryptContext
 
 from utils.models import AuthenticationConfig

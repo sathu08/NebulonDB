@@ -1,0 +1,152 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Dashboard - NebulonDB</title>
+  <link rel="stylesheet" href="/assets/css/style.css">
+</head>
+<body class="dash-body">
+  <aside class="sidebar">
+    <div class="sidebar-head">
+      <div class="sidebar-brand">
+        <div class="brand-logo">N</div>
+        <div>
+          <div class="brand-name">NebulonDB</div>
+          <div class="brand-sub">Vector database console</div>
+        </div>
+      </div>
+    </div>
+
+    <div class="sidebar-search">
+      <input id="corpusSearch" class="input" type="text" placeholder="Search corpora...">
+    </div>
+
+    <div class="sidebar-list" id="corpusList"></div>
+
+    <div class="sidebar-head" style="border-top:1px solid var(--border);">
+      <button class="btn btn-primary" id="newCorpusBtn" style="width:100%;">+ New corpus</button>
+    </div>
+  </aside>
+
+  <div class="main">
+    <header class="topbar">
+      <div class="topbar-title" id="topbarTitle">Overview</div>
+      <div class="topbar-right">
+        <div class="user-chip">
+          <div class="user-avatar" id="userAvatar">U</div>
+          <div class="user-info">
+            <span class="user-name" id="userName">—</span>
+            <span class="user-role" id="userRole">—</span>
+          </div>
+        </div>
+        <button class="btn btn-ghost btn-sm" id="logoutBtn">Sign out</button>
+      </div>
+    </header>
+
+    <main class="content" id="content">
+      <div class="empty-state" id="emptyState">
+        <div class="icon">🗂️</div>
+        <h2>Select a corpus to explore</h2>
+        <p>Choose a corpus from the sidebar to view its segments and data.</p>
+      </div>
+
+      <div id="corpusView" style="display:none;">
+        <div class="flex-between section">
+          <div>
+            <h2 id="corpusTitle" style="font-size:20px;"></h2>
+            <span id="corpusBadge"></span>
+            <span class="muted small" id="corpusMeta"></span>
+          </div>
+          <div class="flex" id="corpusActions"></div>
+        </div>
+
+        <div class="panel">
+          <div class="panel-head">
+            <span class="panel-title">Segments</span>
+            <button class="btn btn-ghost btn-sm" id="loadSegmentBtn" style="display:none;">Load segment</button>
+          </div>
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>Segment</th>
+                  <th>Records</th>
+                  <th>Created</th>
+                  <th>Action</th>
+                </tr>
+              </thead>
+              <tbody id="segmentTableBody">
+                <tr><td colspan="4" class="muted" id="segmentEmpty">Loading segments...</td></tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+
+        <div id="segmentView" style="display:none;">
+          <div class="flex-between section" style="margin-top:8px;">
+            <h3 style="font-size:16px;">Segment: <span id="segmentName" style="color:var(--accent);"></span></h3>
+            <span class="muted small" id="segmentStatsNote"></span>
+          </div>
+
+          <div class="stats-grid" id="statsGrid"></div>
+
+          <div class="panel">
+            <div class="panel-head">
+              <span class="panel-title">Search data</span>
+            </div>
+            <div class="panel-body">
+              <div class="search-row">
+                <input id="searchInput" class="input" type="text" placeholder="Search text within this segment...">
+                <input id="searchTop" class="input" type="number" min="1" max="100" value="10" style="max-width:110px;" title="Top matches">
+                <button class="btn btn-primary" id="searchBtn">Search</button>
+              </div>
+              <div class="table-wrap mt-16" id="searchResultsWrap" style="display:none;">
+                <table>
+                  <thead>
+                    <tr>
+                      <th>ID</th>
+                      <th>Score</th>
+                      <th>Metadata / Text</th>
+                      <th>Action</th>
+                    </tr>
+                  </thead>
+                  <tbody id="searchResultsBody"></tbody>
+                </table>
+              </div>
+              <div id="searchMessage" class="muted small mt-16"></div>
+            </div>
+          </div>
+
+          <div class="panel">
+            <div class="panel-head">
+              <span class="panel-title">Record lookup</span>
+            </div>
+            <div class="panel-body">
+              <div class="search-row">
+                <input id="recordIdInput" class="input" type="number" min="0" placeholder="Record ID...">
+                <button class="btn btn-primary" id="recordBtn">Get record</button>
+              </div>
+              <div id="recordView" class="mt-16" style="display:none;"></div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </main>
+  </div>
+
+  <div id="modalOverlay" class="modal-overlay">
+    <div class="modal">
+      <div class="modal-head">
+        <span class="modal-title" id="modalTitle">New corpus</span>
+        <button class="modal-close" id="modalClose">&times;</button>
+      </div>
+      <div class="modal-body" id="modalBody"></div>
+      <div class="modal-foot" id="modalFoot"></div>
+    </div>
+  </div>
+
+  <script src="/assets/js/api.js"></script>
+  <script src="/assets/js/dashboard.js"></script>
+</body>
+</html>

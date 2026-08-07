@@ -4,10 +4,13 @@ gunicorn>=21.2,<22.0
 uvicorn[standard]>=0.29,<0.31
 
 # === Vector / ML stack ===
-faiss-cpu>=1.7.4,<1.9
-sentence-transformers>=2.6,<3.0
+# faiss-cpu>=1.7.4,<1.9
+# sentence-transformers>=2.6,<3.0
 numpy>=1.24,<2.0
 polars>=0.20,<1.0
+rank-bm25>=0.2.2,<1.0
+bitsandbytes>=0.49.2,<0.50
+accelerate>=0.29,<0.31
 
 # === Security ===
 passlib[bcrypt]>=1.7.4,<2.0

@@ -1,3 +1,11 @@
+"""
+NDB Initialization
+==========================================================
+
+This module handles initialization for the NDB API.
+
+"""
+
 import sys
 from pathlib import Path
 

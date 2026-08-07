@@ -1,15 +1,15 @@
 import json
-import threading
+import string
+import secrets
 
 from pathlib import Path
-from functools import lru_cache
-
 from typing import Optional, Dict, Any, Union, List, Tuple
+
 from pydantic import BaseModel, Field, field_validator
 
 from db.ndb_settings import NDBConfig
 from utils.logger import NebulonDBLogger
-from utils.constants import AuthenticationConfig, UserRole, ColumnPick, NDBCorpusMeta
+from utils.constants import AuthenticationConfig, NDBMeta, UserRole
 
 
 # ==========================================================
@@ -23,97 +23,6 @@ cfg = NDBConfig()
 # ==========================================================
 
 logger = NebulonDBLogger().get_logger()
-
-# ==========================================================
-#        Thread Lock (per worker)
-# ==========================================================
-
-_model_lock = threading.Lock()
-
-# ==========================================================
-#        Embedding Model Loader with Caching
-# ==========================================================
-
-def get_auto_batch_size() -> Tuple[int, str]:
-    """Decide batch size automatically based on system/device."""
-
-    import torch
-    import psutil
-    
-    device = "cuda" if torch.cuda.is_available() and not cfg.NEBULONDB_DEFAULT_MODE else "cpu"
-    if device == "cuda":
-        # GPU memory based logic
-        total_mem = torch.cuda.get_device_properties(0).total_memory / 1e9  # in GB
-        if total_mem > 16:
-            return 128, device
-        elif total_mem > 8:
-            return 64, device
-        else:
-            return 32, device
-    else:
-        # CPU memory based logic
-        ram_gb = psutil.virtual_memory().total / 1e9
-        if ram_gb > 16:
-            return 32, device
-        elif ram_gb > 8:
-            return 16, device
-        else:
-            return 8, device
-
-@lru_cache(maxsize=1)
-def get_embedding_model(model_repo_id: str):
-    """ Load SentenceTransformer model (only once per worker).Thread-safe + disk-cached."""
-
-    from sentence_transformers import SentenceTransformer
-
-    cache_folder = Path(cfg.NEBULONDB_MODEL_CACHE_DIR)
-
-    # === Update LLM config ===
-    
-    with _model_lock:
-        logger.info(
-            f"Loading embedding model: {model_repo_id} "
-            f"(cache_dir={cache_folder}, once per worker)"
-        )
-
-        return SentenceTransformer(
-            model_repo_id,
-            cache_folder=str(cache_folder),
-            device=cfg.NEBULONDB_MODEL_DEVICE            
-        )
-
-# ==========================================================
-#        Ensure Model Exists + Load
-# ==========================================================
-
-def ensure_embedding_model(model_name: str, prefix: str = "sentence-transformers"):
-    """Ensure embedding model exists and load it."""
-
-    repo_id = f"{prefix}/{model_name}"
-    return get_embedding_model(repo_id)
-    
-
-# ==========================================================
-#        Semantic Embedding Model Wrapper
-# ==========================================================
-
-class SemanticEmbeddingModel:
-    """Wrapper for the embedding model."""
-
-    def __init__(self):
-        self.model_name = cfg.NEBULONDB_EMBEDDING_MODEL
-
-    def encode(self, texts, **kwargs):
-        """
-        Encode texts using the embedding model.
-        Args:
-            texts (List[str]): List of texts to encode.
-        Returns:
-            List[List[float]]: List of embeddings.
-        """
-        
-        model = get_embedding_model(self.model_name)
-        return model.encode(texts, **kwargs,batch_size=16)
 
 # ==========================================================
 #        Pydantic Models
@@ -145,18 +54,54 @@ class UserRegistrationRequest(BaseModel):
     password: str = Field(..., min_length=6)
     user_role: str
 
+class ChangePasswordRequest(BaseModel):
+    current_password: str = Field(..., min_length=6)
+    new_password: str = Field(..., min_length=6)
+
+class DeleteUserRequest(BaseModel):
+    username: str = Field(..., min_length=3, max_length=50)
+
 class CorpusQueryRequest(BaseModel):
     corpus_name: str = Field(..., min_length=1)
+    ndb_type: str = NDBMeta.Type.COSMOS
 
 class SegmentQueryRequest(BaseModel):
     corpus_name: str = Field(..., min_length=1)
     segment_name: str = Field(..., min_length=1)
+    ndb_type: str = NDBMeta.Type.ORBIT
+    limit: Optional[int] = None
     segment_dataset: Optional[Union[Dict[str, List[Any]], List[Dict[str, Any]]]] = None
     set_columns: Optional[Union[str, List[str]]] = None
     search_item: Optional[str] = None
+    doc_type: Optional[str] = None
+    lang_type: Optional[str] = None
+
+    # Nova and Mesh 
     top_matches: Optional[int] = None
     min_score: Optional[float] = None
     is_precomputed: Optional[bool] = False
+    rank: Optional[bool] = False
+    mode: Optional[str] = None
+    graph_start_node: Optional[int] = None
+    expand_depth: Optional[int] = None
+    graph_boost: Optional[float] = None
+    relations: Optional[List[Tuple[int, int, str]]] = None
+    source_column: Optional[str] = None
+    target_column: Optional[str] = None
+    relation_column: Optional[str] = None
+    record_id: Optional[int] = None
+    node_id: Optional[int] = None
+    direction: Optional[str] = "both"
+    start_node: Optional[int] = None
+    max_depth: Optional[int] = 3
+    source: Optional[int] = None
+    target: Optional[int] = None
+    relation: Optional[str] = None
+    metadata: Optional[Dict[str, Any]] = None
+
+    # Bulk graph load (Option A)
+    nodes: Optional[List[Dict[str, Any]]] = None
+    edges: Optional[List[Dict[str, Any]]] = None
 
     @field_validator("segment_dataset", mode="before")
     def ensure_dict_or_list(cls, v):
@@ -175,11 +120,6 @@ class SegmentQueryRequest(BaseModel):
         # === Case 4: Anything else → reject (return None, let route handle) ===
         return None
 
-    @field_validator("segment_name", mode="before")
-    def ensure_lowercase(cls, v: str) -> str:
-        if isinstance(v, str):
-            return v.lower()
-        return v
 
 class UserAuthenticationResponse(BaseModel):
     message: str
@@ -189,10 +129,11 @@ class StandardResponse(BaseModel):
     success: bool
     message: str
     exists: bool = False
-    data: Optional[Dict[str, Any]] = None
+    data: Optional[Union[Dict[str, Any], List[Any], Any]] = None
     corpus_name: Optional[str] = None
     segment_name: Optional[str] = None
     errors: Optional[List[str]] = None
+
 
 # ==========================================================
 #        Helper Functions
@@ -277,3 +218,16 @@ def save_data(data: Dict[str, Any], path_loc: Union[Path, str, None] = None, ret
         if return_bytes:
             raise
         return {"success": False, "message": "Failed to save data", "error": str(e)}
+
+
+def generate_password(length: int = 16) -> str:
+    """Generate a cryptographically secure random password."""
+    alphabet = string.ascii_letters + string.digits + string.punctuation
+    while True:
+        password = ''.join(secrets.choice(alphabet) for _ in range(length))
+        # Ensure at least one of each required character class
+        if (any(c.islower() for c in password)
+                and any(c.isupper() for c in password)
+                and any(c.isdigit() for c in password)
+                and any(c in string.punctuation for c in password)):
+            return password
