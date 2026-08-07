@@ -148,7 +148,7 @@ class UserManager:
             db = self._get_db_manager()
             # Build the document to store
             doc = {
-                "_table": "users",
+                "_segment": "users",
                 "username": username,
                 "password": user_data["password"],
                 "role": user_data["role"],
@@ -201,7 +201,7 @@ class UserManager:
             record_id = user_record["id"]
             doc = {
                 "_id": record_id,
-                "_table": "users",
+                "_segment": "users",
                 "username": username,
                 "password": new_hashed_password,
                 "role": user_record["role"],

@@ -342,6 +342,7 @@ def start_server(cfg: NDBConfig, foreground: bool = False):
     process = subprocess.Popen(cmd, **kwargs)
     NEBULONDB_PID_FILE.write_text(str(process.pid))
     print(f"Server started with PID {process.pid}.")
+    print(f"Web console available at: http://{cfg.HOST}:{cfg.PORT}/api/NebulonDB/dashboard/")
     logger.info("Server started with PID %s.", process.pid)
 
     if foreground:

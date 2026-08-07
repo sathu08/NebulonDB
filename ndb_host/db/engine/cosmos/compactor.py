@@ -175,7 +175,7 @@ def compact(
                 rec_id = rec_dict.get("_id")
                 if rec_id is None:
                     continue
-                table = rec_dict.get("_table") or "_main"
+                table = rec_dict.get("_segment") or "_main"
                 tkey = (table, rec_id)
                 if tkey not in latest_source:
                     if not rec_dict.get("_deleted", False):

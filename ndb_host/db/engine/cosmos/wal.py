@@ -112,7 +112,7 @@ def recover_wal(
                 continue
 
             # Restore segment counters
-            segment = rec_dict.get("_table") or "_main"
+            segment = rec_dict.get("_segment") or "_main"
             if isinstance(rec_id, int):
                 if (
                     segment not in meta["tables"]

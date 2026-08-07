@@ -429,7 +429,7 @@ class NebulonCosmos:
             record["_id"] = record.pop("id")
         elif "_id" not in record or record["_id"] is None:
             record["_id"] = self._next_id(segment)
-        record["_table"]   = segment
+        record["_segment"]   = segment
         record["_version"] = self._next_version()
         if is_delete:
             record["_deleted"] = True
@@ -586,7 +586,7 @@ class NebulonCosmos:
                 continue
             # Persisted index entries are keyed only by record_id, so the
             # record itself must be checked to avoid leaking across tables.
-            if segment is not None and doc.get("_table", t) != segment:
+            if segment is not None and doc.get("_segment", t) != segment:
                 continue
             if include_internal:
                 docs.append(doc)
