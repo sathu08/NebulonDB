@@ -202,9 +202,12 @@ echo Virtual Env    : %VENV_DIR%
 echo NebulonDB CLI  : %PROJECT_DIR%\.venv\Scripts\nebulondb.exe
 echo NEBULONDB_HOME : %PROJECT_DIR%
 echo.
-echo Open a new terminal, then run:
+echo Open a new terminal, then activate the virtual environment:
 echo.
 echo     %PROJECT_DIR%\.venv\Scripts\activate.bat
+echo.
+echo Then start NebulonDB:
+echo.
 echo     nebulondb start
 echo.
 echo ============================================================
