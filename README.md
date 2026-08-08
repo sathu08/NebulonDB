@@ -153,60 +153,70 @@ ndb_host/
 ## 🛠️ Installation
 
 ### Prerequisites
-- Python 3.9 or higher
-- pip (Python package manager)
-- Virtual environment (recommended)
+- **Git** — required to clone the repository
+- An internet connection (the first run downloads Python 3.10 and dependencies)
 
-### Step-by-Step Installation
+### One-Click Installer (recommended)
 
-1.  **Install Python 3.9+**
+Fetch and run the installer directly from GitHub — no manual clone needed.
+NebulonDB ships with `install.sh` (Linux/macOS) and `install.bat` (Windows).
+The installer handles everything end to end: cloning the repository, installing
+[`uv`](https://docs.astral.sh/uv/), provisioning Python 3.10, syncing all
+dependencies into a virtual environment, verifying the `nebulondb` CLI, and
+persisting `NEBULONDB_HOME`.
 
-    **Ubuntu/Debian:**
-    ```bash
-    sudo apt update
-    sudo apt install python3.10 python3.10-venv python3-pip
-    ```
+**Linux / macOS:**
+```bash
+curl -fsSL https://raw.githubusercontent.com/sathu08/NebulonDB/dev/install.sh | bash
+```
 
-    **macOS (using Homebrew):**
-    ```bash
-    brew install python@3.10
-    ```
+**Windows (PowerShell):**
+```powershell
+irm https://raw.githubusercontent.com/sathu08/NebulonDB/dev/install.bat -OutFile "$env:TEMP\install.bat"; & "$env:TEMP\install.bat"
+```
 
-    **Windows:**
-    Download and install from [python.org](https://www.python.org/downloads/)
+Alternatively, run the installers from a local clone:
+
+```bash
+git clone https://github.com/sathu08/NebulonDB.git
+cd NebulonDB
+bash install.sh          # Linux/macOS
+install.bat              # Windows (Command Prompt)
+```
+
+What the installer does:
+
+1. Clones the `dev` branch into `~/CodeBase/NebulonDB` (Linux/macOS) or
+   `%USERPROFILE%\CodeBase\NebulonDB` (Windows).
+2. Installs `uv` if it is not already available.
+3. Installs **Python 3.10** via `uv` (only if not found).
+4. Runs `uv sync --python 3.10` to create `.venv` and install dependencies.
+5. Verifies the `nebulondb` CLI and runs `nebulondb --help`.
+6. Persists `NEBULONDB_HOME` — via `~/.bashrc` on Linux/macOS, or via `setx`
+   (user-level environment variable) on Windows.
+
+> Re-running the installer updates an existing clone by fetching the latest
+> `dev` branch with `git pull --ff-only`. Dependencies are kept in sync with
+> `pyproject.toml`.
+
+### Manual Installation (uv)
+
+Prefer to do it by hand?
+
+1.  **Install Git and [uv](https://docs.astral.sh/uv/).**
 
 2.  **Clone the Repository**
     ```bash
-    git clone <your-repo-url>
+    git clone https://github.com/sathu08/NebulonDB.git
     cd NebulonDB
     ```
 
-3.  **Create and Activate Virtual Environment**
-
-    **Linux/macOS:**
+3.  **Create the Virtual Environment and Install Dependencies**
     ```bash
-    python3 -m venv env
-    source env/bin/activate
+    uv sync --python 3.10
     ```
 
-    **Windows:**
-    ```bash
-    python -m venv env
-    env\Scripts\activate
-    ```
-
-4.  **Upgrade pip and Clear Cache**
-    ```bash
-    pip install --upgrade pip
-    pip cache purge
-    ```
-
-5.  **Install Dependencies**
-    ```bash
-    pip install -r requirements.txt
-    ```
-
-6.  **Set Environment Variable**
+4.  **Set the Environment Variable**
 
     **Linux/macOS (add to ~/.bashrc or ~/.zshrc):**
     ```bash
@@ -214,14 +224,15 @@ ndb_host/
     source ~/.bashrc  # or source ~/.zshrc
     ```
 
-    **Windows (Command Prompt):**
-    ```cmd
-    set NEBULONDB_HOME=C:\path\to\NebulonDB
-    ```
-
     **Windows (PowerShell):**
     ```powershell
     $env:NEBULONDB_HOME="C:\path\to\NebulonDB"
+    ```
+
+5.  **Activate the Virtual Environment** (each new shell)
+    ```bash
+    source .venv/bin/activate    # Linux/macOS
+    .venv\Scripts\activate       # Windows (Command Prompt)
     ```
 
 ---
@@ -231,14 +242,14 @@ ndb_host/
 ### 1. Create an Admin User
 Before starting the server, you must create an admin user.
 ```bash
-python run.py --create-user
+nebulondb --create-user
 # Follow the prompts to set username (e.g., 'admin') and password.
 # Select 'admin_user' or 'super_user' as the role.
 ```
 
 ### 2. Start the Server
 ```bash
-python run.py start
+nebulondb start
 ```
 The server will start on `http://localhost:6969` (default). Interactive API docs
 are available at `http://localhost:6969/docs`.

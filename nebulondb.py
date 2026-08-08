@@ -265,7 +265,7 @@ def start_server(cfg: NDBConfig, foreground: bool = False):
 
     if not (accounthub_corpus_path.exists() and default_corpus_path.exists()):
         logger.info("Please create user credentials first using:")
-        logger.info("python run.py --create-user")
+        logger.info("nebulondb --create-user")
         return
 
     # Handle stale PID file
@@ -387,7 +387,7 @@ def stop_server(cfg: NDBConfig, force: bool = False):
             return
         logger.warning(
             "Server appears to be running on %s:%s but was started manually. "
-            "Use 'python run.py stop --force' to stop it.",
+            "Use 'nebulondb stop --force' to stop it.",
             cfg.HOST, cfg.PORT
         )
         return
@@ -459,7 +459,7 @@ def create_user(cfg: NDBConfig):
 
 def main():
     if len(sys.argv) < 2:
-        logger.info("Usage: python run.py {start|stop|restart|--create-user} [--foreground|-f] [--force|-F]")
+        logger.info("Usage: nebulondb {start|stop|restart|--create-user} [--foreground|-f] [--force|-F]")
         sys.exit(1)
 
     command = sys.argv[1].lower()
@@ -479,7 +479,7 @@ def main():
     elif command == "--create-user":
         create_user(cfg)
     else:
-        logger.error("Invalid command. Usage: python run.py {start|stop|restart|--create-user} [--foreground|-f] [--force|-F]")
+        logger.error("Invalid command. Usage: nebulondb {start|stop|restart|--create-user} [--foreground|-f] [--force|-F]")
         sys.exit(1)
 
 
