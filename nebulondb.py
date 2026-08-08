@@ -463,6 +463,11 @@ def main():
         sys.exit(1)
 
     command = sys.argv[1].lower()
+
+    if command in ("--help", "-h", "help"):
+        print("Usage: nebulondb {start|stop|restart|--create-user} [--foreground|-f] [--force|-F]")
+        sys.exit(0)
+
     _setup_nebulondb_paths(cfg)
 
     # Check for foreground flag

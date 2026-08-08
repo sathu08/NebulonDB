@@ -48,20 +48,21 @@ log "Target branch:"
 log "$BRANCH"
 
 TARGET_DIR="$(pwd)"
+PROJECT_DIR="$TARGET_DIR/$PROJECT_DIR_NAME"
 
 log "Target directory:"
 log "$TARGET_DIR"
 
 cd "$TARGET_DIR"
 
-if [[ -d "$TARGET_DIR/.git" ]]; then
+if [[ -d "$PROJECT_DIR/.git" ]]; then
 
     # ---------- Existing repository: fetch + update ----------
 
     CURRENT_REMOTE="$(git remote get-url origin 2>/dev/null || true)"
 
     if [[ -z "$CURRENT_REMOTE" ]]; then
-        error "Git remote 'origin' is not configured in $TARGET_DIR"
+        error "Git remote 'origin' is not configured in $PROJECT_DIR"
     fi
 
     log "Git remote:"
@@ -83,27 +84,19 @@ else
 
     # ---------- Fresh clone ----------
 
-    if [[ -n "$(ls -A "$TARGET_DIR" 2>/dev/null)" ]]; then
-        # Current directory is not empty: clone into a NebulonDB subdirectory
-        TARGET_DIR="$TARGET_DIR/$PROJECT_DIR_NAME"
-        if [[ -d "$TARGET_DIR/.git" ]]; then
-            error "A NebulonDB repository already exists at: $TARGET_DIR"
-        fi
-        log "Directory is not empty. Cloning into subdirectory:"
-        log "$TARGET_DIR"
-        mkdir -p "$TARGET_DIR"
-    else
-        # Current directory is empty: clone directly into it
-        log "Cloning into current directory..."
+    if [[ -d "$PROJECT_DIR" ]]; then
+        error "NebulonDB directory already exists but is not a Git repository: $PROJECT_DIR"
     fi
 
+    log "Cloning NebulonDB into:"
+    log "$PROJECT_DIR"
     log "Branch: $BRANCH"
 
     git clone \
         --branch "$BRANCH" \
         --single-branch \
         "$REPO_URL" \
-        "$TARGET_DIR"
+        "$PROJECT_DIR"
 
     log "Repository cloned successfully."
 fi
@@ -112,9 +105,7 @@ fi
 # Set Current Directory to NebulonDB
 # ------------------------------------------------------------
 
-cd "$TARGET_DIR"
-
-PROJECT_DIR="$TARGET_DIR"
+cd "$PROJECT_DIR"
 
 log "NebulonDB Home:"
 log "$PROJECT_DIR"
@@ -199,6 +190,8 @@ source "$VENV_DIR/bin/activate"
 # ------------------------------------------------------------
 # Verify Nebulon CLI
 # ------------------------------------------------------------
+
+export NEBULONDB_HOME="$PROJECT_DIR"
 
 if ! command -v nebulondb >/dev/null 2>&1; then
     error "NebulonDB CLI was not installed correctly."

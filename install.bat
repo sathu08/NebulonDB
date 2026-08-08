@@ -11,8 +11,6 @@ set "REPO_URL=https://github.com/sathu08/NebulonDB.git"
 set "BRANCH=dev"
 set "PROJECT_DIR_NAME=NebulonDB"
 
-set "TARGET_DIR=%CD%"
-
 rem ------------------------------------------------------------
 rem Check Git
 rem ------------------------------------------------------------
@@ -32,34 +30,27 @@ echo [NebulonDB] %REPO_URL%
 echo [NebulonDB] Target branch:
 echo [NebulonDB] %BRANCH%
 
+set "TARGET_DIR=%CD%"
+set "PROJECT_DIR=%TARGET_DIR%\%PROJECT_DIR_NAME%"
+
 echo [NebulonDB] Target directory:
 echo [NebulonDB] %TARGET_DIR%
 
-set "DIR_EMPTY=1"
-for /f %%i in ('dir /b "%TARGET_DIR%" 2^>nul') do set "DIR_EMPTY=0"
+if exist "%PROJECT_DIR%\.git" goto :update_repo
 
-if exist "%TARGET_DIR%\.git" goto :update_repo
-
-if not "%DIR_EMPTY%"=="1" goto :clone_subdir
-
-echo [NebulonDB] Cloning into current directory...
-goto :do_clone
-
-:clone_subdir
-rem Current directory is not empty: clone into a NebulonDB subdirectory
-set "TARGET_DIR=%TARGET_DIR%\%PROJECT_DIR_NAME%"
-if exist "%TARGET_DIR%\.git" (
-    echo [NebulonDB][ERROR] A NebulonDB repository already exists at: %TARGET_DIR%
+rem ---------- Fresh clone: create a NebulonDB folder and clone into it ----------
+if exist "%PROJECT_DIR%" (
+    echo [NebulonDB][ERROR] NebulonDB directory already exists but is not a Git repository: %PROJECT_DIR%
     exit /b 1
 )
-echo [NebulonDB] Directory is not empty. Cloning into subdirectory:
-echo [NebulonDB] %TARGET_DIR%
-mkdir "%TARGET_DIR%"
 
-:do_clone
+echo [NebulonDB] Cloning NebulonDB into:
+echo [NebulonDB] %PROJECT_DIR%
 echo [NebulonDB] Branch: %BRANCH%
 
-git clone --branch %BRANCH% --single-branch %REPO_URL% "%TARGET_DIR%"
+mkdir "%PROJECT_DIR%"
+
+git clone --branch %BRANCH% --single-branch %REPO_URL% "%PROJECT_DIR%"
 if errorlevel 1 goto :error
 
 echo [NebulonDB] Repository cloned successfully.
@@ -67,7 +58,7 @@ goto :movedir
 
 :update_repo
 echo [NebulonDB] NebulonDB repository already exists:
-echo [NebulonDB] %TARGET_DIR%
+echo [NebulonDB] %PROJECT_DIR%
 
 echo [NebulonDB] Fetching latest changes from branch '%BRANCH%'...
 git fetch origin %BRANCH%
@@ -86,10 +77,8 @@ rem ------------------------------------------------------------
 rem Set Current Directory to NebulonDB
 rem ------------------------------------------------------------
 
-cd /d "%TARGET_DIR%"
+cd /d "%PROJECT_DIR%"
 if errorlevel 1 goto :error
-
-set "PROJECT_DIR=%TARGET_DIR%"
 
 echo [NebulonDB] NebulonDB Home:
 echo [NebulonDB] %PROJECT_DIR%
@@ -184,6 +173,7 @@ echo [NebulonDB] NebulonDB executable:
 where nebulondb
 
 echo [NebulonDB] Testing NebulonDB CLI...
+set "NEBULONDB_HOME=%PROJECT_DIR%"
 nebulondb --help
 if errorlevel 1 goto :error
 
