@@ -215,10 +215,14 @@ BASHRC="$HOME/.bashrc"
 log "Configuring NEBULONDB_HOME..."
 
 if [[ -f "$BASHRC" ]]; then
-    sed -i '/^[[:space:]]*export NEBULONDB_HOME=/d' "$BASHRC"
+    sed -i \
+        -e '/^[[:space:]]*export NEBULONDB_HOME=/d' \
+        -e '/\.venv\/bin\/activate/d' \
+        "$BASHRC"
 fi
 
-printf '\n# NebulonDB\nexport NEBULONDB_HOME="%s"\n' "$NEBULONDB_HOME" >> "$BASHRC"
+printf '\n# NebulonDB\nexport NEBULONDB_HOME="%s"\nsource "%s/.venv/bin/activate"\n' \
+    "$NEBULONDB_HOME" "$PROJECT_DIR" >> "$BASHRC"
 
 # ------------------------------------------------------------
 # Installation Complete

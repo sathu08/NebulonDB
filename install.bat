@@ -204,6 +204,7 @@ echo NEBULONDB_HOME : %PROJECT_DIR%
 echo.
 echo Open a new terminal, then run:
 echo.
+echo     %PROJECT_DIR%\.venv\Scripts\activate.bat
 echo     nebulondb start
 echo.
 echo ============================================================
