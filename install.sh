@@ -14,7 +14,6 @@ REPO_URL="https://github.com/sathu08/NebulonDB.git"
 BRANCH="dev"
 PROJECT_DIR_NAME="NebulonDB"
 
-INSTALL_BASE_DIR="$HOME/CodeBase"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 # ------------------------------------------------------------
@@ -48,9 +47,9 @@ log "$REPO_URL"
 log "Target branch:"
 log "$BRANCH"
 
-mkdir -p "$INSTALL_BASE_DIR"
+# mkdir -p "$SCRIPT_DIR"
 
-PROJECT_DIR="$INSTALL_BASE_DIR/$PROJECT_DIR_NAME"
+PROJECT_DIR="$SCRIPT_DIR/$PROJECT_DIR_NAME"
 
 if [[ -d "$PROJECT_DIR/.git" ]]; then
 
