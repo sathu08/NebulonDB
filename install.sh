@@ -1,7 +1,9 @@
 #!/usr/bin/env bash
 
 # ============================================================
-# NebulonDB Installation Script
+# NebulonDB Installation Script (curl | bash)
+# Clones the repository into the current working directory and
+# sets the current directory to the NebulonDB repo root.
 # ============================================================
 
 set -euo pipefail
@@ -13,8 +15,6 @@ set -euo pipefail
 REPO_URL="https://github.com/sathu08/NebulonDB.git"
 BRANCH="dev"
 PROJECT_DIR_NAME="NebulonDB"
-
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 # ------------------------------------------------------------
 # Helper Functions
@@ -38,7 +38,7 @@ if ! command -v git >/dev/null 2>&1; then
 fi
 
 # ------------------------------------------------------------
-# Clone NebulonDB
+# Clone or Update NebulonDB
 # ------------------------------------------------------------
 
 log "NebulonDB repository:"
@@ -47,16 +47,25 @@ log "$REPO_URL"
 log "Target branch:"
 log "$BRANCH"
 
-# mkdir -p "$SCRIPT_DIR"
+TARGET_DIR="$(pwd)"
 
-PROJECT_DIR="$SCRIPT_DIR/$PROJECT_DIR_NAME"
+log "Target directory:"
+log "$TARGET_DIR"
 
-if [[ -d "$PROJECT_DIR/.git" ]]; then
+cd "$TARGET_DIR"
 
-    log "NebulonDB repository already exists:"
-    log "$PROJECT_DIR"
+if [[ -d "$TARGET_DIR/.git" ]]; then
 
-    cd "$PROJECT_DIR"
+    # ---------- Existing repository: fetch + update ----------
+
+    CURRENT_REMOTE="$(git remote get-url origin 2>/dev/null || true)"
+
+    if [[ -z "$CURRENT_REMOTE" ]]; then
+        error "Git remote 'origin' is not configured in $TARGET_DIR"
+    fi
+
+    log "Git remote:"
+    log "$CURRENT_REMOTE"
 
     log "Fetching latest changes from branch '$BRANCH'..."
 
@@ -72,27 +81,40 @@ if [[ -d "$PROJECT_DIR/.git" ]]; then
 
 else
 
-    if [[ -d "$PROJECT_DIR" ]]; then
-        error "Directory already exists but is not a Git repository: $PROJECT_DIR"
+    # ---------- Fresh clone ----------
+
+    if [[ -n "$(ls -A "$TARGET_DIR" 2>/dev/null)" ]]; then
+        # Current directory is not empty: clone into a NebulonDB subdirectory
+        TARGET_DIR="$TARGET_DIR/$PROJECT_DIR_NAME"
+        if [[ -d "$TARGET_DIR/.git" ]]; then
+            error "A NebulonDB repository already exists at: $TARGET_DIR"
+        fi
+        log "Directory is not empty. Cloning into subdirectory:"
+        log "$TARGET_DIR"
+        mkdir -p "$TARGET_DIR"
+    else
+        # Current directory is empty: clone directly into it
+        log "Cloning into current directory..."
     fi
 
-    log "Cloning NebulonDB..."
     log "Branch: $BRANCH"
 
     git clone \
         --branch "$BRANCH" \
         --single-branch \
         "$REPO_URL" \
-        "$PROJECT_DIR"
+        "$TARGET_DIR"
 
     log "Repository cloned successfully."
 fi
 
 # ------------------------------------------------------------
-# Move to Project Directory
+# Set Current Directory to NebulonDB
 # ------------------------------------------------------------
 
-cd "$PROJECT_DIR"
+cd "$TARGET_DIR"
+
+PROJECT_DIR="$TARGET_DIR"
 
 log "NebulonDB Home:"
 log "$PROJECT_DIR"
