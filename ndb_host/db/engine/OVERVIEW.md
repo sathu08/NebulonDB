@@ -433,3 +433,69 @@ db/engine/
 > `nebulon_mesh_nodes`, `nebulon_mesh_edges`) are stored *inside* the
 > NebulonCosmos segments, making Cosmos the single source of durable truth and
 > Orbit the in-memory/hybrid index + query layer over it.
+
+---
+
+## 6. Storage Schema — logical tables
+
+The logical schema of the ORBIT storage layer. Records are persisted as rows
+inside the NebulonCosmos segments (see the On-Disk Layout above); a shared `_id`
+links a document to its vector and Mesh node.
+
+```
+┌──────────────────────────────────────────────────────────────┐
+│                 nebulon_documents                           │
+├──────────────────────────────────────────────────────────────┤
+│ _id (PK)                                                    │
+│ text                                                        │
+│ metadata                                                    │
+│    ├── lang                                                 │
+│    ├── type                                                 │
+│    ├── created_at                                           │
+│    ├── retention                                            │
+│    └── expires_at                                           │
+└──────────────────────────────────────────────────────────────┘
+
+
+┌──────────────────────────────────────────────────────────────┐
+│                   nebulon_nova                              │
+├──────────────────────────────────────────────────────────────┤
+│ _id (PK)                                                    │
+│ vector (float[])                                            │
+└──────────────────────────────────────────────────────────────┘
+
+
+┌──────────────────────────────────────────────────────────────┐
+│                 nebulon_mesh_nodes                          │
+├──────────────────────────────────────────────────────────────┤
+│ _id (PK)                                                    │
+│ label (optional)                                            │
+│ properties (optional)                                       │
+└──────────────────────────────────────────────────────────────┘
+
+
+┌──────────────────────────────────────────────────────────────┐
+│                 nebulon_mesh_edges                          │
+├──────────────────────────────────────────────────────────────┤
+│ edge_id (PK)                                                │
+│ from_id                                                     │
+│ to_id                                                       │
+│ relation                                                    │
+│ weight                                                      │
+│ created_at                                                  │
+│ properties (optional)                                       │
+└──────────────────────────────────────────────────────────────┘
+
+
+┌──────────────────────────────────────────────────────────────┐
+│                    nebulon_bm25                             │
+├──────────────────────────────────────────────────────────────┤
+│ term                                                        │
+│ posting_list (document ids)                                 │
+└──────────────────────────────────────────────────────────────┘
+```
+
+> **`nebulon_bm25`** — the BM25 inverted index (term → posting list of document
+> ids). It is currently maintained in memory by `BM25Scorer` in
+> `orbit/ranking.py` and lazily rebuilt after writes; this row represents its
+> logical schema for future persistence in Cosmos.

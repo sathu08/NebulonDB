@@ -31,3 +31,11 @@ benchmark_api.py
 # ===============================
 *.log
 .env
+
+# ===============================
+# Virtual environment & build
+# ===============================
+.venv/
+dist/
+build/
+*.egg-info

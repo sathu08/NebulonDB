@@ -3,14 +3,15 @@ setlocal EnableExtensions
 
 rem ============================================================
 rem NebulonDB Installation Script (Windows)
+rem Clones the repository into the current working directory and
+rem sets the current directory to the NebulonDB repo root.
 rem ============================================================
 
 set "REPO_URL=https://github.com/sathu08/NebulonDB.git"
 set "BRANCH=dev"
 set "PROJECT_DIR_NAME=NebulonDB"
 
-set "INSTALL_BASE_DIR=%USERPROFILE%\CodeBase"
-set "PROJECT_DIR=%INSTALL_BASE_DIR%\%PROJECT_DIR_NAME%"
+set "TARGET_DIR=%CD%"
 
 rem ------------------------------------------------------------
 rem Check Git
@@ -23,7 +24,7 @@ if errorlevel 1 (
 )
 
 rem ------------------------------------------------------------
-rem Clone NebulonDB
+rem Clone or Update NebulonDB
 rem ------------------------------------------------------------
 
 echo [NebulonDB] NebulonDB repository:
@@ -31,51 +32,64 @@ echo [NebulonDB] %REPO_URL%
 echo [NebulonDB] Target branch:
 echo [NebulonDB] %BRANCH%
 
-if not exist "%INSTALL_BASE_DIR%" mkdir "%INSTALL_BASE_DIR%"
+echo [NebulonDB] Target directory:
+echo [NebulonDB] %TARGET_DIR%
 
-if exist "%PROJECT_DIR%\.git" (
+set "DIR_EMPTY=1"
+for /f %%i in ('dir /b "%TARGET_DIR%" 2^>nul') do set "DIR_EMPTY=0"
 
-    echo [NebulonDB] NebulonDB repository already exists:
-    echo [NebulonDB] %PROJECT_DIR%
+if exist "%TARGET_DIR%\.git" goto :update_repo
 
-    pushd "%PROJECT_DIR%"
+if not "%DIR_EMPTY%"=="1" goto :clone_subdir
 
-    echo [NebulonDB] Fetching latest changes from branch '%BRANCH%'...
-    git fetch origin %BRANCH%
-    if errorlevel 1 goto :error
+echo [NebulonDB] Cloning into current directory...
+goto :do_clone
 
-    echo [NebulonDB] Switching to branch '%BRANCH%'...
-    git checkout %BRANCH%
-    if errorlevel 1 goto :error
-
-    echo [NebulonDB] Updating branch '%BRANCH%'...
-    git pull --ff-only origin %BRANCH%
-    if errorlevel 1 goto :error
-
-    popd
-
-) else (
-
-    if exist "%PROJECT_DIR%" (
-        echo [NebulonDB][ERROR] Directory already exists but is not a Git repository: %PROJECT_DIR%
-        exit /b 1
-    )
-
-    echo [NebulonDB] Cloning NebulonDB...
-    echo [NebulonDB] Branch: %BRANCH%
-
-    git clone --branch %BRANCH% --single-branch %REPO_URL% "%PROJECT_DIR%"
-    if errorlevel 1 goto :error
-
-    echo [NebulonDB] Repository cloned successfully.
+:clone_subdir
+rem Current directory is not empty: clone into a NebulonDB subdirectory
+set "TARGET_DIR=%TARGET_DIR%\%PROJECT_DIR_NAME%"
+if exist "%TARGET_DIR%\.git" (
+    echo [NebulonDB][ERROR] A NebulonDB repository already exists at: %TARGET_DIR%
+    exit /b 1
 )
+echo [NebulonDB] Directory is not empty. Cloning into subdirectory:
+echo [NebulonDB] %TARGET_DIR%
+mkdir "%TARGET_DIR%"
 
-rem ------------------------------------------------------------
-rem Move to Project Directory
-rem ------------------------------------------------------------
+:do_clone
+echo [NebulonDB] Branch: %BRANCH%
 
-pushd "%PROJECT_DIR%"
+git clone --branch %BRANCH% --single-branch %REPO_URL% "%TARGET_DIR%"
 if errorlevel 1 goto :error
+
+echo [NebulonDB] Repository cloned successfully.
+goto :movedir
+
+:update_repo
+echo [NebulonDB] NebulonDB repository already exists:
+echo [NebulonDB] %TARGET_DIR%
+
+echo [NebulonDB] Fetching latest changes from branch '%BRANCH%'...
+git fetch origin %BRANCH%
+if errorlevel 1 goto :error
+
+echo [NebulonDB] Switching to branch '%BRANCH%'...
+git checkout %BRANCH%
+if errorlevel 1 goto :error
+
+echo [NebulonDB] Updating branch '%BRANCH%'...
+git pull --ff-only origin %BRANCH%
+if errorlevel 1 goto :error
+
+:movedir
+rem ------------------------------------------------------------
+rem Set Current Directory to NebulonDB
+rem ------------------------------------------------------------
+
+cd /d "%TARGET_DIR%"
+if errorlevel 1 goto :error
+
+set "PROJECT_DIR=%TARGET_DIR%"
 
 echo [NebulonDB] NebulonDB Home:
 echo [NebulonDB] %PROJECT_DIR%
@@ -185,8 +199,6 @@ rem ------------------------------------------------------------
 rem Installation Complete
 rem ------------------------------------------------------------
 
-popd
-
 echo.
 echo ============================================================
 echo  NebulonDB Installation Complete
@@ -194,7 +206,7 @@ echo ============================================================
 echo.
 echo Repository     : %REPO_URL%
 echo Branch         : %CURRENT_BRANCH%
-echo Project        : %PROJECT_DIR%
+echo Directory      : %PROJECT_DIR%
 echo Python         : %PYTHON_PATH%
 echo Virtual Env    : %VENV_DIR%
 echo NebulonDB CLI  : %PROJECT_DIR%\.venv\Scripts\nebulondb.exe
