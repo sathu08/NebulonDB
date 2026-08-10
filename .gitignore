@@ -12,6 +12,7 @@
 __pycache__/
 *.pyc
 *.pyo
+*.lock
 
 # ===============================
 # Test / Dev directories
@@ -30,4 +31,15 @@ benchmark_api.py
 # Logs & environment
 # ===============================
 *.log
+logs/
 .env
+*.pid
+
+# ===============================
+# Virtual environment, storage & build
+# ===============================
+.venv/
+dist/
+build/
+*.egg-info
+Storage/

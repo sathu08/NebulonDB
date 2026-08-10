@@ -1,20 +1,26 @@
-import os
-import json
-import faiss
+"""
+NDB Index Manager
+==========================================================
+
+This module handles index management for the NDB API.
+It provides endpoints for index creation, listing, and deletion.
+
+"""
+
 import shutil
-
 import numpy as np
-import polars as pl 
+import polars as pl
+
 from pathlib import Path
+from typing import List, Dict, Tuple, Any, Optional
 
-from datetime import datetime, timezone
-from typing import List, Dict, Tuple, Any,Optional
+from db.ndb_settings import NDBConfig
+from core.model_hub import SemanticEmbeddingModel
+from utils.constants import ColumnPick, MetadataRetention, NDBMeta
 
-from utils.models import load_data, save_data
-from utils.models import ColumnPick , AuthenticationConfig
-from utils.constants import NDBCorpusMeta
-from db.ndb_settings import NDBConfig, NDBCryptoManager
+from db.engine import NebulonCosmos, NebulonOrbit, RankConfig
 
+from utils.time_utils import utc_now_iso
 
 # ==========================================================
 #        Load Configuration
@@ -22,11 +28,249 @@ from db.ndb_settings import NDBConfig, NDBCryptoManager
 
 config_settings = NDBConfig()
 
-# ==========================================================
-#        Load Crypto Manager
-# ==========================================================
+class ComosDBManager:
+    _instances: Dict[str, "ComosDBManager"] = {}
 
-crypto_manager = NDBCryptoManager()
+    def __new__(cls, db_path: Path, reset: bool = False):
+        key = str(Path(db_path).resolve())
+        if reset:
+            cls._instances.pop(key, None)
+        if key not in cls._instances:
+            cls._instances[key] = super().__new__(cls)
+        return cls._instances[key]
+
+    def __init__(self, db_path: Path, reset: bool = False):
+        _ = str(Path(db_path).resolve())
+        if getattr(self, "_initialized", False) and not reset:
+            return
+        self._reset_db = reset
+        self._db = NebulonCosmos(
+            db_dir=db_path,
+            reset=self._reset_db
+        )
+        self._initialized = True
+
+    def read_data(self, segment: str, include_internal:bool = False,
+                  limit: Optional[int] = None) -> List[Dict[str, Any]]:
+        records = self._db.read_all(segment=segment, include_internal=include_internal)
+        if limit is not None and limit >= 0:
+            return records[:limit]
+        return records
+
+    def insert_data(self, segment:str, document: Dict[str, Any]) -> int:
+        return self._db.insert(segment, document)
+
+    def delete_data(self, segment:str, record_id: Any) -> int:
+        return self._db.delete(segment, record_id)
+
+    def update_data(self, segment:str, document: Dict[str, Any]):
+        self._db.update(segment, document)
+
+    def flush(self):
+        self._db.flush()
+    
+    def close(self):
+        self._db.close()
+
+class OrbitDBManager:
+    def __init__(self, db_path: Path, segment_name: str = "default", reset: bool = False,
+                rank_config: Optional[RankConfig] = None): 
+        self._db = NebulonOrbit(
+            db_dir=db_path,
+            segment_name=segment_name,
+            reset=reset,
+            rank_config=rank_config,
+        )
+
+    def initialize_or_flush(self):
+        self._db.flush()
+
+    def insert_vec(self, vector: Optional[np.ndarray] = None, text: Optional[str] = None, metadata: Optional[Dict[str, Any]] = None) -> Tuple[int, Optional[str]]:
+        metadata = dict(metadata or {})
+        if text is not None and "text" not in metadata:
+            metadata["text"] = text
+        record_id, err = self._db.insert(vector=vector, metadata=metadata)
+        return record_id, err
+
+    def search_vec(self, vector: np.ndarray, filter: Dict, top_k: int, mode="auto",
+                   query: Optional[str] = None, rank: bool = False,
+                   graph_start_node: Optional[int] = None,
+                   expand_depth: int = 1, graph_boost: float = 0.1) -> List[Dict]:
+        vector = vector.tolist() if isinstance(vector, np.ndarray) else vector
+        mode = mode or "auto"
+        expand_depth = expand_depth or 1
+        graph_boost = graph_boost if graph_boost is not None else 0.1
+        results = self._db.search(
+            vector=vector,
+            top_k=top_k,
+            mode=mode,
+            query=query,
+            rank=rank,
+            graph_start_node=graph_start_node,
+            expand_depth=expand_depth,
+            graph_boost=graph_boost,
+        )
+
+        if filter:
+            filtered = []
+            for r in results:
+                meta = r.get("metadata", {}) or {}
+                if all(meta.get(k) == v for k, v in filter.items()):
+                    filtered.append(r)
+            results = filtered
+
+        return results
+
+    def close(self):
+        self._db.close()
+
+    def add_relation(self, source, target, relation: str, weight: Optional[float] = None) -> None:
+        """Add a directed relationship between two nodes in the graph."""
+        self._db.add_relation(source, target, relation, weight=weight)
+
+    def load_graph(self, nodes: Optional[List[Dict]] = None,
+                   edges: Optional[List[Dict]] = None) -> Dict[str, Any]:
+        """Bulk graph load (nodes + edges)."""
+        return self._db.load_graph(nodes=nodes, edges=edges)
+
+    def remove_relation(self, source: int, target: int, relation: Optional[str] = None) -> None:
+        """Remove a relationship between two nodes in the graph."""
+        self._db.remove_relation(source, target, relation)
+
+    def get_visualization_html(self) ->  Tuple[Optional[str], Optional[Path]]:
+        """Return an HTML string for visualizing the graph."""
+        return self._db.get_visualization_html()
+
+    def rerank(self, query: str, candidates: List[Dict[str, Any]], top_k: Optional[int] = None) -> List[Dict[str, Any]]:
+        """Re-rank existing candidate results using the Orbit ranking engine."""
+        return self._db.rerank(
+            query=query,
+            candidates=candidates,
+            top_k=top_k,
+        )
+
+    # ------------------------------------------------------------------ #
+    # Record / vector inspection                                         #
+    # ------------------------------------------------------------------ #
+    def count(self) -> int:
+        """Number of vectors currently stored."""
+        return self._db.count()
+
+    def exists(self, record_id: int) -> bool:
+        """Return True if a record with this ID exists."""
+        return self._db.exists(record_id)
+
+    def get_record(self, record_id: int) -> Optional[Dict[str, Any]]:
+        """Return the full record (id, vector, metadata) or None."""
+        return self._db.get(record_id)
+
+    def get_metadata(self, record_id: int) -> Optional[Dict[str, Any]]:
+        """Return only the metadata of a record, or None."""
+        return self._db.get_metadata(record_id)
+
+    def get_vector(self, record_id: int) -> Optional[List[float]]:
+        """Return only the vector of a record, or None."""
+        return self._db.get_vector(record_id)
+
+    def update_vec(self, record_id: int, vector: Optional[np.ndarray] = None,
+                   metadata: Optional[Dict[str, Any]] = None) -> Tuple[int, Optional[str]]:
+        """Update an existing record's vector and/or metadata."""
+        if vector is not None and isinstance(vector, np.ndarray):
+            vector = vector.tolist()
+        return self._db.update(record_id, vector=vector, metadata=metadata)
+
+    def delete_record(self, record_id: int) -> bool:
+        """Delete a record. Returns True if it existed and was removed."""
+        existed = self._db.exists(record_id)
+        if existed:
+            self._db.delete(record_id)
+        return existed
+
+    def list_ids(self) -> List[int]:
+        """Return all record IDs currently stored."""
+        return self._db.list_ids()
+
+    def get_all_records(self, limit: Optional[int] = None) -> List[Dict[str, Any]]:
+        """Return all stored vector records."""
+        records = self._db.get_all()
+        if limit is not None and limit >= 0:
+            return records[:limit]
+        return records
+
+    def stats(self) -> Dict[str, Any]:
+        """Return a summary snapshot of vector + graph state."""
+        return self._db.stats()
+
+    # ------------------------------------------------------------------ #
+    # Graph node / edge inspection                                       #
+    # ------------------------------------------------------------------ #
+    def add_node(self, node_id: int, label: Optional[str] = None) -> None:
+        """Create a graph node explicitly (no vector required)."""
+        self._db.add_node(node_id, label)
+
+    def remove_node(self, node_id: int) -> None:
+        """Remove a graph node and all edges connected to it."""
+        self._db.remove_node(node_id)
+
+    def get_node(self, node_id: int) -> Optional[Dict[str, Any]]:
+        """Return the graph node's metadata, or None if it does not exist."""
+        return self._db.get_node(node_id)
+
+    def has_node(self, node_id: int) -> bool:
+        """Return True if the node exists in the graph."""
+        return self._db.has_node(node_id)
+
+    def count_nodes(self) -> int:
+        """Number of nodes currently in the graph."""
+        return self._db.count_nodes()
+
+    def count_edges(self) -> int:
+        """Number of directed edges currently in the graph."""
+        return self._db.count_edges()
+
+    def has_edges(self) -> bool:
+        """Return True if the graph contains at least one edge."""
+        return self._db.has_edges()
+
+    def get_edges(self) -> List[Tuple[int, int, str]]:
+        """Return all edges as (source, target, relation) tuples."""
+        return self._db.get_edges()
+
+    def get_all_nodes(self) -> List[Dict[str, Any]]:
+        """Return every graph node as {"id": ..., "metadata": ...}."""
+        return self._db.get_all_nodes()
+
+    def edges_by_relation(self, relation: str) -> List[Tuple[int, int, str]]:
+        """Return all edges that carry the given relation label."""
+        return self._db.edges_by_relation(relation)
+
+    def get_neighbors(self, node_id: int, direction: str = "both") -> List[Tuple[int, str]]:
+        """Return neighbours as (neighbor_id, relation) tuples."""
+        return self._db.get_neighbors(node_id, direction)
+
+    def get_in_neighbors(self, node_id: int) -> List[Tuple[int, str]]:
+        """Neighbours pointing at node_id (incoming edges)."""
+        return self._db.get_in_neighbors(node_id)
+
+    def get_out_neighbors(self, node_id: int) -> List[Tuple[int, str]]:
+        """Neighbours node_id points at (outgoing edges)."""
+        return self._db.get_out_neighbors(node_id)
+
+    def bfs(self, start: int, max_depth: int = 3) -> List[int]:
+        """Breadth-first traversal from a start node."""
+        return self._db.bfs(start, max_depth)
+
+    def dfs(self, start: int, max_depth: int = 3) -> List[int]:
+        """Depth-first traversal from a start node."""
+        return self._db.dfs(start, max_depth)
+
+    def shortest_path(self, source: int, target: int) -> Optional[List[int]]:
+        """Shortest unweighted path between two nodes, or None."""
+        return self._db.shortest_path(source, target)
+
+    def connected_components(self) -> List[Any]:
+        """List of connected components (sets of node IDs)."""
+        return self._db.connected_components()
 
 # ==========================================================
 #        CorpusManager
@@ -34,28 +278,34 @@ crypto_manager = NDBCryptoManager()
 
 class CorpusManager:
     """CorpusManager handles validation and retrieval of corpus data and metadata."""
+
+    _shared_metadata_db = None
+
     def __init__(self):
         """Initialize CorpusManager."""
-        self.vector_storage_path:Path = Path(config_settings.VECTOR_STORAGE)
-        self.metadata_path:Path = Path(config_settings.VECTOR_METADATA)
-        
+        self.storage_path = config_settings.NEBULONDB_STORAGE_PATH
+        self.corpus_metadata_path = config_settings.NEBULONDB_ACCOUNTHUB_CORPUS_PATH
+        self.metadata_segment = NDBMeta.Corpus.METADATA_SEGMENT_NAME
         self._validate_paths()
 
+    @property
+    def metadata_db(self):
+        if CorpusManager._shared_metadata_db is None:
+            CorpusManager._shared_metadata_db = ComosDBManager(db_path=self.corpus_metadata_path)
+        return CorpusManager._shared_metadata_db
+    
     def _validate_paths(self) -> None:
         """Check that essential paths exist."""
         errors = []
 
-        if not self.vector_storage_path.exists() or not self.vector_storage_path.is_dir():
-            errors.append(f"Vector storage path missing: {self.vector_storage_path}")
-
-        if not self.metadata_path.exists():
-            errors.append(f"Metadata file not found: {self.metadata_path}")
+        if not self.storage_path.exists() or not self.storage_path.is_dir():
+            errors.append(f"Vector storage path missing: {self.storage_path}")
             
         if errors:
             raise FileNotFoundError(" | ".join(errors))
     
     @staticmethod
-    def generate_corpus_metadata(corpus_name: str, created_by: str, status:str) -> Dict[str, str]:
+    def generate_corpus_metadata(corpus_name: str, created_by: str, status:str, ndb_type:NDBMeta.Type.COSMOS) -> Dict[str, str]:
         """
         Generate metadata dictionary for a new corpus.
 
@@ -68,8 +318,9 @@ class CorpusManager:
         """
         return {
             "corpus_name": corpus_name,
-            "created_at": datetime.now(timezone.utc).isoformat(),
+            "created_at": utc_now_iso(),
             "created_by": created_by,
+            "ndb_type":ndb_type,
             "status": status,
             "segments": []
         }
@@ -80,20 +331,41 @@ class CorpusManager:
 
         Returns:
             List[str]: Matching corpus names.
-
         """
         try:
-            vector_dirs = [d.name for d in self.vector_storage_path.iterdir() if d.is_dir()]
+            vector_dirs = [d.name for d in self.storage_path.iterdir() if d.is_dir()]
             if not vector_dirs:
                 return []
-
-            metadata_names = [meta.get('corpus_name') for meta in load_data(self.metadata_path).values()]
+            metadata_names = {record["corpus_name"] for record in self.metadata_db.read_data(segment=self.metadata_segment) if record.get("corpus_name")}
             if not metadata_names:
                 return []
-            matched_corpora = sorted(set(vector_dirs) & set(metadata_names))
-            return matched_corpora
-        except Exception as _:
+            return sorted(set(vector_dirs) & set(metadata_names))
+        except Exception:
             return []
+        
+    def get_corpus_info(self) -> Dict[str, Dict[str, Any]]:
+        """
+        Retrieve metadata info (name, ndb_type, status, created_by, created_at)
+        for every corpus present in metadata, keyed by corpus name.
+
+        Returns:
+            Dict[str, Dict[str, Any]]: Corpus metadata keyed by corpus name.
+        """
+        info: Dict[str, Dict[str, Any]] = {}
+        try:
+            for record in self.metadata_db.read_data(segment=self.metadata_segment):
+                name = record.get("corpus_name")
+                if name:
+                    info[name] = {
+                        "name": name,
+                        "ndb_type": record.get("ndb_type"),
+                        "status": record.get("status"),
+                        "created_by": record.get("created_by"),
+                        "created_at": record.get("created_at"),
+                    }
+        except Exception:
+            pass
+        return info
 
     def get_corpus_status(self, corpus_name: str) -> str:
         """
@@ -104,11 +376,12 @@ class CorpusManager:
 
         Returns:
             str: Status of the specified corpus (e.g., 'active', 'deactivate', 'system').
-
         """
         try:
-            metadata = load_data(self.metadata_path)
-            return metadata.get(corpus_name, {}).get("status")
+            for record in self.metadata_db.read_data(segment=self.metadata_segment):
+                if record.get("corpus_name") == corpus_name:
+                    return record.get("status")
+            return None
         except Exception as _:
             return None
 
@@ -119,63 +392,53 @@ class CorpusManager:
         Args:
             corpus_name (str): Name of the corpus to update.
             status (str): New status value (e.g., 'active', 'deactivate', 'system').
-
         """
         try:
-            metadata = load_data(self.metadata_path)
-            metadata[corpus_name]["status"] = status
-            save_data(metadata, self.metadata_path)
+            for record in self.metadata_db.read_data(segment=self.metadata_segment, include_internal=True,):
+                if record.get("corpus_name") == corpus_name:
+                    record["status"] = status
+                    self.metadata_db.update_data(segment=self.metadata_segment, document=record)
         except Exception as _:
             return False
         
-    def create_corpus(self, corpus_name: str, username:str, status:str="active") -> None:
+    def create_corpus(self, corpus_name: str, username:str, ndb_type: NDBMeta.Type=NDBMeta.Type.COSMOS, status:str="active") -> None:
         """
         Create a new corpus.
 
         Args:
             corpus_name (str): Name of the corpus to create.
             username (str): Name of the user creating the corpus.
+            ndb_type (NDBMeta.Type): Type of NDB backend to use (default: COSMOS).
+            status (str): Status of the corpus (default: 'active').
         """
-        corpus_path = self.vector_storage_path / corpus_name
-        os.makedirs(corpus_path, exist_ok=True)
-        for corpus_subdir in config_settings.DEFAULT_CORPUS_STRUCTURES:
-            (corpus_path / corpus_subdir).mkdir(parents=True, exist_ok=True)
-                
-        corpus_config_path = corpus_path / Path(config_settings.DEFAULT_CORPUS_CONFIG_STRUCTURES)
-        config_data = config_settings.DEFAULT_CORPUS_CONFIG_DATA
-        save_data(data=config_data, path_loc=corpus_path / corpus_config_path)
 
-        # === Store the corpus details ===
-        created_corpus = load_data(path_loc=self.metadata_path)
-        created_corpus[corpus_name] = self.generate_corpus_metadata(
-            corpus_name=corpus_name,
-            created_by=username,
-            status=status
-        )
-        save_data(data=created_corpus, path_loc=self.metadata_path)
+        corpus_path = self.storage_path / corpus_name
 
-        # === Create an segment metadata file ===
-        segment_metadata_path = corpus_path / Path(config_settings.SEGMENTS_METADATA)
-        segment_metadata = load_data(path_loc=segment_metadata_path)
-        save_data(data=segment_metadata, path_loc=segment_metadata_path)
+        if ndb_type == NDBMeta.Type.ORBIT:
+            # Corpus creation only registers the corpus + creates the directory.
+            # The ORBIT storage tree is built lazily on the first segment load,
+            # so no default (=spurious) segment directory is created here.
+            corpus_path.mkdir(parents=True, exist_ok=True)
+        else:
+            ComosDBManager(corpus_path)
 
-        segment_map_path = corpus_path / Path(config_settings.SEGMENT_MAP)
-        segment_map = load_data(path_loc=segment_map_path)
-        save_data(data=segment_map, path_loc=segment_map_path)
+        metadata = self.generate_corpus_metadata(corpus_name=corpus_name, created_by=username, status=status, ndb_type=ndb_type)
+        self.metadata_db.insert_data(segment=self.metadata_segment, document=metadata)
 
-    def delete_corpus(self, corpus_name: str,):
+    def delete_corpus(self, corpus_name: str):
         """
         Delete an existing corpus.
 
         Args:
             corpus_name (str): Name of the corpus to Delete
         """
-        corpus_path = self.vector_storage_path / corpus_name
-        shutil.rmtree(corpus_path)
+        corpus_path = self.storage_path / corpus_name
+        if corpus_path.exists():
+            shutil.rmtree(corpus_path)
 
-        corpus_info = load_data(path_loc=self.metadata_path)
-        del corpus_info[corpus_name]
-        save_data(path_loc=self.metadata_path, data=corpus_info)
+        for record in self.metadata_db.read_data(segment=self.metadata_segment, include_internal=True):
+            if record.get("corpus_name") == corpus_name:
+                self.metadata_db.delete_data(segment=self.metadata_segment, record_id=record["_id"])
 
 # ==========================================================
 #        SegmentManager
@@ -183,204 +446,149 @@ class CorpusManager:
 
 class SegmentManager:
     """
-    SegmentManager handles dynamic creation/loading of FAISS segments,
+    SegmentManager handles dynamic creation/loading of segments,
     along with vectors, payloads, and ID mapping."""
     
-    def __init__(self, corpus_name:str):
+    def __init__(self, corpus_name: str, segment_name: str, ndb_type: NDBMeta.Type = NDBMeta.Type.ORBIT):
         """
         Initialize SegmentManager for a specific corpus.
 
         Args:
             corpus_name (str): Name of the corpus to manage.
+            segment_name (str): Name of the segment to corpus.
         """
-        self.corpus_name: str = corpus_name
-        self.metadata_path:Path = Path(config_settings.VECTOR_METADATA)
-        self.corpus_path: Path = Path(config_settings.VECTOR_STORAGE) / self.corpus_name
-        self.segment_path: Path = self.corpus_path / NDBCorpusMeta.SEGMENTS_NAME
-        self.segment_metadata_path: Path = self.corpus_path / config_settings.SEGMENTS_METADATA
-        self.segment_map_path: Path = self.corpus_path / config_settings.SEGMENT_MAP
-        self.corpus_config: Path = self.corpus_path / config_settings.DEFAULT_CORPUS_CONFIG_STRUCTURES
- 
-        self.config = self._load_config()
+        self.corpus_name = corpus_name
+        self.segment_name = segment_name
+        self.corpus_metadata_path = config_settings.NEBULONDB_ACCOUNTHUB_CORPUS_PATH
+        self.corpus_path = config_settings.NEBULONDB_STORAGE_PATH / self.corpus_name
+        self.metadata_db = CorpusManager().metadata_db
+        self.metadata_segment = CorpusManager().metadata_segment
         self._validate_checks()
+        self.ndb_type = ndb_type
+        if ndb_type == NDBMeta.Type.ORBIT:
+            self.db_manager = OrbitDBManager(self.corpus_path, segment_name=self.segment_name)
+        else:
+            self.db_manager = ComosDBManager(self.corpus_path)
+        self.embedding_model = SemanticEmbeddingModel()
         self._validate_paths()
+
+    RELATION_SOURCE_COLS = ("source", "source_id", "src", "from_id", "from")
+    RELATION_TARGET_COLS = ("target", "target_id", "dst", "to_id", "to")
+    RELATION_LABEL_COLS = ("relation", "rel", "edge_type", "relationship", "label")
 
     def _validate_checks(self) -> None:
         """Perform validation checks on corpus metadata."""
-        errors = []
-        if not self.corpus_name in self.get_segment_list():
-            errors.append(f"Corpus '{self.corpus_name}' not found in metadata.")
-        if errors:
-            return errors
+        if not self._corpus_exists():
+            raise FileNotFoundError(f"Corpus '{self.corpus_name}' not found in metadata.")
+
+    def _corpus_exists(self) -> bool:
+        """Return True if this corpus has a metadata record."""
+        try:
+            for record in self.metadata_db.read_data(segment=self.metadata_segment, include_internal=True):
+                if record.get("corpus_name") == self.corpus_name:
+                    return True
+        except Exception as _:
+            return False
+        return False
 
     def _validate_paths(self) -> None:
         """Check that essential paths exist."""
         errors = []
         if not self.corpus_path.exists() or not self.corpus_path.is_dir():
             errors.append(f"Vector storage path missing: {self.corpus_path}")
-        if not self.segment_metadata_path.exists():
-            errors.append(f"Metadata file not found: {self.segment_metadata_path}")
-        if not self.segment_map_path.exists():
-            errors.append(f"Metadata file not found: {self.segment_map_path}")
-        if not self.corpus_config.exists():
-            errors.append(f"Metadata file not found: {self.corpus_config}")
         if errors:
             raise FileNotFoundError(" | ".join(errors))
+        
+    def _load_relations(
+            self,
+            segment_dataset: pl.DataFrame,
+            relations: Optional[List[Tuple[int, int, str]]] = None,
+            source_column: Optional[str] = None,
+            target_column: Optional[str] = None,
+            relation_column: Optional[str] = None,
+        ) -> List[str]:
+            """
+            Upload graph relations from explicit tuples and/or DataFrame columns.
 
-    def _load_config(self) -> Optional[Dict]:
-        """Load corpus configuration."""
+            Returns:
+                Tuple[int, List[str]]: (number of relations added, error messages).
+            """
+            errors: List[str] = []
+            total_added = 0
+
+            # 1) Explicit (source, target, relation) tuples
+            if relations:
+                for item in relations:
+                    try:
+                        source, target, relation = item[0], item[1], item[2]
+                    except (IndexError, TypeError):
+                        errors.append(f"Invalid relation tuple: {item}")
+                        continue
+                    try:
+                        self.db_manager.add_relation(int(source), int(target), str(relation))
+                        total_added += 1
+                    except Exception as e:
+                        errors.append(f"Relation {source}->{target}: {e}")
+
+            # 2) Relations from DataFrame columns (auto-detect when not specified)
+            src_col = source_column or next((c for c in self.RELATION_SOURCE_COLS if c in segment_dataset.columns), None)
+            tgt_col = target_column or next((c for c in self.RELATION_TARGET_COLS if c in segment_dataset.columns), None)
+            rel_col = relation_column or next((c for c in self.RELATION_LABEL_COLS if c in segment_dataset.columns), None)
+
+            if src_col and tgt_col:
+                if src_col not in segment_dataset.columns or tgt_col not in segment_dataset.columns:
+                    errors.append(f"Relation columns not found in dataset: '{src_col}', '{tgt_col}'")
+                else:
+                    default_label = "related"
+                    for idx in range(segment_dataset.height):
+                        try:
+                            source = segment_dataset[src_col][idx]
+                            target = segment_dataset[tgt_col][idx]
+                            if source is None or target is None:
+                                continue
+                            label = segment_dataset[rel_col][idx] if rel_col and rel_col in segment_dataset.columns else default_label
+                            weight = None
+                            if "weight" in segment_dataset.columns:
+                                weight = segment_dataset["weight"][idx]
+                            self.db_manager.add_relation(source, target, str(label or default_label), weight=weight)
+                            total_added += 1
+                        except Exception as e:
+                            errors.append(f"Relation row {idx}: {e}")
+
+            return total_added, errors
+
+
+    def get_segment_list(self) -> List[str]:
+        """
+        Get the list of segments registered for this corpus.
+
+        Returns:
+            List[str]: Segment names recorded in the corpus metadata.
+        """
         try:
-            return load_data(self.corpus_config)
+            for record in self.metadata_db.read_data(segment=self.metadata_segment, include_internal=True):
+                if record.get("corpus_name") == self.corpus_name:
+                    segments = record.get("segments") or []
+                    return [s.get("name") for s in segments if isinstance(s, dict) and s.get("name")]
         except Exception as _:
-            return None
-    
-    def get_segment_id_list(self,segment_name:str)-> List[str]:
-        """
-        Get a list of segments for a given segment name.
+            return []
+        return []
 
-        Args:
-            segment_name (str): Name of the segment
+    def get_segment_metadata(self) -> List[Dict[str, Any]]:
+        """
+        Get full segment metadata (name, inserted count, created_at) for this corpus.
 
         Returns:
-            Optional[List]: List of segment IDs or None if not found
+            List[Dict[str, Any]]: Segment entries from the corpus metadata.
         """
-        segment_map = load_data(self.segment_map_path)
-        return segment_map.get(segment_name, {}).get("segment_ids", [])
-    
-    def get_segment_list(self)-> List[str]:
-        """
-        Get a list of segments for a given segment name.
-
-        Args:
-            segment_name (str): Name of the segment
-
-        Returns:
-            Optional[List]: List of segment IDs or None if not found
-        """
-        segment_map = load_data(self.metadata_path)
-        return segment_map.get(self.corpus_name, {}).get("segments", [])
-    
-    def _get_next_segment_id(self) -> str:
-        """Get the next available segment name."""
-        metadata = load_data(self.segment_metadata_path)
-        if not metadata:
-            return "segment_0"
         try:
-            last_segment = max([int(v["segment"].split("_")[1]) for v in metadata.values()])
-            return f"segment_{last_segment + 1}"
-        except Exception:
-            return "segment_0"
-    
-    def _get_latest_segment_id(self) -> Optional[Tuple[Path, str]]:
-        """Return the latest existing segment if available."""
-        segments = sorted(self.segment_path.glob("segment_*"))
-        if not segments:
-            return None
-        seg_path = segments[-1]
-        return seg_path, seg_path.name
-    
-    def _load_index(self, seg_path: Path) -> faiss.Index:
-        """
-        Load or create FAISS index for a segment.
-        
-        Args:
-            seg_path (Path): Path to segment directory
-            
-        Returns:
-            faiss.Index: FAISS index object
-        """
-        index_path = seg_path / "index.faiss"
-        
-        if index_path.exists():
-            return faiss.read_index(str(index_path))
-        
-        dim = self.config["dimension"]
-        if self.config["index_type"] == "hnsw":
-            index = faiss.IndexHNSWFlat(dim, self.config["params"]["hnsw_m"])
-            index.hnsw.efConstruction = self.config["params"]["ef_construction"]
-            index.hnsw.efSearch = self.config["params"]["ef_search"]
-        else:
-            index = faiss.IndexFlatL2(dim)
-        return index
-    
-    def _ensure_namespace(self, segment_name: Optional[str] = None) -> Tuple[Path, str]:
-        """
-        Ensure a segment namespace exists, create if needed.
-        
-        Args:
-            segment_name (Optional[str]): Name of the segment
-            
-        Returns:
-            Tuple[Path, str]: Path to segment and segment ID
-        """
-        latest = self._get_latest_segment_id()
-        existing_segments = self.get_segment_id_list(segment_name)
-
-        if segment_name and existing_segments and latest:
-            seg_path, seg_name = latest
-            index = self._load_index(seg_path)
-            max_size = self.config["segment_max_size"]
-            
-            if int(index.ntotal) < int(max_size):
-                return seg_path, seg_name
-
-        metadata = load_data(self.metadata_path)
-        if segment_name not in metadata[self.corpus_name]["segments"]:
-            metadata[self.corpus_name]["segments"].append(segment_name)
-        save_data(metadata, self.metadata_path)
-        
-        segment_id = self._get_next_segment_id()
-        ns_path = self.segment_path / segment_id
-        ns_path.mkdir(parents=True, exist_ok=True)
-        
-        return ns_path, segment_id
-    
-    def _check_duplicate_entry(self, key: str, vector: np.ndarray, payload: Dict[str, Any]) -> bool: 
-        """
-        Check if an entry with the same key already exists and if the vector/payload are identical.
-        
-        Args:
-            key (str): Unique external ID
-            vector (np.ndarray): Vector embedding
-            payload (Dict): Metadata payload
-        
-        Returns:
-            bool: True if duplicate exists, False otherwise
-        
-        """
-        id_map = load_data(self.segment_metadata_path)
-        
-        if key not in id_map:
-            return False
-        
-        # Key exists, check if vector and payload are identical
-        existing_entry = id_map[key]
-        segment_id = existing_entry["segment_id"]
-        vector_id = existing_entry["vector_id"]
-        
-        # Load existing vector
-        seg_path = self.segment_path / Path(segment_id)
-        vectors_file = seg_path / "vectors.npy"
-        if vectors_file.exists():
-            existing_vectors = np.load(vectors_file)
-            existing_vector = existing_vectors[vector_id]
-            
-            # Load existing payload
-            payloads_file = seg_path / "payloads.json"
-            existing_payloads = load_data(payloads_file)
-            existing_payload = existing_payloads.get(str(vector_id), {})
-            
-            # Compare vector (with tolerance for floating point)
-            vector_same = np.allclose(vector.astype('float32'), existing_vector, rtol=1e-5)
-            payload_same = payload == existing_payload
-            
-            if vector_same and payload_same:
-                return True  # Exact duplicate
-            else:
-                return False
-        
-        return False
-    
+            for record in self.metadata_db.read_data(segment=self.metadata_segment, include_internal=True):
+                if record.get("corpus_name") == self.corpus_name:
+                    return [s for s in (record.get("segments") or []) if isinstance(s, dict)]
+        except Exception as _:
+            return []
+        return []
+       
     @staticmethod
     def _determine_column_mode(set_columns) -> tuple[str, list]:
         """
@@ -399,58 +607,67 @@ class SegmentManager:
             val = set_columns.strip().lower()
             if val in ("first column", "first"):
                 mode = ColumnPick.FIRST_COLUMN
-            elif val == "all":
+            elif val in ("all", "all columns"):
                 mode = ColumnPick.ALL
             else:
                 mode = "LIST"
-                return mode, [set_columns]
+            return mode, [set_columns]
 
         elif isinstance(set_columns, list):
             if len(set_columns) == 1 and str(set_columns[0]).strip().lower() in ("first column", "first", "all"):
                 val = str(set_columns[0]).strip().lower()
                 if val in ("first column", "first"):
                     mode = ColumnPick.FIRST_COLUMN
-                elif val == "all":
+                elif val in ("all", "all columns"):
                     mode = ColumnPick.ALL
             else:
                 mode = "LIST"
-                return mode, set_columns
+            return mode, set_columns
 
         return mode, []
 
-    def get_next_vector_id(self, column_name: str) -> str:
-        """
-        Get next available ID for a column.
-
-        Args:
-            column_name (str): Name of the column
-
-        Returns:
-            str: Next available ID
-        """
-        id_map = load_data(self.segment_metadata_path)
-        existing_ids = [k for k in id_map.keys() if k.startswith(f"{column_name}_")]
-
-        if not existing_ids:
-            return f"{column_name}_0"
-
-        max_id = max([int(k.split("_")[-1]) for k in existing_ids])
-        return f"{column_name}_{max_id + 1}"
-
-    def get_next_vector_ids(self, column_name: str, count: int) -> List[str]:
-        """
-        Get next batch of available IDs for a column.
-        """
-        id_map = load_data(self.segment_metadata_path)
-        existing_ids = [k for k in id_map.keys() if k.startswith(f"{column_name}_")]
-
-        if not existing_ids:
-            start_id = 0
-        else:
-            start_id = max([int(k.split("_")[-1]) for k in existing_ids]) + 1
-            
-        return [f"{column_name}_{start_id + i}" for i in range(count)]
-        
+    def register_segment(self, corpus_name: str, segment_name: str, inserted: int = 0, created_at: Optional[str] = None) -> bool:
+            """
+            Record a segment in the corpus metadata.
+    
+            Adds a segment entry (only once per name) to the corpus record's
+            ``segments`` list and persists it.
+    
+            Args:
+                corpus_name: Name of the corpus.
+                segment_name: Name of the segment to register.
+                inserted: Number of records inserted during the segment load.
+                created_at: ISO timestamp for the load (defaults to now).
+    
+            Returns:
+                bool: True if the corpus record was found and updated.
+            """
+            if inserted <= 0:
+                return False
+            created_at = created_at
+            try:
+                for record in self.metadata_db.read_data(segment=self.metadata_segment, include_internal=True):
+                    if record.get("corpus_name") == corpus_name:
+                        segments = record.setdefault("segments", [])
+                        names = {s.get("name") for s in segments if isinstance(s, dict)}
+                        if segment_name not in names:
+                            segments.append({
+                                "name": segment_name,
+                                "inserted": inserted,
+                                "created_at": created_at,
+                            })
+                        else:
+                            for s in segments:
+                                if isinstance(s, dict) and s.get("name") == segment_name:
+                                    s["inserted"] = s.get("inserted", 0) + inserted
+                                    break
+                        record["segments"] = segments
+                        self.metadata_db.update_data(segment=self.metadata_segment, document=record)
+                        return True
+            except Exception as _:
+                return False
+            return False
+      
     @staticmethod   
     def determine_columns_to_process(segment_dataset: pl.DataFrame, set_columns) -> dict:
         """
@@ -500,271 +717,321 @@ class SegmentManager:
         
         return {"success": True, "message":"Selected Succfully", "columns": columns_to_process}
     
-    def load_segment(self, segment_name:str, key: str, vector: np.ndarray, payload: Dict[str, Any]) -> None:
+    def get_data(
+        self,
+        limit: Optional[int] = None,
+        include_internal: bool = False,
+    ) -> List[Dict[str, Any]]:
         """
-        Insert a vector with payload into a segment.
+        Retrieve stored records from a backend with an optional row limit.
+
         Args:
-            segment_name (str): Segment Name (e.g., table name or product name)
-            key (str): Unique external ID (e.g., column name).
-            vector (np.ndarray): Vector embedding (1D float32 array).
-            payload (Dict): Metadata payload.
-        
-        Return:
-            dict: {
-                "success": bool,
-                "message": Status /Error (if success=True),
-                "message": str (if success=False)
-            }
+            limit (int, optional): Maximum number of records to return.
+            include_internal (bool): Include Cosmos internal fields.
+
+        Returns:
+            List[Dict[str, Any]]: Retrieved records (empty if backend unavailable).
         """
-        try:
-            if not isinstance(vector, np.ndarray):
-                vector = np.array(vector, dtype="float32") 
-            
-            # Check for duplicates
-            if self._check_duplicate_entry(key, vector, payload):
-                return {"success": False, "message": f"Duplicate entry skipped for key '{key}'"}
+        # ndb_type = (ndb_type or "orbit").lower()
+        if self.ndb_type == NDBMeta.Type.COSMOS:
+            if not isinstance(self.db_manager, ComosDBManager):
+                return []
+            return self.db_manager.read_data(
+                self.segment_name,
+                include_internal=include_internal,
+                limit=limit,
+            )
+        if not isinstance(self.db_manager, OrbitDBManager):
+            return []
+        return self.db_manager.get_all_records(limit=limit)
 
-            seg_path, segment_id = self._ensure_namespace(segment_name=segment_name)
-            index = self._load_index(seg_path)
-            
-            # # Add vector
-            vec = vector.reshape(1, -1).astype("float32")
-            index.add(vec)
-            faiss.write_index(index, str(seg_path / "index.faiss"))
-            
-            # Save vectors.npy (append)
-            vectors_file = seg_path / "vectors.npy"
-            if vectors_file.exists():
-                vectors = np.load(vectors_file)
-                vectors = np.vstack([vectors, vec])
-            else:
-                vectors = vec
-            np.save(vectors_file, vectors)
-            
-            # Update payloads.json
-            payloads_file = seg_path / "payloads.json"
-            payloads = load_data(payloads_file)
-            if payloads and "ndb_data" in payloads and "ndb_key" in payloads:
-                decrypted_bytes = crypto_manager.decrypt_data(payloads)
-                decrypted_str = decrypted_bytes.decode(AuthenticationConfig.ENCODING)
-                payloads = json.loads(decrypted_str)
-            vector_id = int(index.ntotal - 1)
-            payloads[str(vector_id)] = payload
-            payload_bytes = save_data(payloads, return_bytes=True)
-            encrypted_payloads = crypto_manager.encrypt_data(payload_bytes)
-            save_data(encrypted_payloads, payloads_file)
-
-            # Update id_map.json
-            id_map = load_data(self.segment_metadata_path)
-            id_map[key] = {"segment_id": segment_id, "vector_id": vector_id}
-            save_data(id_map, self.segment_metadata_path)
-            
-            # Update segment_map.json
-            segment_map = load_data(self.segment_map_path)
-            if segment_name not in segment_map:
-                # Always start with a list of segment IDs
-                segment_map[segment_name] = {"segment_ids": [segment_id]}
-            else:
-                # Append only if not already present
-                if segment_id not in segment_map[segment_name]["segment_ids"]:
-                    segment_map[segment_name]["segment_ids"].append(segment_id)
-            save_data(segment_map, self.segment_map_path)
-
-            return {"success": True, "message": f"Inserted vector for key '{key}'"}
-        except Exception as e:
-            return {"success": False, "message": f"Failed to insert vector: {str(e)}"}
-
-    def load_segment_batch(self, segment_name:str, keys: List[str], vectors: np.ndarray, payloads: List[Dict[str, Any]]) -> Dict[str, Any]:
+    def load_segment(
+        self, 
+        segment_dataset: pl.DataFrame, 
+        columns: list[str], 
+        is_precomputed: bool = False, 
+        lang_type: Optional[str] = None, 
+        doc_type: Optional[str] = None,
+        relations: Optional[List[Tuple[int, int, str]]] = None,
+        source_column: Optional[str] = None,
+        target_column: Optional[str] = None,
+        relation_column: Optional[str] = None,
+        lang: Optional[str] = None,
+    ) -> dict:
         """
-        Batch insert vectors with payloads into a segment.
+        Load vectors from one or more columns into OrbitDB, and optionally
+        upload graph relations.
+
         Args:
-            segment_name (str): Segment Name
-            keys (List[str]): List of Unique external IDs
-            vectors (np.ndarray): Matrix of Vector embeddings (N, D)
-            payloads (List[Dict]): List of Metadata payloads
-        
-        Return:
-            dict: Success/Failure stats
-        """
-        try:
-            if not isinstance(vectors, np.ndarray):
-                vectors = np.array(vectors, dtype="float32")
-                
-            num_vectors = len(keys)
-            if vectors.shape[0] != num_vectors or len(payloads) != num_vectors:
-                 return {"success": False, "message": "Input lists/arrays must have same length"}
+            segment_dataset: Polars DataFrame.
+            columns: Columns to process (text / embedding columns).
+            is_precomputed: True if columns already contain embeddings.
+            lang_type: Optional language tag stored in metadata.
+            doc_type: Optional document type stored in metadata.
+            relations: Optional explicit list of (source_id, target_id, relation)
+                       tuples to add to the graph.
+            lang: Backward-compatible alias for ``lang_type``.
+            source_column: Optional column name containing relation source IDs.
+                           Auto-detected from common names when omitted.
+            target_column: Optional column name containing relation target IDs.
+                           Auto-detected from common names when omitted.
+            relation_column: Optional column name containing the relation label.
+                             Defaults to "related" when omitted.
 
-            seg_path, segment_id = self._ensure_namespace(segment_name=segment_name)
-            index = self._load_index(seg_path)
-            
-            # --- Load existing metadata for deduplication ---
-            id_map = load_data(self.segment_metadata_path)
-            
-            # Filter out duplicates
-            new_indices = []
-            skipped_keys = []
-            
-            for i, key in enumerate(keys):
-                if key in id_map:
-                    # For speed, in batch mode we just skip existing keys without checking content equality
-                    # (To allow content check, we'd need to load vectors which is slow)
-                    skipped_keys.append(key)
+        Returns:
+            dict containing success status and statistics.
+        """
+
+        total_inserted = 0
+        total_skipped = 0
+        total_relations = 0
+        errors = []
+        created_at = utc_now_iso()
+
+        if lang is not None and lang_type is None:
+            lang_type = lang
+
+        is_orbit = self.ndb_type == NDBMeta.Type.ORBIT
+
+        for col in columns:
+
+            if col not in segment_dataset.columns:
+                errors.append(f"Column '{col}' not found in dataset")
+                continue
+
+            try:
+                if not is_orbit:
+                    # COSMOS: store documents directly, no vectorisation.
+                    texts = segment_dataset[col].fill_null("").to_list()
+                    for idx, text in enumerate(texts):
+                        if not text.strip():
+                            total_skipped += 1
+                            continue
+                        document = {
+                            "text": text,
+                            "lang": lang_type,
+                            "type": doc_type or "other",
+                            "created_at": created_at,
+                        }
+                        document = MetadataRetention.apply(document)
+                        try:
+                            self.db_manager.insert_data(
+                                segment=self.segment_name,
+                                document=document,
+                            )
+                            total_inserted += 1
+                        except Exception as e:
+                            errors.append(f"Cosmos Row {idx} in {col}: {e}")
+                    continue
+
+                if is_precomputed:
+                    vectors_list = segment_dataset[col].to_list()
+
+                    if not vectors_list:
+                        total_skipped += 1
+                        continue
+
+                    embeddings = np.asarray(vectors_list, dtype=np.float32)
+                    texts = [""] * len(embeddings)
+
                 else:
-                    new_indices.append(i)
-            
-            if not new_indices:
-                 return {"success": True, "message": "All items were duplicates", "inserted": 0, "skipped": len(keys)}
-                 
-            # Filter inputs
-            keys_to_add = [keys[i] for i in new_indices]
-            vectors_to_add = vectors[new_indices]
-            payloads_to_add = [payloads[i] for i in new_indices]
-            
-            # --- FAISS Add ---
-            if vectors_to_add.ndim == 1:
-                vectors_to_add = vectors_to_add.reshape(1, -1)
-                
-            index.add(vectors_to_add)
-            faiss.write_index(index, str(seg_path / "index.faiss"))
-            
-            # --- Save Vectors ---
-            vectors_file = seg_path / "vectors.npy"
-            if vectors_file.exists():
-                existing = np.load(vectors_file)
-                updated_vectors = np.vstack([existing, vectors_to_add])
-            else:
-                updated_vectors = vectors_to_add
-            np.save(vectors_file, updated_vectors)
-            
-            # --- Bulk Load & Update Payloads ---
-            payloads_file = seg_path / "payloads.json"
-            existing_payloads = load_data(payloads_file)
-            if existing_payloads and "ndb_data" in existing_payloads and "ndb_key" in existing_payloads:
-                decrypted_bytes = crypto_manager.decrypt_data(existing_payloads)
-                decrypted_str = decrypted_bytes.decode(AuthenticationConfig.ENCODING)
-                existing_payloads = json.loads(decrypted_str)
-                
-            start_vector_id = int(index.ntotal - len(keys_to_add))
-            
-            for i, (key, payload) in enumerate(zip(keys_to_add, payloads_to_add)):
-                vector_id = start_vector_id + i
-                existing_payloads[str(vector_id)] = payload
-                
-                # Update ID Map
-                id_map[key] = {"segment_id": segment_id, "vector_id": vector_id}
-                
-            # Save Payloads (Encrypted)
-            payload_bytes = save_data(existing_payloads, return_bytes=True)
-            encrypted_payloads = crypto_manager.encrypt_data(payload_bytes)
-            save_data(encrypted_payloads, payloads_file)
-            
-            # Save ID Map
-            save_data(id_map, self.segment_metadata_path)
-            
-            # Update segment map
-            segment_map = load_data(self.segment_map_path)
-            if segment_name not in segment_map:
-                segment_map[segment_name] = {"segment_ids": [segment_id]}
-            elif segment_id not in segment_map[segment_name]["segment_ids"]:
-                 segment_map[segment_name]["segment_ids"].append(segment_id)
-            save_data(segment_map, self.segment_map_path)
-            
-            return {
-                "success": True, 
-                "message": f"Batch inserted {len(keys_to_add)} items", 
-                "inserted": len(keys_to_add),
-                "skipped": len(skipped_keys)
-            }
-            
-        except Exception as e:
-            return {"success": False, "message": f"Batch load failed: {str(e)}"}
+                    texts = segment_dataset[col].fill_null("").to_list()
 
-    def search_vector(self, segment_name:str, query_vec:np.ndarray, top_k: Optional[int] = None, set_columns: Optional[List[str]] = None, min_score: Optional[float] = None) ->Dict[str, Any]:
+                    if not any(text.strip() for text in texts):
+                        errors.append(f"Column '{col}' has no valid text")
+                        total_skipped += 1
+                        continue
+
+                    embeddings = self.embedding_model.encode(
+                        texts,
+                        convert_to_numpy=True,
+                        normalize_embeddings=True,
+                    ).astype(np.float32)
+
+                for idx, (vec, text) in enumerate(zip(embeddings, texts)):
+                    if not text.strip() and is_precomputed:
+                        text = ""
+
+                    metadata = {
+                        "lang": lang_type,
+                        "type": doc_type or "other",
+                        "created_at": created_at,
+                    }
+
+                    name = None
+                    if "name" in segment_dataset.columns:
+                        raw_name = segment_dataset["name"][idx]
+                        if raw_name is not None:
+                            name = str(raw_name)
+                    if name:
+                        metadata["label"] = name
+
+                    metadata = MetadataRetention.apply(metadata)
+
+                    _, err = self.db_manager.insert_vec(
+                        vector=vec.tolist(),
+                        text=text,
+                        metadata=metadata,
+                    )
+                    if err:
+                        errors.append(f"Row {idx} in {col}: {err}")
+                    else:
+                        total_inserted += 1
+
+            except Exception as e:
+                errors.append(f"{col}: {str(e)}")
+
+        # ---- Graph relation upload (ORBIT only) ----
+        if is_orbit:
+            relations_added, relation_errors = self._load_relations(
+                segment_dataset=segment_dataset,
+                relations=relations,
+                source_column=source_column,
+                target_column=target_column,
+                relation_column=relation_column,
+            )
+            total_relations = relations_added
+            errors.extend(relation_errors)
+
+        if is_orbit:
+            self.db_manager.initialize_or_flush()
+
+        if total_inserted > 0:
+            self.register_segment(
+                corpus_name=self.corpus_name,
+                segment_name=self.segment_name,
+                inserted=total_inserted,
+                created_at=created_at,
+            )
+
+        return {
+            "success": len(errors) == 0,
+            "inserted": total_inserted,
+            "skipped": total_skipped,
+            "relations_added": total_relations,
+            "errors": errors,
+        }
+
+    def load_graph(
+        self,
+        nodes: Optional[List[Dict]] = None,
+        edges: Optional[List[Dict]] = None,
+    ) -> Dict[str, Any]:
+        """Bulk graph load into an ORBIT corpus (auto-weight, label resolution)."""
+        if self.ndb_type != NDBMeta.Type.ORBIT:
+            return {"success": False, "message": "load_graph requires an ORBIT corpus"}
+        added = self.db_manager.load_graph(nodes=nodes, edges=edges)
+        self.db_manager.initialize_or_flush()
+        return {"success": True, **added}
+
+    def get_graph(self) -> Dict[str, Any]:
+        """Return the current node + edge snapshot for an ORBIT corpus."""
+        if self.ndb_type != NDBMeta.Type.ORBIT:
+            return {"nodes": [], "edges": []}
+        return {
+            "nodes": self.db_manager.get_all_nodes(),
+            "edges": self.db_manager.get_edges(),
+        }
+
+    def search_vector(
+        self, 
+        search_item:str,
+        top_k: Optional[int] = None,
+        set_columns: Optional[List[str]] = None,
+        min_score: Optional[float] = None,
+        lang_type: Optional[str] = None,
+        doc_type: Optional[str] = None,
+        mode: Optional[str] = None,
+        rank: Optional[bool] = False,
+        graph_start_node: Optional[int] = None,
+        expand_depth: Optional[int] = None,
+        graph_boost: Optional[float] = None,
+        lang: Optional[str] = None,
+    ) -> List[Dict[str, Any]]:
         """
         Search for nearest neighbors of a vector across all segments in a namespace.
 
         Args:
-            segment_name (str): Name of the segment group/namespace
-            query_vec (np.ndarray): Query vector (1D float32 array)
+            search_item (str): The text query.
             top_k (int): Number of top results to return.
+            set_columns (list): Restrict returned metadata to these columns.
+            min_score (float): Minimum normalised score threshold in [0.0, 1.0].
+                               Scores are min-max normalised across the result set
+                               so 0.5 means "top half by relative relevance".
+            lang_type (str): Optional language filter applied at retrieval time.
+            doc_type (str): Optional document-type filter applied at retrieval time.
+            mode (str): Search mode ('auto', 'nova', 'hybrid', 'mesh'). Default 'auto'.
+            rank (bool): When True, apply multi-signal ranking (vector + BM25 +
+                         metadata + importance + freshness) instead of raw
+                         retrieval order.
+            graph_start_node (int, optional): Seed node for graph traversal.
+                         Required for 'mesh' mode; expands neighbours around the
+                         seed in 'hybrid' mode.
+            expand_depth (int): Max BFS depth for graph expansion. Default 1.
+            graph_boost (float): Score assigned to nodes discovered via graph
+                         expansion in 'hybrid' mode. Default 0.1.
+
+        Ranking behaviour (RRF fusion, re-ranking, weights, half-life) is
+        controlled via the RankConfig passed to OrbitDBManager at construction.
 
         Returns:
-            List[Dict]: Search results with id, distance, and payload.
+            List[Dict]: Search results with id, normalised score, text, and metadata.
         """
         
-        mode, set_columns = SegmentManager._determine_column_mode(set_columns)
-                
-        existing_segments = self.get_segment_id_list(segment_name)
-        results = {}
-        search_id = 0
+        column_mode, set_columns = self._determine_column_mode(set_columns)
+
+        if lang is not None and lang_type is None:
+            lang_type = lang
+
+        filter_ = {}
+        if lang_type:
+            filter_["lang"] = lang_type
+        if doc_type:
+            filter_["type"] = doc_type
         
-        # Ensure query_vec is 2D for FAISS
-        if query_vec.ndim == 1:
-            query_vec = query_vec.reshape(1, -1)
-            
-        # Load metadata mapping once
-        id_map = load_data(self.segment_metadata_path)
 
-        # Build quick lookup for external_id
-        id_lookup = {(v["segment_id"], v["vector_id"]): k for k, v in id_map.items()}
+        query_vec = self.embedding_model.encode(
+                    search_item,
+                    convert_to_numpy=True,
+                    normalize_embeddings=True
+                ).astype("float32")
         
-        num_matches = top_k if top_k is not None else self.config.get("top_matches", 3)
-        min_score = min_score if min_score is not None else self.config.get("min_score", 0.0)
-        
-        for segment_id in existing_segments:
-            segment_id_path = self.segment_path / segment_id
-            index = self._load_index(segment_id_path)
-            
-            if index.ntotal == 0:
-                continue  # skip empty index
-            
-            # FAISS search
-            distances, indices = index.search(query_vec, int(num_matches))
+        if hasattr(query_vec, "flatten"):
+            query_vec = query_vec.flatten()
 
-            # Load payloads (text/data attached to vectors)
-            payloads_file = segment_id_path / "payloads.json"
-            payloads = load_data(payloads_file)
-            decrypted_bytes = crypto_manager.decrypt_data(payloads)
-            decrypted_str = decrypted_bytes.decode("utf-8")
-            payloads = json.loads(decrypted_str)
-            # Collect results
-            for dist, idx in zip(distances[0], indices[0]):
-                if idx == -1:
-                    continue
-                
-                # Filter by min_score
-                if min_score < dist:
-                    continue
+        # Perform search using Orbit
+        results = self.db_manager.search_vec(
+            vector=query_vec.tolist(),
+            filter=filter_,
+            top_k=top_k or 10,
+            mode=mode,
+            query=search_item,
+            rank=rank,
+            graph_start_node=graph_start_node,
+            expand_depth=expand_depth,
+            graph_boost=graph_boost,
+        )
+        if results:
+            raw_scores = [r.get("score", 0.0) for r in results]
+            min_raw = min(raw_scores)
+            max_raw = max(raw_scores)
+            score_range = max_raw - min_raw
 
-                # Match external_id from metadata
-                external_id = id_lookup.get((segment_id, idx))
+            for r in results:
+                if score_range > 0:
+                    r["score"] = float(round(float(r.get("score", 0.0) - min_raw) / float(score_range), 6))
+                else:
+                    # All scores identical → every result is equally relevant
+                    r["score"] = 1.0
 
-                # Get payload (the actual sentence/data stored)
-                payload = payloads.get(str(idx), {})
-                
-                row_index = payload.get("row_index")
+        # Apply min_score filter against the normalised [0, 1] scores
+        if min_score is not None:
+            results = [r for r in results if r.get("score", 0.0) >= min_score]
 
-                if row_index is not None and set_columns:
-                    matching_entries = [entry for entry in payloads.values() if entry.get("row_index") == row_index]
-                    if matching_entries:
-                        # Merge all entries with the same row_index
-                        merged_payload = {}
-                        for entry in matching_entries:
-                            merged_payload.update(entry)
+        # Limit metadata to set_columns if requested
+        if set_columns and column_mode == "LIST":
+            for r in results:
+                meta = r.get("metadata", {})
+                r["metadata"] = {k: meta.get(k) for k in set_columns if k in meta}
 
-                        if mode == "LIST":
-                            payload = {col: merged_payload.get(col) for col in set_columns if col in merged_payload}
-                        elif mode == ColumnPick.FIRST_COLUMN:
-                            if merged_payload:
-                                first_col = next(iter(merged_payload))
-                                payload = {first_col: merged_payload[first_col]}  
-                               
-                results[str(search_id)] = {
-                    "segment_id": segment_id,
-                    "external_id": external_id,
-                    "distance": float(dist),
-                    "payload": payload
-                }
-                search_id += 1
-                
         return results

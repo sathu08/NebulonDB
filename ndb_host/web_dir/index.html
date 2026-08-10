@@ -1,0 +1,90 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Sign in - NebulonDB</title>
+  <link rel="stylesheet" href="/assets/css/style.css">
+</head>
+<body class="login-body">
+  <div class="login-card">
+    <div class="login-head">
+      <div class="login-logo">N</div>
+      <h1>NebulonDB Console</h1>
+      <p>Vector database &amp; corpus management</p>
+    </div>
+
+    <div class="login-body-form">
+      <div id="alert" class="alert" role="alert"></div>
+
+      <form id="loginForm" novalidate>
+        <div class="field">
+          <label for="username">Username</label>
+          <input id="username" class="input" type="text" autocomplete="username" placeholder="Enter your username" required>
+        </div>
+        <div class="field">
+          <label for="password">Password</label>
+          <input id="password" class="input" type="password" autocomplete="current-password" placeholder="Enter your password" required>
+        </div>
+        <div class="field flex-between" style="margin-bottom:20px;">
+          <label class="flex" style="margin:0;font-size:13px;">
+            <input type="checkbox" id="remember" style="accent-color:#6366f1;">
+            &nbsp;Remember me
+          </label>
+          <a href="#" id="serverLink" title="Change API base URL">Server settings</a>
+        </div>
+        <button type="submit" id="loginBtn" class="btn btn-primary">Sign in</button>
+      </form>
+
+      <div class="login-foot">
+        Don't have an account? <span class="toggle-link" id="registerToggle">Register here</span>
+      </div>
+
+      <form id="registerForm" style="display:none;" novalidate>
+        <div class="field">
+          <label for="regUsername">Username</label>
+          <input id="regUsername" class="input" type="text" autocomplete="username" placeholder="Min 3 characters" required>
+        </div>
+        <div class="field">
+          <label for="regPassword">Password</label>
+          <input id="regPassword" class="input" type="password" autocomplete="new-password" placeholder="Min 6 characters" required>
+        </div>
+        <div class="field">
+          <label for="regRole">Role</label>
+          <select id="regRole" class="input">
+            <option value="user">User</option>
+            <option value="admin_user">Admin</option>
+          </select>
+        </div>
+        <button type="submit" id="registerBtn" class="btn btn-primary">Create account</button>
+        <div class="login-foot">
+          <span class="toggle-link" id="loginToggle">Back to sign in</span>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <div id="serverModal" class="modal-overlay">
+    <div class="modal">
+      <div class="modal-head">
+        <span class="modal-title">Server settings</span>
+        <button class="modal-close" id="serverModalClose">&times;</button>
+      </div>
+      <div class="modal-body">
+        <div class="field">
+          <label for="apiBase">API base URL</label>
+          <input id="apiBase" class="input" type="text" placeholder="http://127.0.0.1:6969">
+          <p class="small muted mt-16">Base URL of the running NebulonDB API server.</p>
+        </div>
+      </div>
+      <div class="modal-foot">
+        <button class="btn btn-ghost" id="serverModalCancel">Cancel</button>
+        <button class="btn btn-primary" id="serverModalSave">Save</button>
+      </div>
+    </div>
+  </div>
+
+  <script src="/assets/js/api.js"></script>
+  <script src="/assets/js/login.js"></script>
+</body>
+</html>

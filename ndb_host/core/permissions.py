@@ -1,5 +1,13 @@
-from utils.models import AuthenticationResult, UserRole
+"""
+NDB Core Permissions
+==========================================================
 
+This module handles permission checking for the NDB API.
+It provides endpoints for user registration and authentication.
+
+"""
+
+from utils.models import AuthenticationResult, UserRole
 from utils.logger import NebulonDBLogger
 
 
@@ -27,7 +35,8 @@ def check_user_permission(current_user: AuthenticationResult, required_role: Use
     role_hierarchy = {
         UserRole.USER: 1,
         UserRole.ADMIN_USER: 2,
-        UserRole.SUPER_USER: 3
+        UserRole.SUPER_USER: 3,
+        UserRole.SYSTEM: 4
     }
     
     current_user_level = role_hierarchy.get(current_user.role, 0)
@@ -35,6 +44,14 @@ def check_user_permission(current_user: AuthenticationResult, required_role: Use
     
     has_permission = current_user_level >= required_level
     
-    logger.debug(f"Permission check for {current_user.username}: {has_permission}")
+    logger.debug("Permission check for %s (role=%s, level=%d) vs required=%s (level=%d): %s",
+        current_user.username,
+        current_user.role.name,
+        current_user_level,
+        required_role.name,
+        required_level,
+        has_permission,
+    )
+
     
     return has_permission

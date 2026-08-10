@@ -1,17 +1,27 @@
+"""
+NDB User Service
+==========================================================
+
+This module handles user authentication and authorization for the NDB API.
+
+"""
+
 from fastapi import Depends
 from fastapi.security import HTTPBasic, HTTPBasicCredentials
 
 import threading
-from pathlib import Path
-from typing import Dict, Any, Optional
-from datetime import datetime, timezone
 
-from utils.models import load_data, save_data
-from core.security import verify_password, hash_password
+from typing import Dict, Any, Optional, List
 
-from utils.models import AuthenticationResult, UserRole, StandardErrorResponse
-from db.ndb_settings import NDBConfig, NDBSafeLocker
+from utils.constants import NDBMeta
+from db.ndb_settings import NDBConfig
 from utils.logger import NebulonDBLogger
+
+from db.index_manager import ComosDBManager
+from utils.models import AuthenticationResult, UserRole, StandardErrorResponse
+
+from utils.time_utils import utc_now_iso
+from core.security import verify_password, hash_password
 
 
 # ==========================================================
@@ -33,96 +43,181 @@ config_settings = NDBConfig()
 
 class UserManager:
     """
-    Singleton class to manage users in memory for high performance.
-    Reads from disk once (lazy load), writes to disk on change.
-    Thread-safe for writes.
+    Singleton manager for user data, backed by NebulonCosmos.
+    In‑memory cache for fast reads; thread‑safe writes and reads.
     """
+
     _instance = None
-    _lock = threading.RLock() 
-    _users_cache: Optional[Dict[str, Any]] = None
+    _lock = threading.RLock()
+    _users_cache: Dict[str, Dict[str, Any]]
+    _cache_loaded: bool
+    _db_manager: Optional[ComosDBManager]
+    _segment_name = NDBMeta.Corpus.DEFAULT_SEGMENT_NAME
 
     def __new__(cls):
         if cls._instance is None:
             with cls._lock:
                 if cls._instance is None:
-                    cls._instance = super(UserManager, cls).__new__(cls)
+                    instance = super().__new__(cls)
+                    instance._users_cache = {}
+                    instance._cache_loaded = False
+                    instance._db_manager = None
+                    cls._instance = instance
         return cls._instance
 
-    def _get_locker(self) -> NDBSafeLocker:
-        """Create a fresh locker instance. DO NOT CACHE THIS."""
-        secrets_path = Path(config_settings.NEBULONDB_SECRETS)
-        return NDBSafeLocker(secrets_path)
+    def _get_db_manager(self) -> ComosDBManager:
+        """Lazy initialize the Cosmos DB manager."""
+        if self._db_manager is None:
+            with self._lock:
+                if self._db_manager is None:
+                    self._db_manager = ComosDBManager(
+                        config_settings.NEBULONDB_ACCOUNTHUB_CORPUS_PATH
+                    )
+                    logger.info("ComosDBManager initialized.")
+        return self._db_manager
+
+    def _read_table(self, segment: str) -> List[Dict[str, Any]]:
+        """Read all records from a segment."""
+        return self._get_db_manager().read_data(segment)
 
     def _ensure_cache_loaded(self):
-        """Load users from disk if not already in memory."""
-        if self._users_cache is None:
+        """Load all users from the database into the in‑memory cache (under lock)."""
+        if not self._cache_loaded:
             with self._lock:
-                if self._users_cache is None:
+                if not self._cache_loaded:
                     try:
-                        locker = self._get_locker()
-                        self._users_cache = load_data(
-                            path_loc=locker.read_file(file_path="users.json", as_text=False),
-                            is_bytes_input=True
-                        )
-                        logger.info("User cache loaded from disk.")
-                    except Exception as e:
-                        logger.error(f"Failed to load user cache: {e}")
-                        self._users_cache = {} # Fallback to empty to prevent crash loops
+                        users = self._read_table(self._segment_name)
+                        cache = {}
+                        for doc in users:
+                            username = doc.get("username")
+                            if username:
+                                cache[username] = {
+                                    "id": doc.get("_id"),
+                                    "password": doc.get("password"),
+                                    "role": doc.get("role", "user"),
+                                    "created_at": doc.get("created_at")
+                                }
+                        self._users_cache = cache
+                        self._cache_loaded = True
+                        logger.info(f"User cache loaded: {len(cache)} users.")
+                    except Exception:
+                        logger.exception("Failed to load user cache")
+                        self._users_cache.clear()
+                        self._cache_loaded = False
+
+    # ==========================================================
+    #  Public API – thread‑safe, cache‑first
+    # ==========================================================
 
     def get_user(self, username: str) -> Optional[Dict[str, Any]]:
-        """Get user from memory cache (Fast)."""
+        """Retrieve a user by username from cache (loading cache if needed)."""
         self._ensure_cache_loaded()
-        return self._users_cache.get(username)
-
-    def get_all_users(self) -> Dict[str, Any]:
-        """Get all users from memory cache."""
-        self._ensure_cache_loaded()
-        return self._users_cache.copy()
-
-    def create_user(self, username: str, data: Dict[str, Any]) -> bool:
-        """Update memory and write to disk (Thread-safe)."""
-        self._ensure_cache_loaded()
-        
         with self._lock:
+            return self._users_cache.get(username)
+
+    def get_all_users(self) -> List[Dict[str, Any]]:
+        """Return a list of all users (public fields only, no passwords)."""
+        self._ensure_cache_loaded()
+        with self._lock:
+            return [
+                {
+                    "id": v["id"],
+                    "username": k,
+                    "role": v["role"],
+                    "created_at": v["created_at"]
+                }
+                for k, v in self._users_cache.items()
+            ]
+
+    def create_user(self, username: str, user_data: Dict[str, Any]) -> bool:
+        """
+        Insert a new user into the database and update the cache.
+        user_data must contain 'password', 'role', 'created_at'.
+        Returns True on success, False if user already exists.
+
+        Args:
+            auto_flush: If True (default), flush immediately after insert.
+                        Set to False when batching multiple inserts, then
+                        call flush_db() once after all inserts are done.
+        """
+        with self._lock:
+            self._ensure_cache_loaded()  # ensure cache is fresh
             if username in self._users_cache:
-                return False 
-            
-            # === 1. Update Memory ===
-            self._users_cache[username] = data
-            
-            # 2. Persist to Disk ===
+                return False
+
+            db = self._get_db_manager()
+            # Build the document to store
+            doc = {
+                "_segment": "users",
+                "username": username,
+                "password": user_data["password"],
+                "role": user_data["role"],
+                "created_at": user_data["created_at"]
+            }
             try:
-                locker = self._get_locker()
-                locker.write_file("users.json", save_data(self._users_cache, return_bytes=True))
-                locker.save() # This closes the zip, which is fine as we discard 'locker'
-                return True
-            except Exception as e:
-                logger.error(f"Failed to persist user creation: {e}")
-                del self._users_cache[username]
-                raise e
+                # Insert into the 'users' segment
+                record_id = db.insert_data(self._segment_name, doc)
+            except Exception:
+                logger.exception(f"Failed to insert user '{username}'")
+                return False
+
+            # Update the cache
+            self._users_cache[username] = {
+                "id": record_id,
+                "password": user_data["password"],
+                "role": user_data["role"],
+                "created_at": user_data["created_at"]
+            }
+            return True
 
     def delete_user(self, username: str) -> bool:
-        """Delete from memory and write to disk (Thread-safe)."""
-        self._ensure_cache_loaded()
-        
+        """Delete a user from the database and remove from cache."""
         with self._lock:
+            self._ensure_cache_loaded()
             if username not in self._users_cache:
                 return False
-            
-            # === 1. Update Memory ===
-            del self._users_cache[username]
-            
-            # === 2. Persist to Disk ===
+
+            user_record = self._users_cache[username]
+            record_id = user_record["id"]
+            db = self._get_db_manager()
             try:
-                locker = self._get_locker()
-                locker.write_file("users.json", save_data(self._users_cache, return_bytes=True))
-                locker.save()
-                return True
-            except Exception as e:
-                logger.error(f"Failed to persist user deletion: {e}")
-                # Ideally reload cache from disk to restore state
-                self._users_cache = None 
-                raise e
+                db.delete_data(self._segment_name, record_id)
+            except Exception:
+                logger.exception(f"Failed to delete user '{username}'")
+                return False
+
+            # Remove from cache
+            del self._users_cache[username]
+            return True
+
+    def update_password(self, username: str, new_hashed_password: str) -> bool:
+        """Update a user's password hash in the database and refresh the cache."""
+        with self._lock:
+            self._ensure_cache_loaded()
+            if username not in self._users_cache:
+                return False
+
+            user_record = self._users_cache[username]
+            record_id = user_record["id"]
+            doc = {
+                "_id": record_id,
+                "_segment": "users",
+                "username": username,
+                "password": new_hashed_password,
+                "role": user_record["role"],
+                "created_at": user_record["created_at"],
+                "password_changed_at": utc_now_iso()
+            }
+            db = self._get_db_manager()
+            try:
+                db.update_data(self._segment_name, doc)
+            except Exception:
+                logger.exception(f"Failed to update password for user '{username}'")
+                return False
+
+            user_record["password"] = new_hashed_password
+            user_record["password_changed_at"] = doc["password_changed_at"]
+            return True
 
 # Global Instance
 user_manager = UserManager()
@@ -174,7 +269,7 @@ def get_current_user(credentials: HTTPBasicCredentials = Depends(http_basic_secu
 #        User Management 
 # ==========================================================
 
-def create_user(username: str, password: str, user_role: str = UserRole.USER.value, new_creation: bool = False) -> Dict[str, str]:
+def create_user(username: str, password: str, user_role: str = UserRole.USER.value) -> Dict[str, str]:
     try:
         logger.info(f"Attempting to create user: {username} with role: {user_role}")
 
@@ -193,16 +288,8 @@ def create_user(username: str, password: str, user_role: str = UserRole.USER.val
         user_data = {
             "password": hashed_password,
             "role": validated_role.value,
-            "created_at": datetime.now(timezone.utc).isoformat()
+            "created_at": utc_now_iso()
         }
-
-        # === For first-time creation (script usage, bypass manager logic potentially?) ===
-        if new_creation:
-            # If new_creation is True, it implies we just want the dict back to initialize the DB file manually
-            # This is likely used by run.py --create-user before the DB even exists.
-            users = {}
-            users[username] = user_data
-            return users
 
         if user_manager.get_user(username):
              logger.warning(f"User creation failed - user already exists: {username}")
@@ -246,6 +333,43 @@ def delete_user(username: str) -> Dict[str, str]:
     except Exception as e:
         logger.error(f"Error deleting user: {e}")
         return StandardErrorResponse(success=False, message="Error deleting user").model_dump()
+
+
+# ==========================================================
+#        Password Change
+# ==========================================================
+
+def change_password(username: str, current_password: str, new_password: str) -> Dict[str, str]:
+    try:
+        logger.info(f"Attempting to change password for user: {username}")
+
+        user_record = user_manager.get_user(username)
+        if not user_record:
+            logger.warning(f"Password change failed - user not found: {username}")
+            return {"success": False, "message": "User not found"}
+
+        hashed_password = user_record.get("password")
+        if not hashed_password or not verify_password(current_password, hashed_password):
+            logger.warning(f"Password change failed - current password incorrect: {username}")
+            return {"success": False, "message": "Current password is incorrect"}
+
+        if not new_password or len(new_password) < 6:
+            return {"success": False, "message": "Password must be at least 6 characters long"}
+
+        new_hashed_password = hash_password(new_password)
+        if not new_hashed_password:
+            return {"success": False, "message": "Password hashing failed"}
+
+        success = user_manager.update_password(username, new_hashed_password)
+        if not success:
+            return {"success": False, "message": "Failed to update password"}
+
+        logger.info(f"Password changed successfully for user: {username}")
+        return {"success": True, "message": f"Password for user '{username}' changed successfully"}
+
+    except Exception as e:
+        logger.error(f"Error changing password: {e}")
+        return StandardErrorResponse(success=False, message="Error changing password").model_dump()
 
 
 # ==========================================================

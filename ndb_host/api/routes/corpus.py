@@ -1,3 +1,12 @@
+"""
+NDB API Corpus Management
+==========================================================
+
+This module handles corpus management for the NDB API.
+It provides endpoints for corpus creation, listing, and deletion.
+
+"""
+
 from fastapi import Depends
 from fastapi import APIRouter
 
@@ -7,6 +16,7 @@ from services.user_service import get_current_user
 from db.index_manager import CorpusManager
 from ndb_host.db.ndb_settings import NDBConfig
 from utils.models import StandardResponse, CorpusQueryRequest, AuthenticationResult, UserRole
+
 from utils.logger import NebulonDBLogger
 
 
@@ -61,6 +71,8 @@ async def create_corpus(
     """
     try:
         corpus_name = corpus_query.corpus_name
+        ndb_type = corpus_query.ndb_type
+
         # Check authentication first
         if not current_user.is_authenticated:
             return StandardResponse(
@@ -93,7 +105,7 @@ async def create_corpus(
             )
 
         # Create the corpus directory
-        corpus_manager.create_corpus(corpus_name=corpus_name,username=current_user.username)
+        corpus_manager.create_corpus(corpus_name=corpus_name, username=current_user.username, ndb_type=ndb_type)
         logger.info(f"Corpus created successfully: {corpus_name}")
         
         return StandardResponse(
@@ -139,14 +151,20 @@ async def list_available_corpus(
         logger.info(f"User '{current_user.username}' requested corpus listing.")
         
         available_corpus = corpus_manager.get_available_corpus_list()
+        corpus_info = corpus_manager.get_corpus_info()
+
+        corpus_list = [
+            corpus_info.get(name, {"name": name})
+            for name in available_corpus
+        ]
 
         return StandardResponse(
             success=True,
             exists=True,
-            message=f"Retrieved {len(available_corpus)} corpus entries.",
+            message=f"Retrieved {len(corpus_list)} corpus entries.",
             data={
-                "corpus_list": available_corpus,
-                "total_count": len(available_corpus)
+                "corpus_list": corpus_list,
+                "total_count": len(corpus_list)
             }
         )
     except Exception as e:
