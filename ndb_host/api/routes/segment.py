@@ -17,10 +17,10 @@ from services.user_service import get_current_user
 
 from utils.logger import NebulonDBLogger
 from db.index_manager import CorpusManager
-from db.index_manager import CorpusManager, SegmentManager
+from db.index_manager import SegmentManager
 
 from ndb_host.db.ndb_settings import NDBConfig
-from utils.constants import AuthenticationConfig, ColumnPick, NDBMeta
+from utils.constants import ColumnPick ,NDBMeta
 from utils.models import SegmentQueryRequest, SegmentQueryRequest, AuthenticationResult, StandardResponse, UserRole
 
 from db.engine.utils import FIELD_NOVA
@@ -935,22 +935,11 @@ async def mesh_visualization(
                 segment_name=segment_query.segment_name,
                 message=error_msg
             )
-        data = {"html_path": str(html_path)}
-        try:
-            data["html"] = html_path.read_text(encoding=AuthenticationConfig.ENCODING)
-        except Exception as e:
-            logger.exception(f"Failed to read mesh visualization HTML: {e}")
-            return StandardResponse(
-                success=False,
-                corpus_name=segment_query.corpus_name,
-                segment_name=segment_query.segment_name,
-                message=f"Failed to read mesh visualization HTML: {str(e)}"
-            )
         return StandardResponse(
             success=True,
             corpus_name=segment_query.corpus_name,
             segment_name=segment_query.segment_name,
-            data=data,
+            data={"html_path": str(html_path)},
             message="Mesh visualization HTML generated"
         )
     except Exception as e:
