@@ -13,7 +13,7 @@ set -euo pipefail
 # ------------------------------------------------------------
 
 REPO_URL="https://github.com/sathu08/NebulonDB.git"
-BRANCH="dev"
+BRANCH="master"
 PROJECT_DIR_NAME="NebulonDB"
 
 # ------------------------------------------------------------

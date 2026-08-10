@@ -8,7 +8,7 @@ rem sets the current directory to the NebulonDB repo root.
 rem ============================================================
 
 set "REPO_URL=https://github.com/sathu08/NebulonDB.git"
-set "BRANCH=dev"
+set "BRANCH=master"
 set "PROJECT_DIR_NAME=NebulonDB"
 
 rem ------------------------------------------------------------
