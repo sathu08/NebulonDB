@@ -35,13 +35,10 @@ from .document_store import DocumentStore
 from .ranking import BM25Scorer, RRFMerger, QueryIntent, RankEngine, CrossEncoderReranker, RankConfig
 
 from db.engine.utils import (
-    FIELD_ID,
     FIELD_METADATA,
-    FIELD_NOVA,
     FIELD_VECTOR,
     FIELD_TEXT,
     FIELD_LABEL,
-    FIELD_CREATED_AT,
 )
 from ndb_host.utils.time_utils import utc_now_iso
 

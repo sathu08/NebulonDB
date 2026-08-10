@@ -151,14 +151,20 @@ async def list_available_corpus(
         logger.info(f"User '{current_user.username}' requested corpus listing.")
         
         available_corpus = corpus_manager.get_available_corpus_list()
+        corpus_info = corpus_manager.get_corpus_info()
+
+        corpus_list = [
+            corpus_info.get(name, {"name": name})
+            for name in available_corpus
+        ]
 
         return StandardResponse(
             success=True,
             exists=True,
-            message=f"Retrieved {len(available_corpus)} corpus entries.",
+            message=f"Retrieved {len(corpus_list)} corpus entries.",
             data={
-                "corpus_list": available_corpus,
-                "total_count": len(available_corpus)
+                "corpus_list": corpus_list,
+                "total_count": len(corpus_list)
             }
         )
     except Exception as e:

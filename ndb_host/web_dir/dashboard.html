@@ -33,13 +33,14 @@
     <header class="topbar">
       <div class="topbar-title" id="topbarTitle">Overview</div>
       <div class="topbar-right">
-        <div class="user-chip">
+        <div class="user-chip" id="userChip" title="Account">
           <div class="user-avatar" id="userAvatar">U</div>
           <div class="user-info">
             <span class="user-name" id="userName">—</span>
             <span class="user-role" id="userRole">—</span>
           </div>
         </div>
+        <button class="btn btn-ghost btn-sm" id="settingsBtn" title="Settings">⚙️ Settings</button>
         <button class="btn btn-ghost btn-sm" id="logoutBtn">Sign out</button>
       </div>
     </header>
@@ -64,7 +65,7 @@
         <div class="panel">
           <div class="panel-head">
             <span class="panel-title">Segments</span>
-            <button class="btn btn-ghost btn-sm" id="loadSegmentBtn" style="display:none;">Load segment</button>
+            <button class="btn btn-ghost btn-sm" id="loadSegmentBtn" style="display:none;" disabled>Load segment</button>
           </div>
           <div class="table-wrap">
             <table>
@@ -93,47 +94,31 @@
 
           <div class="panel">
             <div class="panel-head">
-              <span class="panel-title">Search data</span>
+              <span class="panel-title">Data preview</span>
+              <button class="btn btn-primary btn-sm" id="getDataBtn">Get 10 records</button>
             </div>
             <div class="panel-body">
-              <div class="search-row">
-                <input id="searchInput" class="input" type="text" placeholder="Search text within this segment...">
-                <input id="searchTop" class="input" type="number" min="1" max="100" value="10" style="max-width:110px;" title="Top matches">
-                <button class="btn btn-primary" id="searchBtn">Search</button>
-              </div>
-              <div class="table-wrap mt-16" id="searchResultsWrap" style="display:none;">
+              <div id="dataMessage" class="muted small"></div>
+              <div class="table-wrap mt-16" id="dataTableWrap" style="display:none;">
                 <table>
                   <thead>
                     <tr>
                       <th>ID</th>
-                      <th>Score</th>
-                      <th>Metadata / Text</th>
-                      <th>Action</th>
+                      <th>Text</th>
+                      <th>Metadata</th>
                     </tr>
                   </thead>
-                  <tbody id="searchResultsBody"></tbody>
+                  <tbody id="dataTableBody"></tbody>
                 </table>
               </div>
-              <div id="searchMessage" class="muted small mt-16"></div>
-            </div>
-          </div>
-
-          <div class="panel">
-            <div class="panel-head">
-              <span class="panel-title">Record lookup</span>
-            </div>
-            <div class="panel-body">
-              <div class="search-row">
-                <input id="recordIdInput" class="input" type="number" min="0" placeholder="Record ID...">
-                <button class="btn btn-primary" id="recordBtn">Get record</button>
-              </div>
-              <div id="recordView" class="mt-16" style="display:none;"></div>
             </div>
           </div>
         </div>
       </div>
     </main>
   </div>
+
+  <div id="toastContainer" class="toast-container"></div>
 
   <div id="modalOverlay" class="modal-overlay">
     <div class="modal">

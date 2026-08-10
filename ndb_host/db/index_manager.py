@@ -343,6 +343,30 @@ class CorpusManager:
         except Exception:
             return []
         
+    def get_corpus_info(self) -> Dict[str, Dict[str, Any]]:
+        """
+        Retrieve metadata info (name, ndb_type, status, created_by, created_at)
+        for every corpus present in metadata, keyed by corpus name.
+
+        Returns:
+            Dict[str, Dict[str, Any]]: Corpus metadata keyed by corpus name.
+        """
+        info: Dict[str, Dict[str, Any]] = {}
+        try:
+            for record in self.metadata_db.read_data(segment=self.metadata_segment):
+                name = record.get("corpus_name")
+                if name:
+                    info[name] = {
+                        "name": name,
+                        "ndb_type": record.get("ndb_type"),
+                        "status": record.get("status"),
+                        "created_by": record.get("created_by"),
+                        "created_at": record.get("created_at"),
+                    }
+        except Exception:
+            pass
+        return info
+
     def get_corpus_status(self, corpus_name: str) -> str:
         """
         Retrieve the status of a specified corpus.

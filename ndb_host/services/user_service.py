@@ -206,7 +206,7 @@ class UserManager:
                 "password": new_hashed_password,
                 "role": user_record["role"],
                 "created_at": user_record["created_at"],
-                "password_changed_at": utc_now_iso
+                "password_changed_at": utc_now_iso()
             }
             db = self._get_db_manager()
             try:
@@ -288,7 +288,7 @@ def create_user(username: str, password: str, user_role: str = UserRole.USER.val
         user_data = {
             "password": hashed_password,
             "role": validated_role.value,
-            "created_at": utc_now_iso
+            "created_at": utc_now_iso()
         }
 
         if user_manager.get_user(username):

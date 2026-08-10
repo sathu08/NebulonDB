@@ -143,47 +143,100 @@ class NebulonInitializer:
             logger.exception(
                 f"Model initialization failed: {e}"
             ) 
-
     
     def bootstrap_default_corpus(self) -> None:
         """
-        Ensure the default corpus exists, creating it if necessary.
+        Ensure that the default corpus exists.
 
-        Returns:            
+        If the default corpus does not exist, this method creates the corpus
+        and loads a sample segment dataset into it.
+
+        Returns:
             None
         """
-        
-        from db.index_manager import CorpusManager
+
+        import polars as pl
+
+        from db.index_manager import CorpusManager, SegmentManager
 
         try:
-            manager = CorpusManager()
-            
+            corpus_name = NDBMeta.Corpus.DEFAULT_CORPUS_NAME
+            segment_name = "ndb_sample_data"
+            username = NDBMeta.User.NEBULONDB_USER
+            ndb_type = NDBMeta.Type.COSMOS
+            status = UserRole.SYSTEM.value
             corpus_path = self.config.NEBULONDB_DEFAULT_CORPUS_PATH
+
+            # Default corpus already exists.
             if corpus_path.exists():
+                logger.info(f"Default {ndb_type} corpus '{corpus_name}' already exists.")
                 return
-            
-            logger.info(f"Creating default corpus '{NDBMeta.Corpus.DEFAULT_CORPUS_NAME}'...")
-            manager.create_corpus(
-                corpus_name=NDBMeta.Corpus.DEFAULT_CORPUS_NAME, 
-                username=NDBMeta.User.NEBULONDB_USER, 
-                status=UserRole.SYSTEM)
-            logger.info(f"Corpus '{NDBMeta.Corpus.DEFAULT_CORPUS_NAME}' created successfully.")
+
+            logger.info( f"Creating default {ndb_type} corpus '{corpus_name}'...")
+
+            corpus_manager = CorpusManager()
+
+            corpus_manager.create_corpus(
+                corpus_name=corpus_name,
+                username=username,
+                ndb_type=ndb_type,
+                status=status,
+            )
+
+            logger.info(f"Default {ndb_type} corpus '{corpus_name}' created successfully.")
+
+            segment_manager = SegmentManager(
+                corpus_name=corpus_name,
+                segment_name=segment_name,
+                ndb_type=ndb_type,
+            )
+
+            logger.info(f"Loading sample segment '{segment_name}' into {ndb_type} corpus '{corpus_name}'...")
+
+            # Sample NebulonDB dataset.
+            segment_dataset = pl.DataFrame(
+                {
+                    "segment_text": [
+                        "NebulonDB stores data using immutable segments",
+                        "NebulonDB supports vector and metadata search",
+                        "Segment compaction improves storage efficiency",
+                    ],
+                    "segment_metadata": [
+                        "database=nebulondb, type=segment",
+                        "database=nebulondb, type=vector",
+                        "database=nebulondb, type=metadata",
+                    ],
+                }
+            )
+
+            lang_type = "en"
+            doc_type = "other"
+
+            segment_manager.load_segment(
+                segment_dataset=segment_dataset,
+                columns=[
+                    "segment_text",
+                    "segment_metadata",
+                ],
+                doc_type=doc_type,
+                lang_type=lang_type,
+            )
+
+            logger.info(f"Sample segment '{segment_name}' loaded successfully into {ndb_type} corpus '{corpus_name}'.")
 
         except Exception as e:
-            logger.exception(f"Failed to create default corpus '{NDBMeta.Corpus.DEFAULT_CORPUS_NAME}': {e}")
+            logger.exception(f"Failed to create default corpus '{corpus_name}': {e}")
             shutil.rmtree(corpus_path, ignore_errors=True)
             sys.exit(1)
 
     def bootstrap_log_dir(self):
-        """Ensure log directory structure exists."""
+        """Ensure the log directory exists."""
         
         try:
             log_dir = NDBConfig().NEBULONDB_LOG_PATH
-            if not log_dir.exists():
-                for log_type in NDBMeta.Logging.STRUCTURE:
-                    (log_dir / log_type).mkdir(parents=True, exist_ok=True)
+            log_dir.mkdir(parents=True, exist_ok=True)
 
-            logger.debug("Log directory structure verified and file logging configured.")
+            logger.debug("Log directory verified and file logging configured.")
 
         except Exception as e:
             logger.exception(f"Failed to create log directory: {e}")

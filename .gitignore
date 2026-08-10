@@ -31,12 +31,15 @@ benchmark_api.py
 # Logs & environment
 # ===============================
 *.log
+logs/
 .env
+*.pid
 
 # ===============================
-# Virtual environment & build
+# Virtual environment, storage & build
 # ===============================
 .venv/
 dist/
 build/
 *.egg-info
+Storage/

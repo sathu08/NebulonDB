@@ -16,7 +16,9 @@ from colorama import init
 from ndb_host.utils.logger import Fore, Style
 
 from ndb_host.db.ndb_settings import NDBConfig
+from ndb_host.utils.constants import NDBMeta
 from ndb_host.utils.logger import NebulonDBLogger
+
 from ndb_host.utils.bootstrap import NebulonInitializer
 
 
@@ -42,7 +44,11 @@ NEBULONDB_PID_FILE = cfg.NEBULONDB_PID_FILE
 log_dir = cfg.NEBULONDB_LOG_PATH
 
 logger_manager = NebulonDBLogger()
-logger_manager.configure_file_logging(log_dir=str(log_dir))
+logger_manager.configure_file_logging(
+    log_dir=str(log_dir),
+    retention_days=cfg.LOG_RETENTION_DAYS,
+    auto_delete=cfg.LOG_AUTO_DELETE,
+)
 logger = logger_manager.get_logger()
 
 # ==========================================================
@@ -290,14 +296,15 @@ def start_server(cfg: NDBConfig, foreground: bool = False):
 
     # --- Resolve gunicorn log file targets (default to NDB log dir) ---
     log_path = cfg.NEBULONDB_LOG_PATH
+    log_file = log_path / time.strftime(NDBMeta.Logging.LOG_FILE)
     if cfg.ACCESS_LOGFILE and cfg.ACCESS_LOGFILE != "-":
         access_logfile = str(cfg.ACCESS_LOGFILE)
     else:
-        access_logfile = str(log_path / "access" / "access.log")
+        access_logfile = str(log_file)
     if cfg.ERROR_LOGFILE and cfg.ERROR_LOGFILE != "-":
         error_logfile = str(cfg.ERROR_LOGFILE)
     else:
-        error_logfile = str(log_path / "error" / "error.log")
+        error_logfile = str(log_file)
 
     module_path = "ndb_host.main"
     cmd = [

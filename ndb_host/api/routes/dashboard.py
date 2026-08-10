@@ -52,6 +52,24 @@ async def index_page():
 
 
 # ==========================================================
+#        Serve Web Console (dashboard.html)
+# ==========================================================
+
+@router.get("/dashboard", response_class=HTMLResponse, include_in_schema=False)
+@router.get("/dashboard.html", response_class=HTMLResponse, include_in_schema=False)
+
+async def dashboard_page():
+    """Serve the NebulonDB console dashboard page."""
+
+    DASH_HTML = WEB_DIR / "dashboard.html"
+
+    if not DASH_HTML.exists():
+        raise HTTPException(status_code=404, detail="dashboard.html not found")
+
+    return FileResponse(DASH_HTML)
+
+
+# ==========================================================
 #        Get Configuration
 # ==========================================================
 

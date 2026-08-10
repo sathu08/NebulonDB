@@ -72,7 +72,7 @@ loginForm.addEventListener("submit", async (e) => {
       throw new Error(user.message || "Invalid username or password");
     }
     saveUser(user);
-    window.location.href = "dashboard.html";
+    window.location.href = CONSOLE_BASE + "/dashboard.html";
   } catch (err) {
     clearCredentials();
     if (err instanceof ApiError && err.status === 401) {
@@ -123,7 +123,7 @@ registerForm.addEventListener("submit", async (e) => {
     const user = getSavedUser();
     if (user && user.is_authenticated !== false) {
       await AuthAPI.verify();
-      window.location.href = "dashboard.html";
+      window.location.href = CONSOLE_BASE + "/dashboard.html";
       return;
     }
   } catch (e) {

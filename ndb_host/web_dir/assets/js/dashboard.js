@@ -24,10 +24,6 @@ const els = {
   segmentStatsNote: document.getElementById("segmentStatsNote"),
   loadSegmentBtn: document.getElementById("loadSegmentBtn"),
   statsGrid: document.getElementById("statsGrid"),
-  searchResultsWrap: document.getElementById("searchResultsWrap"),
-  searchResultsBody: document.getElementById("searchResultsBody"),
-  searchMessage: document.getElementById("searchMessage"),
-  recordView: document.getElementById("recordView"),
   topbarTitle: document.getElementById("topbarTitle"),
   userName: document.getElementById("userName"),
   userRole: document.getElementById("userRole"),
@@ -38,8 +34,24 @@ const els = {
   modalFoot: document.getElementById("modalFoot"),
 };
 
+const TOAST_ICONS = { error: "✕", success: "✓", warning: "⚠", info: "ℹ" };
+
 function showToast(message, type, target) {
-  const el = target || document.getElementById("searchMessage");
+  const container = document.getElementById("toastContainer");
+  if (container && message != null && message !== "") {
+    const kind = type === "error" ? "error" : type === "success" ? "success" : type === "warning" ? "warning" : "info";
+    const toast = document.createElement("div");
+    toast.className = "toast toast-" + kind;
+    toast.innerHTML = `<span class="toast-icon">${TOAST_ICONS[kind]}</span><span>${escapeHtml(message)}</span>`;
+    container.appendChild(toast);
+    requestAnimationFrame(() => toast.classList.add("show"));
+    setTimeout(() => {
+      toast.classList.add("hide");
+      setTimeout(() => toast.remove(), 250);
+    }, 3500);
+    return;
+  }
+  const el = target || document.getElementById("dataMessage");
   if (!el) return;
   el.textContent = message;
   el.className = "mt-16 small " + (type === "error" ? "alert-error" : type === "success" ? "alert-success" : "muted");
@@ -47,7 +59,7 @@ function showToast(message, type, target) {
 
 function logout() {
   clearCredentials();
-  window.location.href = "index.html";
+  window.location.href = CONSOLE_BASE + "/";
 }
 
 document.getElementById("logoutBtn").addEventListener("click", logout);
@@ -71,6 +83,25 @@ async function loadUser() {
   els.userName.textContent = name;
   els.userRole.textContent = state.user.role || "user";
   els.userAvatar.textContent = name.charAt(0).toUpperCase();
+  applyAccess();
+}
+
+function setBtnAccess(id, enabled, tip) {
+  const btn = document.getElementById(id);
+  if (!btn) return;
+  btn.disabled = !enabled;
+  btn.classList.toggle("disabled", !enabled);
+  btn.title = enabled ? "" : (tip || "Access restricted");
+}
+
+function applyAccess() {
+  const admin = isAdmin(state.user);
+
+  setBtnAccess("newCorpusBtn", admin, "Admin access required");
+  setBtnAccess("loadSegmentBtn", false, "Not available in this version. Load This manually");
+  setBtnAccess("getDataBtn", true, "");
+
+  renderCorpusActions();
 }
 
 function statusBadge(status) {
@@ -89,7 +120,15 @@ async function loadCorpora() {
     const resp = await CorpusAPI.list();
     if (!resp.success) throw new Error(resp.message || "Failed to load corpora");
     const data = resp.data || {};
-    state.corpora = (data.corpus_list || []).map((name) => ({ name }));
+    state.corpora = (data.corpus_list || []).map((c) =>
+      typeof c === "string"
+        ? { name: c }
+        : { name: c.name || "", type: c.ndb_type, status: c.status, created_at: c.created_at }
+    );
+    state.statusMap = {};
+    state.corpora.forEach((c) => {
+      if (c.status) state.statusMap[c.name] = c.status;
+    });
     const counts = await Promise.allSettled(
       state.corpora.map(async (c) => {
         const r = await SegmentAPI.list(c.name);
@@ -126,6 +165,7 @@ function renderCorpusList() {
         </div>
         <div class="corpus-meta">
           ${statusBadge(state.statusMap[c.name])}
+          <span class="badge badge-default">${escapeHtml(c.type || "orbit")}</span>
           <span>📄 ${count} segment${count === 1 ? "" : "s"}</span>
         </div>
       `;
@@ -144,8 +184,9 @@ function selectCorpus(name) {
   els.segmentView.style.display = "none";
   els.topbarTitle.textContent = name;
   els.corpusTitle.textContent = name;
+  const corpus = state.corpora.find((c) => c.name === name) || {};
   els.corpusBadge.innerHTML = statusBadge(state.statusMap[name]);
-  els.corpusMeta.textContent = ` • ${state.segmentCounts[name] ?? 0} segments`;
+  els.corpusMeta.innerHTML = `<span class="badge badge-default">Type: ${escapeHtml(corpus.type || "orbit")}</span> • ${state.segmentCounts[name] ?? 0} segments`;
   renderCorpusActions();
 }
 
@@ -153,30 +194,45 @@ function renderCorpusActions() {
   els.corpusActions.innerHTML = "";
   const name = state.selectedCorpus;
   if (!name) return;
-  const status = state.statusMap[name];
+  const status = state.statusMap[name] || "active";
+  const isSystem = status === "system";
+  const isDeactivated = status === "deactivate";
 
   const actBtn = document.createElement("button");
   actBtn.className = "btn btn-sm btn-warning";
-  actBtn.textContent = status === "active" ? "Deactivate" : "Activate";
+  actBtn.textContent = isDeactivated ? "Activate" : "Deactivate";
+  if (isSystem) {
+    actBtn.classList.add("disabled");
+    actBtn.disabled = true;
+    actBtn.title = "System corpora cannot be activated or deactivated";
+  }
   actBtn.addEventListener("click", async () => {
+    if (isSystem) return;
     try {
-      const resp = status === "active"
-        ? await CorpusAPI.deactivate(name)
-        : await CorpusAPI.activate(name);
+      const resp = isDeactivated
+        ? await CorpusAPI.activate(name)
+        : await CorpusAPI.deactivate(name);
       if (!resp.success) throw new Error(resp.message || "Action failed");
-      state.statusMap[name] = status === "active" ? "deactivate" : "active";
-      showToast(resp.message, "success", document.getElementById("searchMessage"));
+      state.statusMap[name] = isDeactivated ? "active" : "deactivate";
+      showToast(resp.message || (isDeactivated ? "Corpus activated." : "Corpus deactivated."), "success");
       renderCorpusList();
       els.corpusBadge.innerHTML = statusBadge(state.statusMap[name]);
+      renderCorpusActions();
     } catch (err) {
-      showToast(err.message, "error", document.getElementById("searchMessage"));
+      showToast(err.message, "error");
     }
   });
 
   const delBtn = document.createElement("button");
   delBtn.className = "btn btn-sm btn-danger";
   delBtn.textContent = "Delete";
+  if (isSystem) {
+    delBtn.classList.add("disabled");
+    delBtn.disabled = true;
+    delBtn.title = "System corpora cannot be deleted";
+  }
   delBtn.addEventListener("click", async () => {
+    if (isSystem) return;
     if (!confirm(`Delete corpus "${name}"? This cannot be undone.`)) return;
     try {
       const resp = await CorpusAPI.delete(name);
@@ -189,14 +245,22 @@ function renderCorpusActions() {
       els.corpusView.style.display = "none";
       els.emptyState.style.display = "flex";
       els.topbarTitle.textContent = "Overview";
-      showToast(resp.message, "success", document.getElementById("searchMessage"));
+      showToast(resp.message, "success");
     } catch (err) {
-      showToast(err.message, "error", document.getElementById("searchMessage"));
+      showToast(err.message, "error");
     }
   });
 
   const admin = isAdmin(state.user);
-  if (admin) els.corpusActions.append(actBtn, delBtn);
+  if (!admin) {
+    actBtn.classList.add("disabled");
+    actBtn.disabled = true;
+    actBtn.title = "Admin access required";
+    delBtn.classList.add("disabled");
+    delBtn.disabled = true;
+    delBtn.title = "Admin access required";
+  }
+  els.corpusActions.append(actBtn, delBtn);
 }
 
 async function loadSegments(corpusName) {
@@ -211,6 +275,11 @@ async function loadSegments(corpusName) {
     if (!segments.length) {
       els.segmentTableBody.innerHTML = '<tr><td colspan="4" class="muted">No segments in this corpus.</td></tr>';
     } else {
+      const corpus = state.corpora.find((c) => c.name === corpusName) || {};
+      const isOrbit = (corpus.type || "").toLowerCase() === "orbit";
+      const meshAttr = isOrbit
+        ? 'title="View mesh graph visualization"'
+        : 'disabled title="Mesh visualization is only available for Orbit corpora"';
       els.segmentTableBody.innerHTML = segments
         .map(
           (s) => `
@@ -223,13 +292,21 @@ async function loadSegments(corpusName) {
             </td>
             <td>${fmt(s.inserted)}</td>
             <td class="muted">${fmtDate(s.created_at)}</td>
-            <td><button class="btn btn-ghost btn-sm view-btn" data-segment="${escapeHtml(s.name || "")}">View data</button></td>
+            <td>
+              <div class="flex" style="gap:8px;">
+                <button class="btn btn-ghost btn-sm view-btn" data-segment="${escapeHtml(s.name || "")}">View data</button>
+                <button class="btn btn-ghost btn-sm mesh-btn" data-segment="${escapeHtml(s.name || "")}" ${meshAttr}>View mesh visual</button>
+              </div>
+            </td>
           </tr>`
         )
         .join("");
       els.segmentTableBody.querySelectorAll("[data-segment]").forEach((el) => {
         el.addEventListener("click", (e) => {
-          if (e.target.closest(".view-btn")) {
+          if (e.target.closest(".mesh-btn")) {
+            const btn = e.target.closest(".mesh-btn");
+            openMeshVisual(btn.dataset.segment, btn);
+          } else if (e.target.closest(".view-btn")) {
             selectSegment(e.target.dataset.segment);
           } else {
             const seg = el.dataset.segment;
@@ -250,8 +327,6 @@ async function selectSegment(segmentName) {
   els.loadSegmentBtn.style.display = "block";
   els.statsGrid.innerHTML = '<div class="muted small">Loading stats...</div>';
   els.segmentStatsNote.textContent = "";
-  els.searchResultsWrap.style.display = "none";
-  els.recordView.style.display = "none";
   loadStats(state.selectedCorpus, segmentName);
 }
 
@@ -281,107 +356,102 @@ async function loadStats(corpusName, segmentName) {
   }
 }
 
-async function runSearch() {
-  const query = document.getElementById("searchInput").value.trim();
-  if (!query) {
-    showToast("Enter a search term first.", "error");
+function renderSearchMeta(meta) {
+  if (!meta || typeof meta !== "object") return "—";
+  const ranks = ["text", "content", "title", "doc", "label"];
+  const keys = Object.keys(meta).sort((a, b) => {
+    const ia = ranks.indexOf(a);
+    const ib = ranks.indexOf(b);
+    return (ia === -1 ? 99 : ia) - (ib === -1 ? 99 : ib);
+  });
+  if (!keys.length) return "—";
+
+  let html = '<div class="meta-list">';
+  keys.forEach((k) => {
+    let val = fmt(meta[k]);
+    if (typeof val === "string" && val.length > 200) val = val.slice(0, 200) + "…";
+    html += `<div class="meta-row"><span class="meta-key">${escapeHtml(k)}</span><span class="meta-value">${escapeHtml(val)}</span></div>`;
+  });
+  html += "</div>";
+  return html;
+}
+
+async function loadData() {
+  const corpusName = state.selectedCorpus;
+  const segmentName = state.selectedSegment;
+  if (!corpusName || !segmentName) {
+    showToast("Select a corpus and segment first.", "error", document.getElementById("dataMessage"));
     return;
   }
-  const top = parseInt(document.getElementById("searchTop").value, 10) || 10;
-  els.searchMessage.textContent = "Searching...";
+  const corpus = state.corpora.find((c) => c.name === corpusName) || {};
+  const type = corpus.type || "orbit";
+  const msg = document.getElementById("dataMessage");
+  const wrap = document.getElementById("dataTableWrap");
+  const body = document.getElementById("dataTableBody");
+  msg.textContent = "Loading records...";
+  wrap.style.display = "none";
   try {
-    const resp = await SegmentAPI.search(state.selectedCorpus, state.selectedSegment, query, top);
-    if (!resp.success) throw new Error(resp.message || "Search failed");
-    const results = resp.data || [];
-    els.searchResultsWrap.style.display = results.length ? "block" : "none";
-    els.searchMessage.textContent = resp.message || (results.length ? "" : "No results found.");
-    els.searchResultsBody.innerHTML = results
+    const resp = await SegmentAPI.getData(corpusName, segmentName, type, 10);
+    if (!resp.success) throw new Error(resp.message || "Failed to load data");
+    const records = (resp.data || {}).records || [];
+    if (!records.length) {
+      msg.textContent = "No records found in this segment.";
+      return;
+    }
+    body.innerHTML = records
       .map((r) => `
         <tr>
           <td>${escapeHtml(fmt(r.id))}</td>
-          <td>${typeof r.score === "number" ? r.score.toFixed(4) : escapeHtml(fmt(r.score))}</td>
+          <td>${escapeHtml(String(r.text || r.metadata?.text || "")).slice(0, 300) || "—"}</td>
           <td>${renderSearchMeta(r.metadata)}</td>
-          <td><button class="btn btn-ghost btn-sm" data-id="${escapeHtml(fmt(r.id))}" data-record>View</button></td>
         </tr>`)
       .join("");
-    els.searchResultsBody.querySelectorAll("[data-record]").forEach((btn) => {
-      btn.addEventListener("click", () => {
-        const rid = parseInt(btn.dataset.id, 10);
-        if (!isNaN(rid)) fetchRecord(rid);
-      });
-    });
+    wrap.style.display = "block";
+    msg.textContent = `Showing ${records.length} of ${resp.data.total_count ?? records.length} records (${escapeHtml(type)}).`;
   } catch (err) {
-    els.searchResultsWrap.style.display = "none";
-    showToast(err.message, "error");
+    wrap.style.display = "none";
+    msg.textContent = err.message;
   }
 }
 
-function renderSearchMeta(meta) {
-  if (!meta || typeof meta !== "object") return "—";
-  const text = meta.text || meta.content || meta.title || meta.doc || "";
-  const keys = Object.keys(meta).filter((k) => !["text", "content", "title", "doc"].includes(k));
-  let html = "";
-  if (text) {
-    html += `<div style="margin-bottom:4px;">${escapeHtml(text).slice(0, 400)}${escapeHtml(text).length > 400 ? "…" : ""}</div>`;
-  }
-  if (keys.length) {
-    html += `<div class="muted small">${keys.slice(0, 6).map((k) => `${escapeHtml(k)}: ${escapeHtml(fmt(meta[k])).slice(0, 60)}`).join(" · ")}</div>`;
-  }
-  return html || "—";
-}
-
-function compactVectors(obj) {
-  if (obj === null || typeof obj !== "object") return obj;
-  if (Array.isArray(obj)) {
-    if (obj.length > 0 && obj.every((v) => typeof v === "number")) {
-      return `[${obj.length} floats] ${obj.slice(0, 8).join(", ")}…`;
-    }
-    return obj.map(compactVectors);
-  }
-  const out = {};
-  for (const k of Object.keys(obj)) {
-    const v = obj[k];
-    if (Array.isArray(v) && v.length > 24 && v.every((n) => typeof n === "number")) {
-      out[k] = `[${v.length} floats]`;
-    } else {
-      out[k] = compactVectors(v);
-    }
-  }
-  return out;
-}
-
-function renderRecord(record) {
-  els.recordView.style.display = "block";
-  const compact = compactVectors(record);
-  els.recordView.innerHTML = `
-    <div class="section-label">Full record</div>
-    <pre class="json-pre">${escapeHtml(JSON.stringify(compact, null, 2))}</pre>`;
-}
-
-async function fetchRecord(recordId) {
-  try {
-    const resp = await SegmentAPI.getRecord(state.selectedCorpus, state.selectedSegment, recordId);
-    if (!resp.success) throw new Error(resp.message || "Record not found");
-    renderRecord(resp.data);
-  } catch (err) {
-    els.recordView.style.display = "block";
-    els.recordView.innerHTML = `<div class="alert alert-error show">${escapeHtml(err.message)}</div>`;
-  }
-}
-
-document.getElementById("searchBtn").addEventListener("click", runSearch);
-document.getElementById("searchInput").addEventListener("keydown", (e) => {
-  if (e.key === "Enter") runSearch();
-});
-document.getElementById("recordBtn").addEventListener("click", () => {
-  const rid = parseInt(document.getElementById("recordIdInput").value, 10);
-  if (isNaN(rid)) {
-    showToast("Enter a valid record ID.", "error");
-    return;
-  }
-  fetchRecord(rid);
-});
+document.getElementById("getDataBtn").addEventListener("click", loadData);
 document.getElementById("corpusSearch").addEventListener("input", renderCorpusList);
+
+async function openMeshVisual(segmentName, btn) {
+  const corpusName = state.selectedCorpus;
+  const corpus = state.corpora.find((c) => c.name === corpusName) || {};
+  const type = corpus.type || "orbit";
+  try {
+    const resp = await SegmentAPI.meshVisualization(corpusName, segmentName, type);
+    if (!resp.success) throw new Error(resp.message || "Mesh visualization not available");
+    const html = (resp.data || {}).html;
+    if (!html) throw new Error("No mesh visualization content returned.");
+    showMeshModal(segmentName, html);
+  } catch (err) {
+    if (btn) {
+      btn.classList.add("disabled");
+      btn.disabled = true;
+      btn.title = "Mesh visualization is not available";
+    }
+    showToast(err.message || "Mesh visualization unavailable", "error");
+  }
+}
+
+function showMeshModal(segmentName, html) {
+  els.modalTitle.textContent = "Mesh visualization — " + segmentName;
+  els.modalOverlay.querySelector(".modal").classList.add("modal-wide");
+  els.modalBody.innerHTML = `
+    <iframe class="mesh-frame" src="about:blank" sandbox="allow-scripts allow-modals allow-popups allow-forms"></iframe>`;
+  els.modalFoot.innerHTML = `
+    <button class="btn btn-ghost" id="mCancel">Close</button>`;
+  els.modalOverlay.classList.add("show");
+  document.getElementById("mCancel").addEventListener("click", closeModal);
+  const frame = els.modalBody.querySelector(".mesh-frame");
+  const doc = frame.contentDocument;
+  doc.open();
+  doc.write(html);
+  doc.close();
+}
 
 document.getElementById("loadSegmentBtn").addEventListener("click", () => {
   if (!isAdmin(state.user)) {
@@ -501,6 +571,249 @@ function openLoadSegmentModal() {
   });
 }
 
+function openUserModal() {
+  els.modalOverlay.querySelector(".modal").classList.remove("modal-wide");
+  els.modalTitle.textContent = "Account";
+  const name = (state.user && state.user.username) || "—";
+  const role = (state.user && state.user.role) || "—";
+  const initial = name.charAt(0).toUpperCase();
+  const admin = isAdmin(state.user);
+
+  els.modalBody.innerHTML = `
+    <div class="account-section">
+      <div class="account-profile">
+        <div class="account-avatar">${escapeHtml(initial)}</div>
+        <div>
+          <div class="account-name">${escapeHtml(name)}</div>
+          <div class="account-role">${escapeHtml(role)}</div>
+        </div>
+      </div>
+    </div>
+
+    <div class="account-section">
+      <div class="section-label">Change password</div>
+      <div class="field">
+        <label for="uCurrentPwd">Current password</label>
+        <input id="uCurrentPwd" class="input" type="password" autocomplete="current-password" placeholder="Current password">
+      </div>
+      <div class="field">
+        <label for="uNewPwd">New password</label>
+        <input id="uNewPwd" class="input" type="password" autocomplete="new-password" placeholder="At least 6 characters">
+      </div>
+      <div class="field">
+        <label for="uConfirmPwd">Confirm new password</label>
+        <input id="uConfirmPwd" class="input" type="password" autocomplete="new-password" placeholder="Repeat new password">
+      </div>
+      <button class="btn btn-primary" id="uChangePwdBtn">Change password</button>
+    </div>
+
+    <div class="divider"></div>
+
+    <div class="account-section">
+      <div class="flex-between">
+        <div class="section-label" style="margin:0;">Create new user</div>
+        ${admin ? `<button class="btn btn-sm btn-ghost" id="uToggleCreate">Add user</button>` : `<span class="small muted">Admin access required</span>`}
+      </div>
+      <div id="uCreateForm" style="display:none;" class="mt-16">
+        <div class="field">
+          <label for="uNewUsername">Username</label>
+          <input id="uNewUsername" class="input" type="text" placeholder="Min 3 characters">
+        </div>
+        <div class="field">
+          <label for="uNewUserPwd">Password</label>
+          <input id="uNewUserPwd" class="input" type="password" autocomplete="new-password" placeholder="Min 6 characters">
+        </div>
+        <div class="field">
+          <label for="uNewUserRole">User type</label>
+          <select id="uNewUserRole" class="input">
+            <option value="user">User</option>
+            <option value="admin_user">Admin</option>
+            <option value="super_user">Super user</option>
+          </select>
+        </div>
+        <button class="btn btn-primary" id="uCreateUserBtn">Create user</button>
+      </div>
+    </div>`;
+
+  els.modalFoot.innerHTML = `
+    <button class="btn btn-ghost" id="mCancel">Close</button>`;
+  els.modalOverlay.classList.add("show");
+
+  document.getElementById("mCancel").addEventListener("click", closeModal);
+
+  document.getElementById("uChangePwdBtn").addEventListener("click", async () => {
+    const current = document.getElementById("uCurrentPwd").value;
+    const next = document.getElementById("uNewPwd").value;
+    const confirmVal = document.getElementById("uConfirmPwd").value;
+    if (!current || !next) {
+      showToast("Current and new password are required.", "error");
+      return;
+    }
+    if (next.length < 6) {
+      showToast("New password must be at least 6 characters.", "error");
+      return;
+    }
+    if (next !== confirmVal) {
+      showToast("New passwords do not match.", "error");
+      return;
+    }
+    const btn = document.getElementById("uChangePwdBtn");
+    btn.disabled = true;
+    try {
+      const resp = await AuthAPI.changePassword(current, next);
+      if (!resp.success) throw new Error(resp.message || "Password change failed");
+      document.getElementById("uCurrentPwd").value = "";
+      document.getElementById("uNewPwd").value = "";
+      document.getElementById("uConfirmPwd").value = "";
+      showToast(resp.message || "Password changed successfully.", "success");
+    } catch (err) {
+      showToast(err.message || "Password change failed.", "error");
+    } finally {
+      btn.disabled = false;
+    }
+  });
+
+  const toggleBtn = document.getElementById("uToggleCreate");
+  if (toggleBtn) {
+    toggleBtn.addEventListener("click", () => {
+      const form = document.getElementById("uCreateForm");
+      form.style.display = form.style.display === "none" ? "block" : "none";
+    });
+  }
+
+  const createBtn = document.getElementById("uCreateUserBtn");
+  if (createBtn) {
+    createBtn.addEventListener("click", async () => {
+      const username = document.getElementById("uNewUsername").value.trim();
+      const password = document.getElementById("uNewUserPwd").value;
+      const role = document.getElementById("uNewUserRole").value;
+      if (!username || !password) {
+        showToast("Username and password are required.", "error");
+        return;
+      }
+      if (username.length < 3) {
+        showToast("Username must be at least 3 characters.", "error");
+        return;
+      }
+      if (password.length < 6) {
+        showToast("Password must be at least 6 characters.", "error");
+        return;
+      }
+      const btn = document.getElementById("uCreateUserBtn");
+      btn.disabled = true;
+      try {
+        const resp = await AuthAPI.register(username, password, role);
+        if (!resp.success) throw new Error(resp.message || "User creation failed");
+        document.getElementById("uNewUsername").value = "";
+        document.getElementById("uNewUserPwd").value = "";
+        showToast(resp.message || `User '${username}' created.`, "success");
+      } catch (err) {
+        showToast(err.message || "User creation failed.", "error");
+      } finally {
+        btn.disabled = false;
+      }
+    });
+  }
+}
+
+document.getElementById("userChip").addEventListener("click", openUserModal);
+
+const SETTINGS_LABELS = {
+  app_name: "App name", host: "Host", port: "Port", workers: "Workers",
+  timeout: "Timeout (s)", keep_alive: "Keep alive (s)", graceful_timeout: "Graceful timeout (s)",
+  access_logfile: "Access logfile", error_logfile: "Error logfile", log_level: "Log level",
+  wal_auto_flush: "WAL auto flush", compress_segments: "Compress segments",
+  bloom_filter_enabled: "Bloom filter enabled", max_open_segments: "Max open segments",
+  compaction_interval: "Compaction interval", max_segments_before_compact: "Max segments before compact",
+  flush_interval: "Flush interval", flush_record_threshold: "Flush record threshold",
+  enabled: "Enabled", bits_per_key: "Bits per key", hash_count: "Hash count",
+  dimension: "Dimension", space: "Space", top_matches: "Top matches", min_score: "Min score",
+  save_every_n: "Save every n", compaction_threshold: "Compaction threshold",
+  m: "M", ef_construction: "EF construction", ef_search: "EF search",
+  rank_topk: "Rank top-k", weight_vector: "Weight vector", weight_bm25: "Weight BM25",
+  weight_metadata: "Weight metadata", weight_importance: "Weight importance",
+  weight_freshness: "Weight freshness",
+};
+
+function openSettingsModal() {
+  els.modalTitle.textContent = "Settings";
+  els.modalBody.innerHTML = '<div class="muted small">Loading configuration...</div>';
+  els.modalFoot.innerHTML = `
+    <button class="btn btn-ghost" id="mCancel">Cancel</button>
+    <button class="btn btn-primary" id="mSave">Save</button>`;
+  els.modalOverlay.querySelector(".modal").classList.add("modal-wide");
+  els.modalOverlay.classList.add("show");
+  document.getElementById("mCancel").addEventListener("click", closeModal);
+  document.getElementById("mSave").addEventListener("click", saveSettings);
+  ConfigAPI.get()
+    .then((cfg) => renderSettingsForm(cfg))
+    .catch((err) => {
+      els.modalBody.innerHTML = `<div class="alert alert-error show">${escapeHtml(err.message || "Failed to load configuration")}</div>`;
+    });
+}
+
+function renderSettingsForm(cfg) {
+  const sections = ["server", "segments", "bloom", "vector", "hnsw", "rank"];
+  let html = "";
+  for (const sec of sections) {
+    const vals = cfg[sec] || {};
+    const keys = Object.keys(vals).filter((k) => k !== "url");
+    if (!keys.length) continue;
+    html += `
+      <div class="settings-section">
+        <div class="section-label">${escapeHtml(sec)}</div>
+        <div class="form-grid">`;
+    for (const key of keys) {
+      const val = vals[key];
+      const label = SETTINGS_LABELS[key] || key;
+      const inputId = "cfg_" + sec + "_" + key;
+      if (typeof val === "boolean") {
+        html += `
+          <div class="field">
+            <label for="${inputId}">${escapeHtml(label)}</label>
+            <select id="${inputId}" class="input" data-section="${sec}" data-key="${key}">
+              <option value="true" ${val ? "selected" : ""}>Enabled</option>
+              <option value="false" ${val ? "" : "selected"}>Disabled</option>
+            </select>
+          </div>`;
+      } else {
+        html += `
+          <div class="field">
+            <label for="${inputId}">${escapeHtml(label)}</label>
+            <input id="${inputId}" class="input" type="text" data-section="${sec}" data-key="${key}" value="${escapeHtml(String(val))}">
+          </div>`;
+      }
+    }
+    html += `</div></div>`;
+  }
+  els.modalBody.innerHTML = html;
+}
+
+async function saveSettings() {
+  const config = {};
+  document.querySelectorAll("#modalBody [data-section][data-key]").forEach((el) => {
+    const sec = el.dataset.section;
+    const key = el.dataset.key;
+    if (!config[sec]) config[sec] = {};
+    config[sec][key] = el.value;
+  });
+  const btn = document.getElementById("mSave");
+  if (btn) btn.disabled = true;
+  try {
+    const resp = await ConfigAPI.update(config);
+    showToast(resp.message || "Settings saved.", "success");
+    closeModal();
+  } catch (err) {
+    showToast(err.message || "Failed to save settings.", "error");
+    if (btn) btn.disabled = false;
+  }
+}
+
+document.getElementById("settingsBtn").addEventListener("click", () => {
+  if (!state.user || state.user.is_authenticated === false) return;
+  openSettingsModal();
+});
+
 document.getElementById("newCorpusBtn").addEventListener("click", () => {
   if (!isAdmin(state.user)) {
     showToast("Only admins can create corpora.", "error");
@@ -510,6 +823,7 @@ document.getElementById("newCorpusBtn").addEventListener("click", () => {
 });
 
 function closeModal() {
+  els.modalOverlay.querySelector(".modal").classList.remove("modal-wide");
   els.modalOverlay.classList.remove("show");
 }
 document.getElementById("modalClose").addEventListener("click", closeModal);
@@ -520,5 +834,6 @@ els.modalOverlay.addEventListener("click", (e) => {
 (async () => {
   await loadUser();
   if (!state.user || state.user.is_authenticated === false) return;
+  applyAccess();
   await loadCorpora();
 })();

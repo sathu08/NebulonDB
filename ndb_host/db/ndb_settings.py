@@ -75,6 +75,7 @@ class NDBConfig:
         self._apply_env_override()
         self._load_environment()
         self._load_paths()
+        self._load_logging()
         self._load_search_config()
         self._load_rank_config()
         self._load_segments()
@@ -168,6 +169,16 @@ class NDBConfig:
         self.NEBULONDB_CROSS_ENCODER_BATCH_SIZE = self._config.getint('llm', 'NEBULONDB_CROSS_ENCODER_BATCH_SIZE', fallback=0)
         self.NEBULONDB_EMBEDDING_MODEL_DEVICE = self._config.get('llm', 'NEBULONDB_EMBEDDING_MODEL_DEVICE', fallback='')
         self.NEBULONDB_CROSS_ENCODER_MODEL_DEVICE = self._config.get('llm', 'NEBULONDB_CROSS_ENCODER_MODEL_DEVICE', fallback='')
+
+    def _load_logging(self):
+        self.LOG_RETENTION_DAYS = self._config.getint(
+            'logging', 'DATE',
+            fallback=NDBMeta.Logging.DEFAULT_RETENTION_DAYS
+        )
+        self.LOG_AUTO_DELETE = self._config.getboolean(
+            'logging', 'AUTO_DELETE',
+            fallback=NDBMeta.Logging.DEFAULT_AUTO_DELETE
+        )
 
     def _load_search_config(self):
         self.DEFAULT_CORPUS_CONFIG_DATA = {

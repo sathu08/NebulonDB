@@ -1,4 +1,10 @@
-let API_BASE = localStorage.getItem("ndb_api_base") || "http://127.0.0.1:8000";
+const CONSOLE_BASE = "/api/NebulonDB/dashboard";
+const CONFIG_PATH = CONSOLE_BASE + "/config";
+
+const DEFAULT_API_BASE =
+  window.location.origin || ("http://" + resolveApiHost() + ":6969");
+
+let API_BASE = localStorage.getItem("ndb_api_base") || DEFAULT_API_BASE;
 
 const _configReady = initApiConfig();
 
@@ -11,12 +17,13 @@ function resolveApiHost() {
 
 async function initApiConfig() {
   try {
-    const resp = await fetch(API_BASE + "/api/NebulonDB/system/config");
+    const resp = await fetch(API_BASE + CONFIG_PATH);
     if (!resp.ok) return;
     const data = await resp.json();
-    let host = data.host || "";
+    const server = data.server || {};
+    let host = server.host || "";
     if (!host || host === "0.0.0.0" || host === "::") host = resolveApiHost();
-    const port = data.port || 8000;
+    const port = server.port || new URL(API_BASE).port || "";
     let hostname = host;
     const savedBase = localStorage.getItem("ndb_api_base");
     if (savedBase) {
@@ -24,7 +31,7 @@ async function initApiConfig() {
         hostname = new URL(savedBase).hostname || host;
       } catch (e) {}
     }
-    API_BASE = "http://" + hostname + ":" + port;
+    API_BASE = "http://" + hostname + (port ? ":" + port : "");
   } catch (e) {}
 }
 
@@ -32,14 +39,15 @@ async function applyConfigToBase(base) {
   const candidate = String(base || "").replace(/\/+$/, "");
   if (!candidate) return API_BASE;
   try {
-    const resp = await fetch(candidate + "/api/NebulonDB/system/config");
+    const resp = await fetch(candidate + CONFIG_PATH);
     if (!resp.ok) return candidate;
     const data = await resp.json();
     let hostname = "127.0.0.1";
     try {
       hostname = new URL(candidate).hostname || hostname;
     } catch (e) {}
-    return "http://" + hostname + ":" + (data.port || 8000);
+    const port = (data.server || {}).port || "";
+    return "http://" + hostname + (port ? ":" + port : "");
   } catch (e) {
     return candidate;
   }
@@ -91,7 +99,9 @@ function clearCredentials() {
 }
 
 function isAdmin(user) {
-  return user && String(user.role || "").toLowerCase().includes("admin");
+  if (!user) return false;
+  const role = String(user.role || "").toLowerCase();
+  return role === "admin_user" || role === "super_user" || role === "system";
 }
 
 class ApiError extends Error {
@@ -133,6 +143,12 @@ const AuthAPI = {
     return api("/api/NebulonDB/auth/register", {
       method: "POST",
       body: { username, password, user_role: role },
+    });
+  },
+  changePassword(current_password, new_password) {
+    return api("/api/NebulonDB/auth/change_password", {
+      method: "POST",
+      body: { current_password, new_password },
     });
   },
 };
@@ -193,6 +209,30 @@ const SegmentAPI = {
     return api("/api/NebulonDB/segment/get_record", {
       method: "POST",
       body: { corpus_name, segment_name, record_id },
+    });
+  },
+  getData(corpus_name, segment_name, ndb_type, limit) {
+    return api("/api/NebulonDB/segment/get_data", {
+      method: "POST",
+      body: { corpus_name, segment_name, ndb_type, limit: limit || 10 },
+    });
+  },
+  meshVisualization(corpus_name, segment_name, ndb_type) {
+    return api("/api/NebulonDB/segment/mesh_visualization", {
+      method: "POST",
+      body: { corpus_name, segment_name, ndb_type },
+    });
+  },
+};
+
+const ConfigAPI = {
+  get() {
+    return api(CONFIG_PATH);
+  },
+  update(config) {
+    return api(CONFIG_PATH, {
+      method: "PUT",
+      body: { config },
     });
   },
 };

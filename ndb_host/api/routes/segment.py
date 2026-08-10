@@ -16,10 +16,11 @@ from core.permissions import check_user_permission
 from services.user_service import get_current_user
 
 from utils.logger import NebulonDBLogger
-from utils.constants import ColumnPick ,NDBMeta
-from db.index_manager import SegmentManager
+from db.index_manager import CorpusManager
+from db.index_manager import CorpusManager, SegmentManager
 
 from ndb_host.db.ndb_settings import NDBConfig
+from utils.constants import AuthenticationConfig, ColumnPick, NDBMeta
 from utils.models import SegmentQueryRequest, SegmentQueryRequest, AuthenticationResult, StandardResponse, UserRole
 
 from db.engine.utils import FIELD_NOVA
@@ -50,11 +51,29 @@ def _unauth_response(segment_query: SegmentQueryRequest) -> StandardResponse:
         message="Authentication failed"
     )
 
+def _resolve_corpus_ndb_type(corpus_name: str, fallback: str = NDBMeta.Type.COSMOS.value) -> str:
+    """
+    Return the real storage type of a corpus from its metadata.
+
+    Many route handlers default ``ndb_type`` to ORBIT, which forces
+    construction of the full Orbit engine (and its ``NebulonOrbit`` folder
+    tree) even for cosmos corpora. Corpus metadata is authoritative, so it is
+    resolved here instead of trusting the request default.
+    """
+    try:
+        info = CorpusManager().get_corpus_info()
+        record = info.get(corpus_name) or {}
+        if record.get("ndb_type"):
+            return record["ndb_type"]
+    except Exception:
+        pass
+    return fallback
+
 def _build_orbit(segment_query: SegmentQueryRequest) -> "SegmentManager":
     return SegmentManager(
         corpus_name=segment_query.corpus_name,
         segment_name=segment_query.segment_name,
-        ndb_type=segment_query.ndb_type,
+        ndb_type=_resolve_corpus_ndb_type(segment_query.corpus_name, segment_query.ndb_type),
     ).db_manager
 
 # ==========================================================
@@ -94,7 +113,11 @@ async def list_segment(
                 message="corpus_name must not be empty"
             )
 
-        segment_manager = SegmentManager(corpus_name=corpus_name, segment_name="default")
+        segment_manager = SegmentManager(
+            corpus_name=corpus_name,
+            segment_name="default",
+            ndb_type=_resolve_corpus_ndb_type(corpus_name),
+        )
         segments = segment_manager.get_segment_metadata()
 
         return StandardResponse(
@@ -138,7 +161,7 @@ async def load_segment(
     try:
         corpus_name = segment_query.corpus_name
         segment_name = segment_query.segment_name
-        ndb_type = segment_query.ndb_type
+        ndb_type = _resolve_corpus_ndb_type(segment_query.corpus_name, segment_query.ndb_type)
         doc_type = segment_query.doc_type or None
         lang_type = segment_query.lang_type or None
         segment_dataset = segment_query.segment_dataset
@@ -268,7 +291,7 @@ async def get_data(
     try:
         corpus_name = segment_query.corpus_name
         segment_name = segment_query.segment_name
-        ndb_type = segment_query.ndb_type
+        ndb_type = _resolve_corpus_ndb_type(segment_query.corpus_name, segment_query.ndb_type)
         limit = segment_query.limit
 
         if not current_user.is_authenticated:
@@ -336,7 +359,7 @@ async def search_segment(
         graph_start_node = segment_query.graph_start_node
         expand_depth = segment_query.expand_depth or 1
         graph_boost = segment_query.graph_boost or 0.1
-        ndb_type = segment_query.ndb_type
+        ndb_type = _resolve_corpus_ndb_type(segment_query.corpus_name, segment_query.ndb_type)
 
         segment_manager = SegmentManager(corpus_name=corpus_name, segment_name=segment_name, ndb_type=ndb_type)
 
@@ -436,7 +459,7 @@ async def delete_record(
 
         db = _build_orbit(segment_query)
 
-        if segment_query.ndb_type == NDBMeta.Type.COSMOS:
+        if _resolve_corpus_ndb_type(segment_query.corpus_name, segment_query.ndb_type) == NDBMeta.Type.COSMOS:
             deleted = db.delete_data(
                 segment=segment_query.segment_name,
                 record_id=segment_query.record_id,
@@ -487,7 +510,7 @@ async def segment_stats(
         if not current_user.is_authenticated:
             return _unauth_response(segment_query)
         
-        if segment_query.ndb_type == NDBMeta.Type.COSMOS:
+        if _resolve_corpus_ndb_type(segment_query.corpus_name, segment_query.ndb_type) == NDBMeta.Type.COSMOS:
             return StandardResponse(
                 success=False,
                 corpus_name=segment_query.corpus_name,
@@ -531,7 +554,7 @@ async def get_record(
         if segment_query.record_id is None:
             return StandardResponse(success=False, message="record_id is required")
         
-        if segment_query.ndb_type == NDBMeta.Type.COSMOS:
+        if _resolve_corpus_ndb_type(segment_query.corpus_name, segment_query.ndb_type) == NDBMeta.Type.COSMOS:
             return StandardResponse(
                 success=False,
                 corpus_name=segment_query.corpus_name,
@@ -580,7 +603,7 @@ async def get_neighbors(
         if segment_query.node_id is None:
             return StandardResponse(success=False, message="node_id is required")
 
-        if segment_query.ndb_type == NDBMeta.Type.COSMOS:
+        if _resolve_corpus_ndb_type(segment_query.corpus_name, segment_query.ndb_type) == NDBMeta.Type.COSMOS:
             return StandardResponse(
                 success=False,
                 corpus_name=segment_query.corpus_name,
@@ -619,7 +642,7 @@ async def bfs(
         if segment_query.start_node is None:
             return StandardResponse(success=False, message="start_node is required")
         
-        if segment_query.ndb_type == NDBMeta.Type.COSMOS:
+        if _resolve_corpus_ndb_type(segment_query.corpus_name, segment_query.ndb_type) == NDBMeta.Type.COSMOS:
             return StandardResponse(
                 success=False,
                 corpus_name=segment_query.corpus_name,
@@ -659,7 +682,7 @@ async def shortest_path(
         if segment_query.source is None or segment_query.target is None:
             return StandardResponse(success=False, message="source and target are required")
 
-        if segment_query.ndb_type == NDBMeta.Type.COSMOS:
+        if _resolve_corpus_ndb_type(segment_query.corpus_name, segment_query.ndb_type) == NDBMeta.Type.COSMOS:
             return StandardResponse(
                 success=False,
                 corpus_name=segment_query.corpus_name,
@@ -707,7 +730,7 @@ async def add_node(
         if segment_query.node_id is None:
             return StandardResponse(success=False, message="node_id is required")
         
-        if segment_query.ndb_type == NDBMeta.Type.COSMOS:
+        if _resolve_corpus_ndb_type(segment_query.corpus_name, segment_query.ndb_type) == NDBMeta.Type.COSMOS:
             return StandardResponse(
                 success=False,
                 corpus_name=segment_query.corpus_name,
@@ -756,7 +779,7 @@ async def add_relation(
         if segment_query.source is None or segment_query.target is None or not segment_query.relation:
             return StandardResponse(success=False, message="source, target and relation are required")
 
-        if segment_query.ndb_type == NDBMeta.Type.COSMOS:
+        if _resolve_corpus_ndb_type(segment_query.corpus_name, segment_query.ndb_type) == NDBMeta.Type.COSMOS:
             return StandardResponse(
                 success=False,
                 corpus_name=segment_query.corpus_name,
@@ -806,7 +829,7 @@ async def remove_relation(
         if segment_query.source is None or segment_query.target is None:
             return StandardResponse(success=False, message="source and target are required")
 
-        if segment_query.ndb_type == NDBMeta.Type.COSMOS:
+        if _resolve_corpus_ndb_type(segment_query.corpus_name, segment_query.ndb_type) == NDBMeta.Type.COSMOS:
             return StandardResponse(
                 success=False,
                 corpus_name=segment_query.corpus_name,
@@ -850,7 +873,7 @@ async def mesh_load_graph(
         if not current_user.is_authenticated:
             return _unauth_response(segment_query)
 
-        if segment_query.ndb_type == NDBMeta.Type.COSMOS:
+        if _resolve_corpus_ndb_type(segment_query.corpus_name, segment_query.ndb_type) == NDBMeta.Type.COSMOS:
             return StandardResponse(
                 success=False,
                 corpus_name=segment_query.corpus_name,
@@ -896,7 +919,7 @@ async def mesh_visualization(
         if not current_user.is_authenticated:
             return _unauth_response(segment_query)
 
-        if segment_query.ndb_type == NDBMeta.Type.COSMOS:
+        if _resolve_corpus_ndb_type(segment_query.corpus_name, segment_query.ndb_type) == NDBMeta.Type.COSMOS:
             return StandardResponse(
                 success=False,
                 corpus_name=segment_query.corpus_name,
@@ -912,11 +935,22 @@ async def mesh_visualization(
                 segment_name=segment_query.segment_name,
                 message=error_msg
             )
+        data = {"html_path": str(html_path)}
+        try:
+            data["html"] = html_path.read_text(encoding=AuthenticationConfig.ENCODING)
+        except Exception as e:
+            logger.exception(f"Failed to read mesh visualization HTML: {e}")
+            return StandardResponse(
+                success=False,
+                corpus_name=segment_query.corpus_name,
+                segment_name=segment_query.segment_name,
+                message=f"Failed to read mesh visualization HTML: {str(e)}"
+            )
         return StandardResponse(
             success=True,
             corpus_name=segment_query.corpus_name,
             segment_name=segment_query.segment_name,
-            data={"html_path": str(html_path)},
+            data=data,
             message="Mesh visualization HTML generated"
         )
     except Exception as e:

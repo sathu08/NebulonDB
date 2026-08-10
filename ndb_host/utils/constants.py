@@ -135,7 +135,9 @@ class NDBMeta:
         WEB_DIR = "ndb_host/web_dir"
 
     class Logging:
-        STRUCTURE = ["app", "error", "access", "audit"]
+        LOG_FILE = "nebulondb_%Y-%m-%d.log"
+        DEFAULT_RETENTION_DAYS = 7
+        DEFAULT_AUTO_DELETE = True
 
     class Type(str, Enum):
         COSMOS = "cosmos"
