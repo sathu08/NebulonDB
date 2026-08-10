@@ -16,7 +16,7 @@ dependencies = [
     "rank-bm25>=0.2.2,<1.0",
     "bitsandbytes>=0.49.2,<0.50",
     "accelerate>=0.29,<0.31",
-    "hnswlib>=0.8.0,<0.9",
+    "chroma-hnswlib>=0.7.6,<0.8",
 
     # === Security ===
     "passlib[bcrypt]>=1.7.4,<2.0",
