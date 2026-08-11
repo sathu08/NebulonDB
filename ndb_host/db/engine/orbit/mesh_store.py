@@ -220,6 +220,25 @@ class MeshStore:
                 else:
                     self._store.update(self.edge_segment, row)
 
+            # Remove rows for nodes/edges deleted since the last save,
+            # otherwise a fresh engine reload resurrects removed graph
+            # elements (remove_node/remove_edge are not durable).
+            live_node_ids = set(self._nodes.keys())
+            for rec in self._store.read_all(self.node_segment, include_internal=True):
+                raw_id = rec.get("_id")
+                if raw_id is None:
+                    continue
+                if int(raw_id) - NODE_ID_OFFSET not in live_node_ids:
+                    self._store.delete(self.node_segment, raw_id)
+
+            live_edge_ids = {e[FIELD_EDGE_ID] for e in self._edges}
+            for rec in self._store.read_all(self.edge_segment, include_internal=True):
+                raw_id = rec.get("_id")
+                if raw_id is None:
+                    continue
+                if int(rec.get(FIELD_EDGE_ID)) not in live_edge_ids:
+                    self._store.delete(self.edge_segment, raw_id)
+
             if self.mesh_graph_viz_html:
                 try:
                     viz = NebulonCytoscapeGraph.from_mesh(self.to_dict())
