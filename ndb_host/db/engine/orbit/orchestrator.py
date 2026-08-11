@@ -1255,6 +1255,10 @@ class NebulonOrbit:
                 self.nova_engine.save()
                 self._set_dirty(False)
                 self._wal_clear()
+                # Rewrite the Cosmos WAL from the live memtable so a fresh
+                # engine init never replays stale entries. No segment file
+                # is written below the flush threshold.
+                self._store.checkpoint_wal()
 
     def close(self) -> None:
         try:

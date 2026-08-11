@@ -246,7 +246,16 @@ async def load_segment(
         )
 
         if not result["success"]:
-            return result
+            return StandardResponse(
+                success=False,
+                corpus_name=corpus_name,
+                segment_name=segment_name,
+                errors=result.get("errors", []),
+                message=(
+                    "; ".join(result.get("errors", []))
+                    or f"Segment load failed for corpus '{corpus_name}'"
+                ),
+            )
         
         logger.info(f"Successfully segment loaded into corpus '{corpus_name}'")
         

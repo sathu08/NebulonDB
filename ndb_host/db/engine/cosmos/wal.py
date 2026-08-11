@@ -59,16 +59,14 @@ def recover_wal(
     save_meta_fn,  # callable: _save_meta()
 ) -> None:
     """
-    Replay the WAL into *memtable*, then flush the memtable to a new segment.
+    Replay the WAL into *memtable*.
 
     Parameters
     ----------
     wal_file      : path to the WAL file on disk
-    wal_handle    : open file handle (a+b) – truncated after recovery
     memtable      : the store's in-memory dict {rec_id -> bytes}
     deleted       : the store's deleted-ID set
     meta          : the store's meta dict (tables, global_version, …)
-    flush_fn      : callable that performs the actual flush to a segment
     save_meta_fn  : callable that persists *meta* to disk
     """
     if not wal_file.exists() or wal_file.stat().st_size == 0:
@@ -151,3 +149,42 @@ def recover_wal(
         f"Memtable now has {len(memtable)} live records, "
         f"{len(deleted)} deleted markers"
     )
+
+
+def checkpoint_wal(
+    wal_file: Path,
+    wal_handle: Optional[Any],
+    memtable: Dict,
+) -> Optional[Any]:
+    """
+    Rewrite the WAL file with only the live memtable rows.
+
+    Drops superseded versions without creating a segment file, so the WAL
+    stays the sole durable store below the flush threshold. Returns the
+    (possibly re-opened) WAL file handle.
+    """
+    if not memtable:
+        if wal_handle:
+            wal_handle.seek(0)
+            wal_handle.truncate(0)
+            wal_handle.flush()
+            os.fsync(wal_handle.fileno())
+        return wal_handle
+
+    tmp_path = wal_file.with_name(wal_file.name + ".tmp")
+    with tmp_path.open("wb") as f:
+        for rec_bytes in memtable.values():
+            crc = zlib.crc32(rec_bytes) & 0xFFFFFFFF
+            f.write(struct.pack("<I", crc))
+            f.write(struct.pack("<I", len(rec_bytes)))
+            f.write(rec_bytes)
+        f.flush()
+        os.fsync(f.fileno())
+
+    os.replace(tmp_path, wal_file)
+    if wal_handle:
+        try:
+            wal_handle.close()
+        except Exception:
+            pass
+    return wal_file.open("a+b")

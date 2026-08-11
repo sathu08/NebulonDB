@@ -219,6 +219,7 @@ class NovaEngine:
             old_internal = self.id_map.get(record_id)
             if old_internal is None:
                 logger.error(f"Record ID {record_id} not found for update.")
+                return 0
             self.validate_vector(vector, self.dim)
 
             vec = np.asarray(vector, dtype=np.float32)

@@ -552,6 +552,12 @@ class NebulonCosmos:
             if rec_dict.get("_deleted", False):
                 return None
 
+            # The persisted index is keyed only by bare record_id while the
+            # id space is global across tables, so a fallback hit may belong
+            # to another segment; reject it to avoid cross-table leakage.
+            if segment and rec_dict.get("_segment") != segment:
+                return None
+
             if include_internal:
                 return rec_dict
             res = {k: v for k, v in rec_dict.items() if not k.startswith("_")}
@@ -651,6 +657,21 @@ class NebulonCosmos:
         """Flush the current memtable to a new segment immediately."""
         with self._lock:
             self._flush(force=True)
+
+    def checkpoint_wal(self) -> None:
+        """
+        Rewrite the WAL from the live memtable without writing a segment.
+
+        Keeps the WAL as the sole durable store below the flush threshold
+        while dropping superseded versions, so a fresh engine init no longer
+        replays stale rows.
+        """
+        with self._lock:
+            self.wal_handle = _wal_mod.checkpoint_wal(
+                self.wal_file, self.wal_handle, self.memtable
+            )
+            self.wal_count = len(self.memtable)
+            self.memtable_bytes = sum(len(v) for v in self.memtable.values())
 
     def close(self) -> None:
         # Signal threads to stop

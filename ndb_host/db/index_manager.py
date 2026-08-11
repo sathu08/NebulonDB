@@ -436,6 +436,10 @@ class CorpusManager:
         if corpus_path.exists():
             shutil.rmtree(corpus_path)
 
+        # Evict the cached singleton so a recreated corpus re-initialises
+        # from disk instead of reusing the deleted instance's state.
+        ComosDBManager._instances.pop(str(corpus_path.resolve()), None)
+
         for record in self.metadata_db.read_data(segment=self.metadata_segment, include_internal=True):
             if record.get("corpus_name") == corpus_name:
                 self.metadata_db.delete_data(segment=self.metadata_segment, record_id=record["_id"])
@@ -474,7 +478,12 @@ class SegmentManager:
 
     RELATION_SOURCE_COLS = ("source", "source_id", "src", "from_id", "from")
     RELATION_TARGET_COLS = ("target", "target_id", "dst", "to_id", "to")
-    RELATION_LABEL_COLS = ("relation", "rel", "edge_type", "relationship", "label")
+    # NOTE: "label" is deliberately NOT auto-detected here – in this codebase
+    # it is the node-label convention (metadata["label"], mesh FIELD_LABEL),
+    # so datasets with an entity-name "label" column would otherwise produce
+    # relations named after the entities. Pass relation_column explicitly to
+    # opt in.
+    RELATION_LABEL_COLS = ("relation", "rel", "edge_type", "relationship")
 
     def _validate_checks(self) -> None:
         """Perform validation checks on corpus metadata."""

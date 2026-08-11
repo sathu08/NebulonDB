@@ -36,12 +36,18 @@ from utils.logger import NebulonDBLogger
 
 logger = NebulonDBLogger().get_logger()
 
+# The persisted Cosmos index is keyed by bare record_id while the id space is
+# global across all tables. Mesh rows must live in disjoint id ranges so they
+# never collide with Nova (identity) or Document rows in the index.
+NODE_ID_OFFSET = 2 << 40
+EDGE_ID_OFFSET = 3 << 40
+
 
 def _rename_id(doc):
     if not doc:
         return doc
     if "_id" in doc:
-        doc["id"] = doc.pop("_id")
+        doc["id"] = doc.pop("_id") - NODE_ID_OFFSET
     return doc
 
 
@@ -125,6 +131,13 @@ class MeshStore:
     def add_edge(self, source: int, target: int, relation: str,
                  weight: float = 1.0, created_at: Optional[str] = None) -> int:
         with self._lock:
+            # Idempotent: an identical edge already exists (re-posted request
+            # or WAL replay after a crash) – return its id instead of
+            # duplicating it.
+            for e in self._edges:
+                if (e[FIELD_FROM] == source and e[FIELD_TO] == target
+                        and e[FIELD_RELATION] == relation):
+                    return e[FIELD_EDGE_ID]
             edge_id = self._next_edge_id
             self._next_edge_id += 1
             self._edges.append({
@@ -174,7 +187,7 @@ class MeshStore:
             # settle any label/created_at-only changes, then write rows
             node_rows = [
                 {
-                    FIELD_ID: nid,
+                    FIELD_ID: nid + NODE_ID_OFFSET,
                     FIELD_LABEL: node.get(FIELD_LABEL, ""),
                     FIELD_CREATED_AT: node.get(FIELD_CREATED_AT),
                 }
@@ -189,6 +202,7 @@ class MeshStore:
 
             edge_rows = [
                 {
+                    FIELD_ID: e[FIELD_EDGE_ID] + EDGE_ID_OFFSET,
                     FIELD_EDGE_ID: e[FIELD_EDGE_ID],
                     FIELD_FROM: e[FIELD_FROM],
                     FIELD_TO: e[FIELD_TO],
