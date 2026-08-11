@@ -41,6 +41,7 @@ class DatabaseConfig:
 
     # ---------- Settings from NDBConfig ----------
     WAL_AUTO_FLUSH: bool = config_settings.WAL_AUTO_FLUSH
+    WAL_FSYNC_INTERVAL: int = config_settings.WAL_FSYNC_INTERVAL
     FLUSH_RECORD_THRESHOLD: int = config_settings.FLUSH_RECORD_THRESHOLD
     COMPRESS_SEGMENTS: bool = config_settings.COMPRESS_SEGMENTS
     BLOOM_FILTER_ENABLED: bool = config_settings.BLOOM_FILTER_ENABLED

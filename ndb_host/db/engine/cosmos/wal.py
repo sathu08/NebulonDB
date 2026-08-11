@@ -34,17 +34,27 @@ def write_wal_record(
     wal_handle: Optional[Any],
     record_bytes: bytes,
     auto_flush: bool = True,
-) -> None:
-    """Append a length-prefixed, CRC-checked record to the open WAL handle."""
+    bytes_since_fsync: int = 0,
+    fsync_interval: int = 65536,
+) -> int:
+    """Append a length-prefixed, CRC-checked record to the open WAL handle.
+
+    The userspace buffer is always flushed, but ``os.fsync`` is only issued
+    once *fsync_interval* bytes have accumulated (group commit). Returns the
+    updated byte counter so the caller can track it across calls.
+    """
     if wal_handle is None:
-        return
+        return bytes_since_fsync
     crc = zlib.crc32(record_bytes) & 0xFFFFFFFF
-    wal_handle.write(struct.pack("<I", crc))
-    wal_handle.write(struct.pack("<I", len(record_bytes)))
+    wal_handle.write(struct.pack("<II", crc, len(record_bytes)))
     wal_handle.write(record_bytes)
     if auto_flush:
         wal_handle.flush()
-        os.fsync(wal_handle.fileno())
+        bytes_since_fsync += 8 + len(record_bytes)
+        if bytes_since_fsync >= fsync_interval:
+            os.fsync(wal_handle.fileno())
+            bytes_since_fsync = 0
+    return bytes_since_fsync
 
 
 # ==========================================================

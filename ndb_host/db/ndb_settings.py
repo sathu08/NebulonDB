@@ -209,6 +209,7 @@ class NDBConfig:
     def _load_segments(self):
         self.FLUSH_RECORD_THRESHOLD = self._config.getint('segments', 'FLUSH_RECORD_THRESHOLD')
         self.WAL_AUTO_FLUSH = self._config.getboolean('segments', 'WAL_AUTO_FLUSH', fallback=True)
+        self.WAL_FSYNC_INTERVAL = self._config.getint('segments', 'wal_fsync_interval', fallback=65536)
         self.COMPRESS_SEGMENTS = self._config.getboolean('segments', 'COMPRESS_SEGMENTS', fallback=True)
         self.BLOOM_FILTER_ENABLED = self._config.getboolean('segments', 'BLOOM_FILTER_ENABLED', fallback=True)
         self.MAX_OPEN_SEGMENTS = self._config.getint('segments', 'MAX_OPEN_SEGMENTS', fallback=50)
