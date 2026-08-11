@@ -3,7 +3,7 @@ import string
 import secrets
 
 from pathlib import Path
-from typing import Optional, Dict, Any, Union, List, Tuple
+from typing import Any
 
 from pydantic import BaseModel, Field, field_validator
 
@@ -35,20 +35,20 @@ class UserProfile(BaseModel):
 class UserRecord(BaseModel):
     password: str
     role: UserRole
-    created_at: Optional[str] = None
-    last_login: Optional[str] = None
+    created_at: str | None = None
+    last_login: str | None = None
 
 class AuthenticationResult(BaseModel):
     username: str
-    role: Optional[UserRole] = None
+    role: UserRole | None = None
     is_authenticated: bool = True
-    message: Optional[str] = None
+    message: str | None = None
 
 class StandardErrorResponse(BaseModel):
     success: bool
     message: str
-    role: Optional[str] = None
-    
+    role: str | None = None
+
 class UserRegistrationRequest(BaseModel):
     username: str = Field(..., min_length=3, max_length=50)
     password: str = Field(..., min_length=8)
@@ -69,39 +69,39 @@ class SegmentQueryRequest(BaseModel):
     corpus_name: str = Field(..., min_length=1)
     segment_name: str = Field(..., min_length=1)
     ndb_type: str = NDBMeta.Type.ORBIT
-    limit: Optional[int] = None
-    segment_dataset: Optional[Union[Dict[str, List[Any]], List[Dict[str, Any]]]] = None
-    set_columns: Optional[Union[str, List[str]]] = None
-    search_item: Optional[str] = None
-    doc_type: Optional[str] = None
-    lang_type: Optional[str] = None
+    limit: int | None = None
+    segment_dataset: dict[str, list[Any]] | list[dict[str, Any]] | None = None
+    set_columns: str | list[str] | None = None
+    search_item: str | None = None
+    doc_type: str | None = None
+    lang_type: str | None = None
 
-    # Nova and Mesh 
-    top_matches: Optional[int] = None
-    min_score: Optional[float] = None
-    is_precomputed: Optional[bool] = False
-    rank: Optional[bool] = False
-    mode: Optional[str] = None
-    graph_start_node: Optional[int] = None
-    expand_depth: Optional[int] = None
-    graph_boost: Optional[float] = None
-    relations: Optional[List[Tuple[int, int, str]]] = None
-    source_column: Optional[str] = None
-    target_column: Optional[str] = None
-    relation_column: Optional[str] = None
-    record_id: Optional[int] = None
-    node_id: Optional[int] = None
-    direction: Optional[str] = "both"
-    start_node: Optional[int] = None
-    max_depth: Optional[int] = 3
-    source: Optional[int] = None
-    target: Optional[int] = None
-    relation: Optional[str] = None
-    metadata: Optional[Dict[str, Any]] = None
+    # Nova and Mesh
+    top_matches: int | None = None
+    min_score: float | None = None
+    is_precomputed: bool | None = False
+    rank: bool | None = False
+    mode: str | None = None
+    graph_start_node: int | None = None
+    expand_depth: int | None = None
+    graph_boost: float | None = None
+    relations: list[tuple[int, int, str]] | None = None
+    source_column: str | None = None
+    target_column: str | None = None
+    relation_column: str | None = None
+    record_id: int | None = None
+    node_id: int | None = None
+    direction: str | None = "both"
+    start_node: int | None = None
+    max_depth: int | None = 3
+    source: int | None = None
+    target: int | None = None
+    relation: str | None = None
+    metadata: dict[str, Any] | None = None
 
     # Bulk graph load (Option A)
-    nodes: Optional[List[Dict[str, Any]]] = None
-    edges: Optional[List[Dict[str, Any]]] = None
+    nodes: list[dict[str, Any]] | None = None
+    edges: list[dict[str, Any]] | None = None
 
     @field_validator("segment_dataset", mode="before")
     def ensure_dict_or_list(cls, v):
@@ -123,23 +123,23 @@ class SegmentQueryRequest(BaseModel):
 
 class UserAuthenticationResponse(BaseModel):
     message: str
-    user: Dict[str, Any]
+    user: dict[str, Any]
 
 class StandardResponse(BaseModel):
     success: bool
     message: str
     exists: bool = False
-    data: Optional[Union[Dict[str, Any], List[Any], Any]] = None
-    corpus_name: Optional[str] = None
-    segment_name: Optional[str] = None
-    errors: Optional[List[str]] = None
+    data: dict[str, Any] | list[Any] | Any | None = None
+    corpus_name: str | None = None
+    segment_name: str | None = None
+    errors: list[str] | None = None
 
 
 # ==========================================================
 #        Helper Functions
 # ==========================================================
 
-def load_data(path_loc: Path, default:Dict = None, is_bytes_input: bool = False) -> Dict[str, Dict[str, Any]]:
+def load_data(path_loc: Path, default:dict = None, is_bytes_input: bool = False) -> dict[str, dict[str, Any]]:
     """
     Load JSON data from file, returning an empty dict if empty or invalid.
     Args:
@@ -157,33 +157,37 @@ def load_data(path_loc: Path, default:Dict = None, is_bytes_input: bool = False)
             if not path_loc:  # Handle empty bytes
                 logger.warning("Empty bytes received, returning default")
                 return default
-            
+
             content = path_loc.decode(AuthenticationConfig.ENCODING, errors="replace")
             content = content.strip()
-            
+
             if not content:  # Handle whitespace-only content
                 logger.warning("Whitespace-only content, returning default")
                 return default
-            
+
             return json.loads(content)
-        
+
         path_obj = Path(path_loc)
         if not path_obj.exists():
             return default
-        
+
         if path_obj.stat().st_size == 0:
             return default
-        
+
         content = path_obj.read_text(encoding=AuthenticationConfig.ENCODING)
         return json.loads(content)
-    
+
     except json.JSONDecodeError as e:
         logger.error(f"Invalid JSON: {e}")
 
     except (UnicodeDecodeError, OSError, PermissionError, Exception) as e:
         logger.error(f"Error loading data: {e}")
 
-def save_data(data: Dict[str, Any], path_loc: Union[Path, str, None] = None, return_bytes: bool = False) -> Union[Dict[str, Any], bytes]:
+def save_data(
+    data: dict[str, Any],
+    path_loc: Path | str | None = None,
+    return_bytes: bool = False,
+) -> dict[str, Any] | bytes:
     """
     Save JSON data to file OR return as bytes for NDB.
     Args:
@@ -203,16 +207,16 @@ def save_data(data: Dict[str, Any], path_loc: Union[Path, str, None] = None, ret
 
         if return_bytes:
             return json_content.encode(encoding=AuthenticationConfig.ENCODING)
-        
+
         if path_loc is None:
             raise ValueError("path_loc required when return_bytes=False")
-        
+
         path_obj = Path(path_loc)
         path_obj.write_text(json_content, encoding=AuthenticationConfig.ENCODING)
-        logger.info(f"Data successfully saved")
+        logger.info("Data successfully saved")
 
-        return {"success": True, "message": f"Data saved"}
-    
+        return {"success": True, "message": "Data saved"}
+
     except (OSError, PermissionError, TypeError) as e:
         logger.error(f"Failed to save data: {e}")
         if return_bytes:

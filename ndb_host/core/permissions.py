@@ -24,11 +24,11 @@ logger = NebulonDBLogger().get_logger()
 def check_user_permission(current_user: AuthenticationResult, required_role: UserRole) -> bool:
     """
     Check if the current user has the required role or higher.
-    
+
     Args:
         current_user: Current authenticated user
         required_role: Minimum required role
-        
+
     Returns:
         bool: True if user has sufficient permissions
     """
@@ -38,12 +38,12 @@ def check_user_permission(current_user: AuthenticationResult, required_role: Use
         UserRole.SUPER_USER: 3,
         UserRole.SYSTEM: 4
     }
-    
+
     current_user_level = role_hierarchy.get(current_user.role, 0)
     required_level = role_hierarchy.get(required_role, 0)
-    
+
     has_permission = current_user_level >= required_level
-    
+
     logger.debug("Permission check for %s (role=%s, level=%d) vs required=%s (level=%d): %s",
         current_user.username,
         current_user.role.name,
@@ -53,5 +53,5 @@ def check_user_permission(current_user: AuthenticationResult, required_role: Use
         has_permission,
     )
 
-    
+
     return has_permission

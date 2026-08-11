@@ -47,3 +47,14 @@ include = ["ndb_host*"]
 [build-system]
 requires = ["setuptools>=61"]
 build-backend = "setuptools.build_meta"
+
+[tool.ruff]
+target-version = "py310"
+line-length = 120
+
+[tool.ruff.lint]
+select = ["F", "E", "W", "B", "SIM", "UP"]
+ignore = ["B008"]
+
+[tool.ruff.lint.per-file-ignores]
+"ndb_host/api/routes/*.py" = ["E501"]

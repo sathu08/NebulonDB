@@ -31,11 +31,11 @@ password_context = CryptContext(
 def verify_password(plain_password: str, hashed_password: str) -> bool:
     """
     Verify a plain password against a hashed password.
-    
+
     Args:
         plain_password: Plain text password to verify
         hashed_password: Hashed password from database
-        
+
     Returns:
         bool: True if password matches, False otherwise
     """
@@ -48,13 +48,13 @@ def verify_password(plain_password: str, hashed_password: str) -> bool:
 def hash_password(password: str) -> str:
     """
     Hash a plain text password using bcrypt.
-    
+
     Args:
         password: Plain text password to hash
-        
+
     Returns:
         str: Hashed password
-        
+
     Raises:
         ValueError: If password hashing fails
     """
@@ -62,5 +62,5 @@ def hash_password(password: str) -> str:
         return password_context.hash(password)
     except Exception as e:
         logger.error(f"Password hashing error: {e}")
-        raise ValueError("Password hashing failed")
-    
+        raise ValueError("Password hashing failed") from e
+

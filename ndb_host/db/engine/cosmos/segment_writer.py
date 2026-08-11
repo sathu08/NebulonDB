@@ -16,7 +16,7 @@ import struct
 import zlib
 
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Set, Tuple
+from typing import Any
 
 from db.engine.utils import BloomFilter, IndexEntry
 from utils.logger import NebulonDBLogger
@@ -36,7 +36,7 @@ logger = NebulonDBLogger().get_logger()
 
 def write_segment(
     seg_path: Path,
-    record_list: List[bytes],
+    record_list: list[bytes],
     seg_id: int,
     # format strings / constants
     segment_header_format: str,
@@ -46,11 +46,11 @@ def write_segment(
     bloom_filter_enabled: bool,
     compress_segments: bool,
     # mutable state dicts (mutated in-place)
-    latest: Dict[int, IndexEntry],
-    segment_size_cache: Dict[int, int],
-    bloom_filter_cache: Dict[int, BloomFilter],
-    segment_info: Dict[int, dict],
-    manifest: List[str],
+    latest: dict[int, IndexEntry],
+    segment_size_cache: dict[int, int],
+    bloom_filter_cache: dict[int, BloomFilter],
+    segment_info: dict[int, dict],
+    manifest: list[str],
     # callbacks
     append_index_entries_fn,
 ) -> None:
@@ -109,10 +109,7 @@ def write_segment(
                 continue
             version = int(version) if isinstance(version, (int, float)) else 0
 
-            if compress_segments:
-                comp_data = zlib.compress(rec_payload)
-            else:
-                comp_data = rec_payload
+            comp_data = zlib.compress(rec_payload) if compress_segments else rec_payload
             crc = zlib.crc32(rec_payload) & 0xFFFFFFFF
             f.write(struct.pack(record_header_format, crc, len(comp_data), len(rec_payload)))
             f.write(comp_data)
@@ -157,7 +154,7 @@ def write_segment(
 
 def write_segment_streaming(
     seg_path: Path,
-    sources: Dict[Tuple[str, int], Tuple[str, int, int]],  # (table, rec_id) -> (fname, src_offset, version)
+    sources: dict[tuple[str, int], tuple[str, int, int]],  # (segment, rec_id) -> (fname, src_offset, version)
     seg_id: int,
     seg_dir: Path,
     # format strings / constants
@@ -168,10 +165,10 @@ def write_segment_streaming(
     bloom_filter_enabled: bool,
     compress_segments: bool,
     # mutable state dicts
-    latest: Dict[int, IndexEntry],
-    segment_size_cache: Dict[int, int],
-    bloom_filter_cache: Dict[int, BloomFilter],
-    segment_info: Dict[int, dict],
+    latest: dict[int, IndexEntry],
+    segment_size_cache: dict[int, int],
+    bloom_filter_cache: dict[int, BloomFilter],
+    segment_info: dict[int, dict],
     # callbacks
     read_payload_fn,           # (seg_path, offset) -> Optional[bytes]
     append_index_entries_fn,   # (entries) -> None
@@ -257,10 +254,10 @@ def write_segment_streaming(
 # ==========================================================
 
 def flush(
-    memtable: Dict[int, bytes],
-    deleted: Set[int],
-    wal_handle: Optional[Any],
-    wal_count_ref: List[int],
+    memtable: dict[int, bytes],
+    deleted: set[int],
+    wal_handle: Any | None,
+    wal_count_ref: list[int],
     flush_threshold: int,
     get_next_segment_id_fn,
     seg_dir: Path,

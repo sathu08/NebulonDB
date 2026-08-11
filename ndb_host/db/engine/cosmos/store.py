@@ -14,7 +14,6 @@ and delegates all logic to the purpose-built submodules:
     compactor      – LSM-tree compaction & background daemon
 """
 
-import os
 import time
 import shutil
 
@@ -22,7 +21,7 @@ import threading
 
 from pathlib import Path
 from collections import OrderedDict
-from typing import Any, Dict, List, Optional, Union
+from typing import Any
 
 from db.engine.utils import DatabaseConfig, BloomFilter, IndexEntry
 from utils.logger import NebulonDBLogger
@@ -63,7 +62,7 @@ class NebulonCosmos:
     """
 
     # ==========================================================
-    def __init__(self, db_dir: Union[str, Path], reset: bool = False) -> None:
+    def __init__(self, db_dir: str | Path, reset: bool = False) -> None:
         self.config = DatabaseConfig(db_dir=db_dir)
 
         # ── paths ─────────────────────────────────────────────
@@ -98,26 +97,26 @@ class NebulonCosmos:
 
         # ── in-memory state ───────────────────────────────────
         self._lock                                          = threading.RLock()
-        self.memtable:             Dict[int, bytes]         = {}
+        self.memtable:             dict[int, bytes]         = {}
         self._deleted:             set                      = set()
-        self.latest:               Dict[int, IndexEntry]    = {}
-        self.meta:                 Dict[str, Any]           = _meta_mod.default_meta()
+        self.latest:               dict[int, IndexEntry]    = {}
+        self.meta:                 dict[str, Any]           = _meta_mod.default_meta()
         self.wal_count:            int                      = 0
         self._wal_bytes_since_fsync: int                    = 0
         self.memtable_oldest_ts:   float                    = 0.0
-        self.wal_handle:           Optional[Any]            = None
+        self.wal_handle:           Any | None            = None
         self.segment_cache:        OrderedDict              = OrderedDict()
-        self.segment_size_cache:   Dict[int, int]           = {}
-        self.bloom_filter_cache:   Dict[int, BloomFilter]   = {}
-        self.segment_info:         Dict[int, dict]          = {}
-        self.manifest:             List[str]                = []
+        self.segment_size_cache:   dict[int, int]           = {}
+        self.bloom_filter_cache:   dict[int, BloomFilter]   = {}
+        self.segment_info:         dict[int, dict]          = {}
+        self.manifest:             list[str]                = []
         self.memtable_bytes:       int                      = 0
         self.max_memtable_bytes = 256 * 1024 * 1024
 
         # ── background threads ─────────────────────────────────
-        self._compaction_thread:     Optional[threading.Thread] = None
+        self._compaction_thread:     threading.Thread | None = None
         self._compaction_stop_event: threading.Event           = threading.Event()
-        self._flush_thread:          Optional[threading.Thread] = None
+        self._flush_thread:          threading.Thread | None = None
         self._flush_stop_event:      threading.Event           = threading.Event()
 
         self._init_db(reset)
@@ -136,19 +135,19 @@ class NebulonCosmos:
     def _load_meta(self) -> None:
         self.meta = _meta_mod.load_meta(self.meta_file)
 
-    def _default_meta(self) -> Dict[str, Any]:
+    def _default_meta(self) -> dict[str, Any]:
         return _meta_mod.default_meta()
 
     def _save_manifest(self) -> None:
         _meta_mod.save_manifest(self.manifest_file, self.manifest)
-        
+
 
     def _load_manifest(self) -> None:
         self.manifest = _meta_mod.load_manifest(self.manifest_file, self.seg_dir)
 
     # ── id / version generators ───────────────────────────────
     def _ensure_global_record_id(self) -> None:
-        """Seed the global record-id counter from existing per-table counters."""
+        """Seed the global record-id counter from existing per-segment counters."""
         if self.meta.get("global_record_id"):
             return
         self.meta["global_record_id"] = max(
@@ -240,7 +239,7 @@ class NebulonCosmos:
             self.wal_fsync_interval,
         )
 
-    def _write_wal_records_batch(self, record_bytes_list: List[bytes]) -> None:
+    def _write_wal_records_batch(self, record_bytes_list: list[bytes]) -> None:
         self._wal_bytes_since_fsync = _wal_mod.write_wal_records_batch(
             self.wal_handle,
             record_bytes_list,
@@ -260,7 +259,7 @@ class NebulonCosmos:
         self.wal_count = len(self.memtable)
 
     # ── segment writer ────────────────────────────────────────
-    def _write_segment(self, seg_path: Path, record_list: List[bytes], seg_id: int) -> None:
+    def _write_segment(self, seg_path: Path, record_list: list[bytes], seg_id: int) -> None:
         _writer_mod.write_segment(
             seg_path=seg_path,
             record_list=record_list,
@@ -282,7 +281,7 @@ class NebulonCosmos:
     def _write_segment_streaming(
         self,
         seg_path: Path,
-        sources: Dict[int, tuple],
+        sources: dict[int, tuple],
         seg_id: int,
         append_index: bool = True,
     ) -> None:
@@ -334,7 +333,7 @@ class NebulonCosmos:
             self.memtable_oldest_ts = 0.0
 
     # ── compaction ────────────────────────────────────────────
-    def _cleanup_segments(self, fnames: List[str], delete_files: bool = True) -> None:
+    def _cleanup_segments(self, fnames: list[str], delete_files: bool = True) -> None:
         _compact_mod.cleanup_segments(
             fnames=fnames,
             seg_dir=self.seg_dir,
@@ -345,7 +344,7 @@ class NebulonCosmos:
             delete_files=delete_files,
         )
 
-    def _remove_segments_and_rebuild(self, fnames: List[str]) -> None:
+    def _remove_segments_and_rebuild(self, fnames: list[str]) -> None:
         _compact_mod.remove_segments_and_rebuild(
             fnames=fnames,
             seg_dir=self.seg_dir,
@@ -361,7 +360,7 @@ class NebulonCosmos:
             rebuild_index_fn=self._rebuild_index_from_all_segments,
         )
 
-    def _compact(self, segments_to_merge: Optional[List[str]] = None) -> None:
+    def _compact(self, segments_to_merge: list[str] | None = None) -> None:
         with self._lock:
             _compact_mod.compact(
             segments_to_merge=segments_to_merge,
@@ -420,7 +419,7 @@ class NebulonCosmos:
                         self._flush(force=True)
 
     # ── segment reader ────────────────────────────────────────
-    def _read_payload_at_offset(self, seg_id: int, offset: int) -> Optional[bytes]:
+    def _read_payload_at_offset(self, seg_id: int, offset: int) -> bytes | None:
         return _reader_mod.read_payload_at_offset(
             seg_id=seg_id,
             offset=offset,
@@ -433,13 +432,13 @@ class NebulonCosmos:
             record_header_format=self.record_header_format,
         )
 
-    def _read_payload_from_file(self, seg_path: Path, offset: int) -> Optional[bytes]:
+    def _read_payload_from_file(self, seg_path: Path, offset: int) -> bytes | None:
         seg_id = int(seg_path.stem.split('_')[1])
         return self._read_payload_at_offset(seg_id, offset)
 
     # ── record building ───────────────────────────────────────
     def _build_record(
-        self, segment: str, doc: Dict[str, Any], is_delete: bool = False
+        self, segment: str, doc: dict[str, Any], is_delete: bool = False
     ) -> "tuple[bytes, int, int]":
         record = doc.copy()
         if "id" in record:
@@ -454,11 +453,11 @@ class NebulonCosmos:
         return encode_object(record), record["_id"], version
 
     # ── write record (memtable + WAL) ─────────────────────────
-    def _write_record(self, segment: str, doc: Dict[str, Any], is_delete: bool = False) -> int:
+    def _write_record(self, segment: str, doc: dict[str, Any], is_delete: bool = False) -> int:
         with self._lock:
             return self._write_record_unsafe(segment, doc, is_delete)
 
-    def _write_record_unsafe(self, segment: str, doc: Dict[str, Any], is_delete: bool = False) -> int:
+    def _write_record_unsafe(self, segment: str, doc: dict[str, Any], is_delete: bool = False) -> int:
         rec_bytes, rec_id, version = self._build_record(segment, doc, is_delete)
         key       = (segment, rec_id)
 
@@ -504,11 +503,11 @@ class NebulonCosmos:
     # Public API
     # =========================================================
 
-    def insert(self, segment: str, doc: Dict[str, Any]) -> int:
+    def insert(self, segment: str, doc: dict[str, Any]) -> int:
         doc.pop("id", None)
         return self._write_record(segment, doc, is_delete=False)
 
-    def insert_many(self, segment: str, docs: List[Dict[str, Any]]) -> List[int]:
+    def insert_many(self, segment: str, docs: list[dict[str, Any]]) -> list[int]:
         """
         Bulk insert: encode all docs, append them to the WAL in a single
         write, and update the memtable under one lock acquisition.
@@ -542,7 +541,7 @@ class NebulonCosmos:
             logger.debug(f"BULK INSERT {len(built)} records segment={segment}")
             return rec_ids
 
-    def update(self, segment: str, doc: Dict[str, Any]) -> int:
+    def update(self, segment: str, doc: dict[str, Any]) -> int:
         rec_id = doc.get("id", doc.get("_id"))
         if rec_id is None:
             logger.error("Document must contain 'id' or '_id'")
@@ -556,7 +555,7 @@ class NebulonCosmos:
             return self._write_record_unsafe(segment, {"id": record_id}, is_delete=True)
 
     # ── reading ───────────────────────────────────────────────
-    def get(self, record_id: int, segment: str = "_main", include_internal: bool = False) -> Optional[Dict[str, Any]]:
+    def get(self, record_id: int, segment: str = "_main", include_internal: bool = False) -> dict[str, Any] | None:
         """
         Retrieve a document by its record ID and segment.
         """
@@ -616,9 +615,9 @@ class NebulonCosmos:
 
     def read_all(
         self,
-        segment: Optional[str] = None,
+        segment: str | None = None,
         include_internal: bool = False,
-    ) -> List[Dict[str, Any]]:
+    ) -> list[dict[str, Any]]:
         target_segment = segment or "_main"
         docs = []
 
@@ -704,7 +703,7 @@ class NebulonCosmos:
             results.append(res)
         return results
 
-    def get_by_id(self, segment: str, record_id: Any) -> Optional[Dict[str, Any]]:
+    def get_by_id(self, segment: str, record_id: Any) -> dict[str, Any] | None:
         return self.get(record_id, segment=segment)
 
     # =========================================================

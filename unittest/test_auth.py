@@ -6,7 +6,7 @@ Endpoints: POST /auth/register, GET /auth/verify
 """
 
 import pytest
-from conftest import BASE_URL, USERNAME, PASSWORD, AUTH, unique_suffix
+from conftest import BASE_URL, USERNAME, AUTH, unique_suffix
 
 pytestmark = pytest.mark.auth
 

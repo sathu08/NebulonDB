@@ -17,7 +17,6 @@ MeshStore
 
 import threading
 
-from typing import Optional, List, Dict, Tuple, Union
 
 from db.engine.utils import (
     FIELD_ID,
@@ -59,20 +58,20 @@ class MeshStore:
         store: NebulonCosmos,
         node_segment: str,
         edge_segment: str,
-        mesh_graph_viz_html: Optional[str] = None,
+        mesh_graph_viz_html: str | None = None,
     ):
         self._store = store
         self.node_segment = node_segment
         self.edge_segment = edge_segment
         self.mesh_graph_viz_html = mesh_graph_viz_html
         self._lock = threading.RLock()
-        self._nodes: Dict[int, Dict] = {}
-        self._edges: List[Dict] = []
+        self._nodes: dict[int, dict] = {}
+        self._edges: list[dict] = []
         self._next_edge_id: int = 1
 
     # ---------- Node operations ----------
-    def add_node(self, node_id: int, label: Optional[str] = None,
-                 created_at: Optional[str] = None) -> None:
+    def add_node(self, node_id: int, label: str | None = None,
+                 created_at: str | None = None) -> None:
         with self._lock:
             self._nodes.setdefault(node_id, {})
             if label is not None:
@@ -88,12 +87,12 @@ class MeshStore:
                 if e[FIELD_FROM] != node_id and e[FIELD_TO] != node_id
             ]
 
-    def get_node(self, node_id: int) -> Optional[Dict]:
+    def get_node(self, node_id: int) -> dict | None:
         with self._lock:
             node = self._nodes.get(node_id)
             return dict(node) if node else None
 
-    def get_all_node_ids(self) -> List[int]:
+    def get_all_node_ids(self) -> list[int]:
         with self._lock:
             return list(self._nodes.keys())
 
@@ -105,7 +104,7 @@ class MeshStore:
         with self._lock:
             return node_id in self._nodes
 
-    def resolve_node(self, ref: Union[int, str]) -> int:
+    def resolve_node(self, ref: int | str) -> int:
         """Return a node id for an int id or a string label.
 
         int: returned as-is (a node is created lazily on edge add if absent).
@@ -129,7 +128,7 @@ class MeshStore:
 
     # ---------- Edge operations ----------
     def add_edge(self, source: int, target: int, relation: str,
-                 weight: float = 1.0, created_at: Optional[str] = None) -> int:
+                 weight: float = 1.0, created_at: str | None = None) -> int:
         with self._lock:
             # Idempotent: an identical edge already exists (re-posted request
             # or WAL replay after a crash) – return its id instead of
@@ -151,7 +150,7 @@ class MeshStore:
             return edge_id
 
     def remove_edge(self, source: int, target: int,
-                    relation: Optional[str] = None) -> None:
+                    relation: str | None = None) -> None:
         with self._lock:
             self._edges = [
                 e for e in self._edges
@@ -159,7 +158,7 @@ class MeshStore:
                         and (relation is None or e[FIELD_RELATION] == relation))
             ]
 
-    def get_neighbors(self, node_id: int, direction: str = "both") -> List[Tuple[int, str]]:
+    def get_neighbors(self, node_id: int, direction: str = "both") -> list[tuple[int, str]]:
         with self._lock:
             neighbors = []
             if direction in ("out", "both"):
@@ -172,11 +171,11 @@ class MeshStore:
                         neighbors.append((e[FIELD_FROM], e[FIELD_RELATION]))
             return neighbors
 
-    def get_all_edges(self) -> List[Dict]:
+    def get_all_edges(self) -> list[dict]:
         with self._lock:
             return [dict(e) for e in self._edges]
 
-    def edges_by_relation(self, relation: str) -> List[Dict]:
+    def edges_by_relation(self, relation: str) -> list[dict]:
         with self._lock:
             return [e for e in self._edges if e[FIELD_RELATION] == relation]
 
@@ -275,7 +274,7 @@ class MeshStore:
             return bool(self._nodes) or bool(self._edges)
 
     # ---------- Serialization ----------
-    def to_dict(self) -> Dict:
+    def to_dict(self) -> dict:
         """Return the graph in the {nodes: {...}, edges: [...]} shape used by viz."""
         with self._lock:
             nodes = {
@@ -291,11 +290,11 @@ class MeshStore:
     @classmethod
     def from_dict(
         cls,
-        data: Dict,
+        data: dict,
         store: NebulonCosmos,
         node_segment: str,
         edge_segment: str,
-        mesh_graph_viz_html: Optional[str] = None,
+        mesh_graph_viz_html: str | None = None,
     ) -> "MeshStore":
         instance = cls(store, node_segment, edge_segment, mesh_graph_viz_html)
         for nid, node in data.get("nodes", {}).items():

@@ -8,7 +8,7 @@ segment manifest persistence for NebulonCosmos.
 import os
 
 from pathlib import Path
-from typing import Any, Dict, List
+from typing import Any
 
 
 from utils.logger import NebulonDBLogger
@@ -40,7 +40,7 @@ def atomic_write(file_path: Path, data_bytes: bytes) -> None:
 #  Metadata helpers
 # ==========================================================
 
-def default_meta() -> Dict[str, Any]:
+def default_meta() -> dict[str, Any]:
     return {
         "tables": {},
         "global_version": 0,
@@ -48,7 +48,7 @@ def default_meta() -> Dict[str, Any]:
     }
 
 
-def load_meta(meta_file: Path) -> Dict[str, Any]:
+def load_meta(meta_file: Path) -> dict[str, Any]:
     if meta_file.exists() and meta_file.stat().st_size > 0:
         with meta_file.open("rb") as f:
             data = f.read()
@@ -69,7 +69,7 @@ def load_meta(meta_file: Path) -> Dict[str, Any]:
     return meta
 
 
-def save_meta(meta_file: Path, meta: Dict[str, Any]) -> None:
+def save_meta(meta_file: Path, meta: dict[str, Any]) -> None:
     data = encode_object(meta)
     atomic_write(meta_file, data)
 
@@ -82,7 +82,7 @@ def save_meta(meta_file: Path, meta: Dict[str, Any]) -> None:
 #  Manifest helpers
 # ==========================================================
 
-def _discover_segments(seg_dir: Path) -> List[str]:
+def _discover_segments(seg_dir: Path) -> list[str]:
     """Fallback: sort all seg_*.ndb files in seg_dir."""
     return sorted([
         f.name for f in seg_dir.iterdir()
@@ -90,7 +90,7 @@ def _discover_segments(seg_dir: Path) -> List[str]:
     ])
 
 
-def load_manifest(manifest_file: Path, seg_dir: Path) -> List[str]:
+def load_manifest(manifest_file: Path, seg_dir: Path) -> list[str]:
     if manifest_file.exists() and manifest_file.stat().st_size > 0:
         with manifest_file.open("rb") as f:
             data = f.read()
@@ -102,7 +102,7 @@ def load_manifest(manifest_file: Path, seg_dir: Path) -> List[str]:
     return _discover_segments(seg_dir)
 
 
-def save_manifest(manifest_file: Path, manifest: List[str]) -> None:
+def save_manifest(manifest_file: Path, manifest: list[str]) -> None:
     data = encode_object(manifest)
     atomic_write(manifest_file, data)
     fd = os.open(str(manifest_file.parent), os.O_RDONLY)
@@ -110,7 +110,7 @@ def save_manifest(manifest_file: Path, manifest: List[str]) -> None:
     os.close(fd)
 
 def save_manifest_and_meta(manifest_file: Path, meta_file: Path,
-                           manifest: List[str], meta: Dict[str, Any]) -> None:
+                           manifest: list[str], meta: dict[str, Any]) -> None:
     """Atomically write manifest + meta using a temp directory entry."""
     # Write temp files
     manifest_tmp = manifest_file.parent / (manifest_file.name + ".tmp")

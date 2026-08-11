@@ -42,8 +42,8 @@ def create_corpus(client, name: str, ndb_type: str = "orbit") -> dict:
 
 
 def delete_corpus(client, name: str) -> dict:
-    deact = client.post(f"{BASE_URL}/corpus/deactivate_corpus", auth=AUTH,
-                        json={"corpus_name": name}, timeout=TIMEOUT).json()
+    client.post(f"{BASE_URL}/corpus/deactivate_corpus", auth=AUTH,
+                json={"corpus_name": name}, timeout=TIMEOUT).json()
     return client.post(f"{BASE_URL}/corpus/delete_corpus", auth=AUTH,
                        json={"corpus_name": name}, timeout=TIMEOUT).json()
 

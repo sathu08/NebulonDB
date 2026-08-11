@@ -54,11 +54,11 @@ graph neighbors.
   * **Background compaction** daemon that merges segments, drops tombstones, and
     **rebuilds the in-memory index from the surviving segments** so reads never hit
     removed files
-  * **Globally-unique record IDs** across all tables (single `meta` counter) so
-    tables like `nebulon_userinfo` / `nebulon_metadata` can never collide; compaction
-    keys merges by `(table, id)` so records are never dropped across tables
+  * **Globally-unique record IDs** across all segments (single `meta` counter) so
+    segments like `nebulon_userinfo` / `nebulon_metadata` can never collide; compaction
+    keys merges by `(segment, id)` so records are never dropped across segments
   * Atomic metadata / manifest persistence (`meta.bin`, `manifest.bin`)
-  * Multi-table ("segment") namespacing and versioned records
+  * Multi-segment namespacing and versioned records
 * **NebulonOrbit** — unified **Nova** (vector) + **Mesh** (graph) search engine built on Cosmos:
   * **Nova** — **HNSW** ANN index (`hnswlib`) with generational saves, SHA-256
     checksums and manifest-based fallback recovery
@@ -780,10 +780,10 @@ NEBULONDB_HOME/
 Corpus metadata (including registered segments) lives in the account hub's
 `nebulon_metadata` segment, and user accounts live in `nebulon_userinfo`.
 
-Within each **ORBIT** corpus, the Cosmos engine stores four normalized tables
+Within each **ORBIT** corpus, the Cosmos engine stores four normalized segments
 (keyed by a shared record `id`):
 
-| Table | Fields | Contents |
+| Segment | Fields | Contents |
 |-------|--------|----------|
 | `nebulon_documents` | `id`, `text`, `metadata` (incl. `label`), `created_at` | Document text + metadata |
 | `nebulon_nova` | `id`, `vector`, `created_at` | Embedding vectors only |
@@ -850,8 +850,8 @@ Within each **ORBIT** corpus, the Cosmos engine stores four normalized tables
   minimum password length raised from 6 to **8 characters** for both
   `/auth/register` and `/auth/change_password`.
 
-### Normalized 4-table storage + bulk graph load (ORBIT)
-* **Split ORBIT storage into four normalized Cosmos tables**, shared by a common
+### Normalized 4-segment storage + bulk graph load (ORBIT)
+* **Split ORBIT storage into four normalized Cosmos segments**, shared by a common
   record `id`:
   * `document_store.py` (**new**) → `nebulon_documents` `{id, text, metadata, created_at}`
   * `nova_store.py` → `nebulon_nova` `{id, vector, created_at}` (dropped embedded

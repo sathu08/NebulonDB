@@ -17,7 +17,8 @@ import math
 from dataclasses import dataclass
 
 from datetime import datetime, timezone
-from typing import List, Dict, Any, Optional, Union, Callable
+from typing import Any
+from collections.abc import Callable
 
 from ndb_host.utils.logger import NebulonDBLogger
 
@@ -51,9 +52,9 @@ class RankConfig:
 
     use_rrf: bool = True
     rerank: bool = False
-    weights: Optional[Dict[str, float]] = None
+    weights: dict[str, float] | None = None
     half_life: float = 30.0
-    metadata_rules: Optional[Callable[[Dict[str, Any]], float]] = None
+    metadata_rules: Callable[[dict[str, Any]], float] | None = None
 
 
 # ----------------------------------------------------------------------
@@ -68,7 +69,7 @@ class BM25Scorer:
         k1, b: BM25 hyperparameters.
     """
 
-    def __init__(self, documents: List[Dict[str, Any]], k1: float = 1.5, b: float = 0.75):
+    def __init__(self, documents: list[dict[str, Any]], k1: float = 1.5, b: float = 0.75):
         self.k1 = k1
         self.b = b
         self.doc_ids = [doc["id"] for doc in documents]
@@ -76,10 +77,10 @@ class BM25Scorer:
         self.doc_lengths = [len(tokens) for tokens in self.tokenized_corpus]
         self.n_docs = len(self.doc_ids)
         self.avg_doc_len = sum(self.doc_lengths) / self.n_docs if self.n_docs else 0
-        self.idf_cache: Dict[str, float] = {}
+        self.idf_cache: dict[str, float] = {}
 
     @staticmethod
-    def _tokenize(text: str) -> List[str]:
+    def _tokenize(text: str) -> list[str]:
         return str(text or "").lower().split()
 
     def _idf(self, term: str) -> float:
@@ -88,7 +89,7 @@ class BM25Scorer:
             self.idf_cache[term] = math.log((self.n_docs - df + 0.5) / (df + 0.5) + 1.0)
         return self.idf_cache[term]
 
-    def score(self, query: str, doc_id: Union[str, int]) -> float:
+    def score(self, query: str, doc_id: str | int) -> float:
         """BM25 score for a single document (raw value)."""
         try:
             idx = self.doc_ids.index(doc_id)
@@ -109,7 +110,7 @@ class BM25Scorer:
             score += idf * (numerator / denominator)
         return score
 
-    def search(self, query: str, top_k: int = 10) -> List[Dict[str, Any]]:
+    def search(self, query: str, top_k: int = 10) -> list[dict[str, Any]]:
         """
         Full BM25 search returning top_k documents with their raw BM25 scores.
         Format: [{"id": doc_id, "score": bm25_score, "text": ...}, ...]
@@ -129,7 +130,7 @@ class BM25Scorer:
         return results
 
     @staticmethod
-    def _untokenize(tokens: List[str]) -> str:
+    def _untokenize(tokens: list[str]) -> str:
         return " ".join(tokens)
 
 
@@ -149,11 +150,11 @@ class RRFMerger:
 
     def merge(
         self,
-        list_a: List[Dict[str, Any]],
-        list_b: List[Dict[str, Any]],
+        list_a: list[dict[str, Any]],
+        list_b: list[dict[str, Any]],
         id_key: str = "id",
         max_unique: int = 200,
-    ) -> List[Dict[str, Any]]:
+    ) -> list[dict[str, Any]]:
         """
         Combine two lists, each containing dicts with at least an 'id' field.
         Returns a new list of unique documents with an 'rrf_score' field,
@@ -194,10 +195,10 @@ class QueryIntent:
     Override with your own NLP classifier for production.
     """
 
-    def __init__(self, weights: Optional[Dict[str, float]] = None):
+    def __init__(self, weights: dict[str, float] | None = None):
         self.weights = weights
 
-    def get_weights(self, query: str) -> Dict[str, float]:
+    def get_weights(self, query: str) -> dict[str, float]:
         q = query.lower()
         if any(w in q for w in ["latest", "recent", "new", "today", "update"]):
             return {"vector": 0.45, "bm25": 0.20, "metadata": 0.10, "importance": 0.05, "freshness": 0.20}
@@ -226,8 +227,8 @@ class RankEngine:
 
     def __init__(
         self,
-        documents: Optional[List[Dict[str, Any]]] = None,
-        weights: Optional[Dict[str, float]] = None,
+        documents: list[dict[str, Any]] | None = None,
+        weights: dict[str, float] | None = None,
         half_life: float = 30.0,
         mode: str = "linear",
     ):
@@ -249,7 +250,7 @@ class RankEngine:
         self.bm25 = BM25Scorer(documents) if documents and mode == "linear" else None
         self.metadata_rules = self._default_metadata_rules
 
-    def _default_metadata_rules(self, meta: Dict[str, Any]) -> float:
+    def _default_metadata_rules(self, meta: dict[str, Any]) -> float:
         score = 0.0
         doc_type = str(meta.get("type") or "").lower()
         lang = str(meta.get("lang") or "").lower()
@@ -306,9 +307,9 @@ class RankEngine:
     def rank(
         self,
         query: str,
-        candidates: List[Dict[str, Any]],
-        return_top_n: Optional[int] = None,
-    ) -> List[Dict[str, Any]]:
+        candidates: list[dict[str, Any]],
+        return_top_n: int | None = None,
+    ) -> list[dict[str, Any]]:
         """
         Rank candidates. In 'linear' mode, all signals are combined.
         In 'rrf' mode, vector+bm25 are replaced by the pre‑computed 'rrf_score'
@@ -368,7 +369,7 @@ class CrossEncoderReranker:
     def __init__(self, max_length: int = 512):
         self.max_length = max_length
         self._sem_model = None
-        self._available: Optional[bool] = None
+        self._available: bool | None = None
 
     def _load(self):
         if self._sem_model is None:
@@ -394,10 +395,10 @@ class CrossEncoderReranker:
     def rerank(
         self,
         query: str,
-        documents: List[Dict[str, Any]],
+        documents: list[dict[str, Any]],
         text_key: str = "text",
-        top_k: Optional[int] = None,
-    ) -> List[Dict[str, Any]]:
+        top_k: int | None = None,
+    ) -> list[dict[str, Any]]:
         if not documents:
             return []
         sem_model = self._load()
@@ -405,7 +406,7 @@ class CrossEncoderReranker:
             return documents
         pairs = [(query, doc.get(text_key, "")) for doc in documents]
         scores = sem_model.cross_encode(pairs, show_progress_bar=False)
-        for doc, score in zip(documents, scores):
+        for doc, score in zip(documents, scores, strict=True):
             doc["rerank_score"] = float(score)
         documents.sort(key=lambda x: x["rerank_score"], reverse=True)
         if top_k is not None:

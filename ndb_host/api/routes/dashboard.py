@@ -42,7 +42,7 @@ WEB_DIR = config_settings.NEBULONDB_WEB_DIR
 
 async def index_page():
     """Serve the NebulonDB console login page."""
-    
+
     INDEX_HTML = WEB_DIR / "index.html"
 
     if not INDEX_HTML.exists():
@@ -169,4 +169,4 @@ async def update_config(payload: ConfigUpdate):
 
     except Exception as e:
         logger.exception(e)
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail=str(e)) from e

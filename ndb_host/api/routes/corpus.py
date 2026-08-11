@@ -52,7 +52,7 @@ corpus_manager = CorpusManager()
     "/create_corpus",
     response_model=StandardResponse,
     summary="Create corpus",
-    description="Create New corpus to Vector DataBase"
+    description="Create New corpus to Nova DataBase"
 )
 async def create_corpus(
     corpus_query: CorpusQueryRequest,
@@ -60,14 +60,14 @@ async def create_corpus(
 ) -> StandardResponse:
     """
     Create a new corpus in the vector database.
-    
+
     Args:
         corpus_query: Corpus creation details
         current_user: Current authenticated user
-        
+
     Returns:
         StandardResponse: Corpus creation result
-    
+
     """
     try:
         corpus_name = corpus_query.corpus_name
@@ -82,7 +82,7 @@ async def create_corpus(
                 message=current_user.message
             )
         logger.info(f"Attempting to create corpus: {corpus_name} for user: {current_user.username}")
-        
+
         # Check if corpus already exists
         available_corpus_list = corpus_manager.get_available_corpus_list()
         if corpus_name in available_corpus_list:
@@ -93,21 +93,21 @@ async def create_corpus(
                 corpus_name=corpus_name,
                 message=f"Corpus '{corpus_name}' already exists in the database"
             )
-        
+
         # Check permissions
         if not check_user_permission(current_user=current_user, required_role=UserRole.ADMIN_USER):
             logger.error(f"User '{current_user.username}' lacks required permission to create corpus")
             return StandardResponse(
                 success=False,
-                exists=False, 
-                corpus_name=corpus_name, 
+                exists=False,
+                corpus_name=corpus_name,
                 message="Permission denied to create corpus."
             )
 
         # Create the corpus directory
         corpus_manager.create_corpus(corpus_name=corpus_name, username=current_user.username, ndb_type=ndb_type)
         logger.info(f"Corpus created successfully: {corpus_name}")
-        
+
         return StandardResponse(
             success=True,
             exists=False,
@@ -118,8 +118,8 @@ async def create_corpus(
         logger.exception(f"[CREATE] Failed to create corpus: {e}")
         return StandardResponse(
                 success=False,
-                exists=False, 
-                corpus_name=corpus_name, 
+                exists=False,
+                corpus_name=corpus_name,
                 message="Internal error while creating corpus."
             )
 
@@ -149,7 +149,7 @@ async def list_available_corpus(
                 message=current_user.message
             )
         logger.info(f"User '{current_user.username}' requested corpus listing.")
-        
+
         available_corpus = corpus_manager.get_available_corpus_list()
         corpus_info = corpus_manager.get_corpus_info()
 
@@ -170,12 +170,12 @@ async def list_available_corpus(
     except Exception as e:
         logger.exception(f"[LIST] Error listing corpus: {e}")
         return StandardResponse(
-            success=False, 
-            message="Error listing corpus.", 
+            success=False,
+            message="Error listing corpus.",
             data={
                 "corpus_list": [],
                 "total_count": 0
-            }   
+            }
         )
 
 @router.post(
@@ -190,18 +190,18 @@ async def delete_corpus(
 ) -> StandardResponse:
     """
     Delete a corpus in the vector database.
-    
+
     Args:
         corpus_query: Corpus Delete details
         current_user: Current authenticated user
-        
+
     Returns:
         StandardResponse: Corpus Delete result
-        
+
     """
     try:
         corpus_name = corpus_query.corpus_name
-        
+
         if not current_user.is_authenticated:
             return StandardResponse(
                 success=False,
@@ -224,8 +224,8 @@ async def delete_corpus(
             logger.warning(f"Permission denied for user '{current_user.username}' to delete corpus.")
             return StandardResponse(
                 success=False,
-                exists=True, 
-                corpus_name=corpus_name, 
+                exists=True,
+                corpus_name=corpus_name,
                 message="Permission denied to delete corpus."
             )
 
@@ -234,16 +234,16 @@ async def delete_corpus(
             logger.info("System corpus cannot be deleted.")
             return StandardResponse(
                 success=False,
-                exists=True, 
-                corpus_name=corpus_name, 
+                exists=True,
+                corpus_name=corpus_name,
                 message="System corpus cannot be deleted."
             )
         elif corpus_status == "active":
             logger.info("Corpus must be deactivated before deletion.")
             return StandardResponse(
                 success=False,
-                exists=True, 
-                corpus_name=corpus_name, 
+                exists=True,
+                corpus_name=corpus_name,
                 message="Deactivate the corpus before deletion."
             )
 
@@ -263,8 +263,8 @@ async def delete_corpus(
         logger.exception(f"[DELETE] Error deleting corpus: {e}")
         return StandardResponse(
             success=False,
-            exists=True, 
-            corpus_name=corpus_name, 
+            exists=True,
+            corpus_name=corpus_name,
             message="Internal error while deleting corpus."
         )
 
@@ -280,18 +280,18 @@ async def deactivate_corpus(
 ) -> StandardResponse:
     """
     Deactivate a corpus in the vector database.
-    
+
     Args:
         corpus_query: Corpus Deactivate details
         current_user: Current authenticated user
-        
+
     Returns:
         StandardResponse: Corpus Deactivate result
-        
+
     """
     try:
         corpus_name = corpus_query.corpus_name
-        
+
         if not current_user.is_authenticated:
             return StandardResponse(
                 success=False,
@@ -314,8 +314,8 @@ async def deactivate_corpus(
             logger.warning(f"Permission denied for user '{current_user.username}' to deactivate corpus.")
             return StandardResponse(
                 success=False,
-                exists=True, 
-                corpus_name=corpus_name, 
+                exists=True,
+                corpus_name=corpus_name,
                 message="Permission denied to deactivate corpus."
             )
 
@@ -325,17 +325,17 @@ async def deactivate_corpus(
             logger.info("System corpus cannot be deactivate.")
             return StandardResponse(
                 success=False,
-                exists=True, 
-                corpus_name=corpus_name, 
+                exists=True,
+                corpus_name=corpus_name,
                 message="System corpus cannot be deactivate."
             )
-        
+
         elif corpus_status == "deactivate":
             logger.info("Corpus already deactivate.")
             return StandardResponse(
                 success=False,
-                exists=True, 
-                corpus_name=corpus_name, 
+                exists=True,
+                corpus_name=corpus_name,
                 message="Corpus already deactivate."
             )
 
@@ -352,8 +352,8 @@ async def deactivate_corpus(
         logger.exception(f"[DELETE] Error deactivate corpus: {e}")
         return StandardResponse(
             success=False,
-            exists=True, 
-            corpus_name=corpus_name, 
+            exists=True,
+            corpus_name=corpus_name,
             message="Internal error while deactivate corpus."
         )
 
@@ -370,18 +370,18 @@ async def activate_corpus(
 ) -> StandardResponse:
     """
     Activate a corpus in the vector database.
-    
+
     Args:
         corpus_query: CorpusActivate details
         current_user: Current authenticated user
-        
+
     Returns:
         StandardResponse: Corpus Activate result
-        
+
     """
     try:
         corpus_name = corpus_query.corpus_name
-        
+
         if not current_user.is_authenticated:
             return StandardResponse(
                 success=False,
@@ -404,8 +404,8 @@ async def activate_corpus(
             logger.warning(f"Permission denied for user '{current_user.username}' to activate corpus.")
             return StandardResponse(
                 success=False,
-                exists=True, 
-                corpus_name=corpus_name, 
+                exists=True,
+                corpus_name=corpus_name,
                 message="Permission denied to activate corpus."
             )
 
@@ -415,20 +415,20 @@ async def activate_corpus(
             logger.info("System corpus cannot be activate.")
             return StandardResponse(
                 success=False,
-                exists=True, 
-                corpus_name=corpus_name, 
+                exists=True,
+                corpus_name=corpus_name,
                 message="System corpus cannot be activate."
             )
-        
+
         elif corpus_status == "active":
             logger.info("Corpus already active.")
             return StandardResponse(
                 success=False,
-                exists=True, 
-                corpus_name=corpus_name, 
+                exists=True,
+                corpus_name=corpus_name,
                 message="Corpus already active."
             )
-        
+
         corpus_manager.set_corpus_status(corpus_name=corpus_name, status="active")
 
         return StandardResponse(
@@ -442,7 +442,7 @@ async def activate_corpus(
         logger.exception(f"[DELETE] Error activate corpus: {e}")
         return StandardResponse(
             success=False,
-            exists=True, 
-            corpus_name=corpus_name, 
+            exists=True,
+            corpus_name=corpus_name,
             message="Internal error while activate corpus."
         )

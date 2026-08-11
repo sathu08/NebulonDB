@@ -4,7 +4,6 @@ parameters for both the core key‑value engine and the vector index store.
 """
 
 from pathlib import Path
-from typing import Optional, Union
 
 from dataclasses import dataclass, field
 
@@ -22,7 +21,7 @@ class DatabaseConfig:
     Central configuration object. All paths are computed from `db_dir`.
     Boolean flag `is_vector` adds additional vector‑related paths.
     """
-    db_dir: Union[str, Path]
+    db_dir: str | Path
     is_vector: bool = False
     is_graph:  bool = False
 
@@ -50,7 +49,7 @@ class DatabaseConfig:
     MAX_SEGMENTS_BEFORE_COMPACT: int = config_settings.MAX_SEGMENTS_BEFORE_COMPACT
     FLUSH_INTERVAL: float = config_settings.FLUSH_INTERVAL
 
-    # ---------- Vector & Graph Settings ----------
+    # ---------- Nova & Mesh Settings ----------
     NOVA_SEGMENT_NAME: str = "nebulon_nova"
     DOCUMENTS_SEGMENT_NAME: str = "nebulon_documents"
     MESH_SEGMENT_NAME: str = "nebulon_mesh"
@@ -75,10 +74,10 @@ class DatabaseConfig:
     META_FILE: Path = field(init=False)
     MANIFEST_FILE: Path = field(init=False)
 
-    NEBULON_NOVA_DIR: Optional[Path] = field(init=False, default=None)
-    NOVA_CONFIG_JSON: Optional[Path] = field(init=False, default=None)
-    NOVA_MANIFEST_FILE_JSON: Optional[Path] = field(init=False, default=None)
-    NOVA_WAL: Optional[Path] = field(init=False, default=None)
+    NEBULON_NOVA_DIR: Path | None = field(init=False, default=None)
+    NOVA_CONFIG_JSON: Path | None = field(init=False, default=None)
+    NOVA_MANIFEST_FILE_JSON: Path | None = field(init=False, default=None)
+    NOVA_WAL: Path | None = field(init=False, default=None)
 
     def __post_init__(self) -> None:
         self.DB_DIR = Path(self.db_dir)

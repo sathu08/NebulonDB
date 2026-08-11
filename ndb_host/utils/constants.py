@@ -10,7 +10,7 @@ from enum import Enum
 from pydantic import BaseModel
 from datetime import timedelta
 
-from typing import Dict, Any, Literal
+from typing import Any, Literal
 
 from dataclasses import dataclass
 
@@ -64,7 +64,7 @@ class MetadataRetention:
         return utc_now()
 
     @classmethod
-    def apply(cls, metadata: Dict[str, Any]) -> Dict[str, Any]:
+    def apply(cls, metadata: dict[str, Any]) -> dict[str, Any]:
         """
         Automatically applies retention policy.
 
@@ -171,4 +171,4 @@ class BatchConfig:
     use_fp16: bool
 
 class ConfigUpdate(BaseModel):
-    config: Dict[str, Dict[str, Any]]
+    config: dict[str, dict[str, Any]]

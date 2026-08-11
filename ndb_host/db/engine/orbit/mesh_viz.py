@@ -2,8 +2,8 @@
 NebulonDB Mesh Visualization
 ==========================
 
-This module provides functionality to visualize NebulonDB mesh structures using Cytoscape.js. 
-It defines classes and methods to convert mesh data into a format suitable for rendering in a web browser, 
+This module provides functionality to visualize NebulonDB mesh structures using Cytoscape.js.
+It defines classes and methods to convert mesh data into a format suitable for rendering in a web browser,
 including generating HTML output with embedded graph data and styles.
 """
 
@@ -12,7 +12,7 @@ import json
 
 from pathlib import Path
 from collections import Counter
-from typing import Dict, List, Optional, Any
+from typing import Any
 
 from dataclasses import dataclass
 
@@ -34,9 +34,9 @@ from utils.logger import NebulonDBLogger
 logger = NebulonDBLogger().get_logger()
 
 # ---------- Type aliases ----------
-NebulonNodeStyle = Dict[str, Any]
-NebulonNodeStyles = Dict[str, NebulonNodeStyle]
-NebulonLayout = Dict[str, Any]
+NebulonNodeStyle = dict[str, Any]
+NebulonNodeStyles = dict[str, NebulonNodeStyle]
+NebulonLayout = dict[str, Any]
 
 # ---------- NebulonGraphProfile ----------
 @dataclass(frozen=True)
@@ -47,7 +47,7 @@ class NebulonGraphProfile:
     optimize_large_graph: bool
 
     @classmethod
-    def from_graph(cls, nodes: List[Dict], edges: List[Dict]) -> "NebulonGraphProfile":
+    def from_graph(cls, nodes: list[dict], edges: list[dict]) -> "NebulonGraphProfile":
         node_count = len(nodes)
         mode = cls._render_mode(node_count)
         layout = LAYOUTS[mode]
@@ -68,7 +68,7 @@ class NebulonGraphProfile:
         return "huge"
 
     @staticmethod
-    def _calculate_degree(edges: List[Dict]) -> Counter:
+    def _calculate_degree(edges: list[dict]) -> Counter:
         degree = Counter()
         for e in edges:
             degree[e[EDGE_SOURCE]] += 1
@@ -76,7 +76,7 @@ class NebulonGraphProfile:
         return degree
 
     @staticmethod
-    def _auto_style_nodes(nodes: List[Dict], degrees: Counter) -> NebulonNodeStyles:
+    def _auto_style_nodes(nodes: list[dict], degrees: Counter) -> NebulonNodeStyles:
         styles: NebulonNodeStyles = {}
         for node in nodes:
             d = degrees.get(node[NODE_ID], 0)
@@ -98,11 +98,11 @@ class NebulonGraphProfile:
 class NebulonCytoscapeGraph:
     def __init__(
         self,
-        graph_data: Optional[Dict] = None,
+        graph_data: dict | None = None,
         template_path: str = "templates/graph.html",
     ):
-        self.nodes: List[Dict] = []
-        self.edges: List[Dict] = []
+        self.nodes: list[dict] = []
+        self.edges: list[dict] = []
         self.template_path = template_path
         if graph_data:
             self.nodes = graph_data.get("nodes", [])
@@ -169,7 +169,7 @@ class NebulonCytoscapeGraph:
             if target not in node_ids:
                 raise ValueError(f"Edge target '{target}' is not a node ID.")
 
-    def summary(self) -> Dict[str, Any]:
+    def summary(self) -> dict[str, Any]:
         if not self.nodes:
             isolated_count = 0
         else:
@@ -185,7 +185,7 @@ class NebulonCytoscapeGraph:
             "isolated_nodes": isolated_count,
         }
 
-    def _build_elements(self, profile: NebulonGraphProfile) -> List[dict]:
+    def _build_elements(self, profile: NebulonGraphProfile) -> list[dict]:
         elements = []
         for node in self.nodes:
             nid = node[NODE_ID]
@@ -225,7 +225,7 @@ class NebulonCytoscapeGraph:
             style["text-opacity"] = 0
         return style
 
-    def _build_edge_styles(self) -> List[dict]:
+    def _build_edge_styles(self) -> list[dict]:
         return [
             {
                 "selector": "edge",
@@ -253,10 +253,10 @@ class NebulonCytoscapeGraph:
 
     def _render_html(
         self,
-        elements: List[dict],
+        elements: list[dict],
         final_layout: NebulonLayout,
         node_style: dict,
-        edge_styles: List[dict],
+        edge_styles: list[dict],
     ) -> str:
         template_path = Path(self.template_path)
         template = (
@@ -270,7 +270,7 @@ class NebulonCytoscapeGraph:
         html = html.replace("__EDGE_STYLES__", json.dumps(edge_styles))
         return html
 
-    def to_html(self, output_path: Optional[str] = None) -> str:
+    def to_html(self, output_path: str | None = None) -> str:
         self.validate()
         profile = NebulonGraphProfile.from_graph(self.nodes, self.edges)
         elements = self._build_elements(profile)

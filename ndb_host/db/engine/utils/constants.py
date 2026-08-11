@@ -6,7 +6,7 @@ fixed binary format strings, and graph (mesh) visualisation constants.
 import struct
 
 from dataclasses import dataclass
-from typing import Any, Dict
+from typing import Any
 
 # -------------------- Database file magic & version --------------------
 MAGIC: bytes = b"NDB4"
@@ -75,7 +75,7 @@ class NebulonColors:
     HUB = "#ff4444"
 
 
-LAYOUTS: Dict[str, Dict[str, Any]] = {
+LAYOUTS: dict[str, dict[str, Any]] = {
     "small":  {"name": "cose",   "animate": True,  "padding": 40},
     "medium": {"name": "cose",   "animate": False, "padding": 30},
     "large":  {"name": "circle"},
@@ -91,7 +91,8 @@ DEFAULT_TEMPLATE = """<!DOCTYPE html>
 html, body { margin: 0; width: 100%; height: 100%; background: #111; }
 #cy { width: 100%; height: 100%; }
 #search-container { position: absolute; top: 10px; right: 10px; z-index: 10; }
-#search-input { padding: 8px 12px; font-size: 14px; border: 2px solid #4CAF50; border-radius: 20px; background: #222; color: white; outline: none; width: 200px; transition: 0.3s; }
+#search-input { padding: 8px 12px; font-size: 14px; border: 2px solid #4CAF50;
+    border-radius: 20px; background: #222; color: white; outline: none; width: 200px; transition: 0.3s; }
 #search-input:focus { border-color: #FFD700; box-shadow: 0 0 5px #FFD700; }
 </style>
 </head>
@@ -141,7 +142,7 @@ class NebulonRenderOptions:
     enable_hover: bool
 
 
-RENDER_OPTIONS: Dict[str, NebulonRenderOptions] = {
+RENDER_OPTIONS: dict[str, NebulonRenderOptions] = {
     "small":  NebulonRenderOptions(True,  True,  True),
     "medium": NebulonRenderOptions(True,  False, True),
     "large":  NebulonRenderOptions(False, False, False),

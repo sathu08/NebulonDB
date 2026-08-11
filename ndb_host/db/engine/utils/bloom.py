@@ -4,7 +4,7 @@ Uses bytearray bits and deterministic zlib.crc32 hashing.
 """
 
 import zlib
-from typing import Any, Optional
+from typing import Any
 
 from .config import DatabaseConfig
 
@@ -16,8 +16,8 @@ class BloomFilter:
     def __init__(
         self,
         num_keys: int,
-        bits_per_key: Optional[int] = None,
-        hash_count: Optional[int] = None
+        bits_per_key: int | None = None,
+        hash_count: int | None = None
     ) -> None:
         # Use config defaults if not provided
         self.bits_per_key = bits_per_key if bits_per_key is not None else DatabaseConfig.BLOOM_FILTER_BITS_PER_KEY
@@ -60,8 +60,8 @@ class BloomFilter:
     def from_bytes(
         data: bytes,
         num_keys: int,
-        bits_per_key: Optional[int] = None,
-        hash_count: Optional[int] = None
+        bits_per_key: int | None = None,
+        hash_count: int | None = None
     ) -> 'BloomFilter':
         """Reconstruct a Bloom filter from its serialised bit array."""
         bf = BloomFilter(num_keys, bits_per_key, hash_count)

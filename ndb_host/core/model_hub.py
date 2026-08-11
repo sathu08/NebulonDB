@@ -2,7 +2,7 @@
 import threading
 
 from pathlib import Path
-from typing import Dict, Any, Optional
+from typing import Any
 
 from ndb_host.utils.constants import ModelType, BatchConfig
 from ndb_host.db.ndb_settings import NDBConfig
@@ -102,7 +102,7 @@ def get_auto_batch_size(model_type: str = ModelType.EMBEDDING) -> BatchConfig:
 # ==========================================================
 
 class NebulonModelHub:
-    _instances: Dict[str, Any] = {}          # model cache: key → loaded model
+    _instances: dict[str, Any] = {}          # model cache: key → loaded model
     _lock = threading.Lock()
 
     def __new__(cls):
@@ -131,7 +131,7 @@ class NebulonModelHub:
         model_repo_id: str,
         model_type: str = ModelType.EMBEDDING,
         is_cache_dir: bool = False,
-        prefix: Optional[str] = None,
+        prefix: str | None = None,
     ):
         """
         Load (and cache) a model. Thread‑safe, single loading per unique repo.

@@ -12,12 +12,12 @@ from fastapi.middleware.cors import CORSMiddleware
 def create_app() -> FastAPI:
     """
     Create and configure the FastAPI application.
-    
+
     Returns:
         FastAPI: Configured FastAPI instance
     """
     app = FastAPI(
-        title="NebulonDB Vector API",
+        title="NebulonDB Nova & Mesh API",
         description="Secure API to manage user access and vector database corpus",
         version="0.1.0",
         openapi_tags=[

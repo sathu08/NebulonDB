@@ -11,7 +11,7 @@ Each row on disk:
 """
 
 
-from typing import Optional, List, Dict, Any
+from typing import Any
 
 from db.engine import NebulonCosmos
 from utils.logger import NebulonDBLogger
@@ -49,9 +49,9 @@ class DocumentStore:
         self,
         record_id: int,
         text: str,
-        metadata: Optional[Dict] = None,
-        label: Optional[str] = None,
-        created_at: Optional[str] = None,
+        metadata: dict | None = None,
+        label: str | None = None,
+        created_at: str | None = None,
     ) -> int:
         doc = {
             FIELD_ID: record_id + ID_OFFSET,
@@ -67,7 +67,7 @@ class DocumentStore:
         self._store.update(self.segment_name, doc)
         return record_id
 
-    def update_metadata(self, record_id: int, metadata: Dict[str, Any]) -> int:
+    def update_metadata(self, record_id: int, metadata: dict[str, Any]) -> int:
         existing = self._store.get_by_id(self.segment_name, record_id + ID_OFFSET)
         if existing is None:
             return 0
@@ -76,13 +76,13 @@ class DocumentStore:
         existing[FIELD_METADATA] = merged
         return self._store.update(self.segment_name, existing)
 
-    def get(self, record_id: int) -> Optional[Dict[str, Any]]:
+    def get(self, record_id: int) -> dict[str, Any] | None:
         return _rename_id(self._store.get_by_id(self.segment_name, record_id + ID_OFFSET))
 
     def delete(self, record_id: int) -> int:
         return self._store.delete(self.segment_name, record_id + ID_OFFSET)
 
-    def read_all(self) -> List[Dict[str, Any]]:
+    def read_all(self) -> list[dict[str, Any]]:
         return [
             _rename_id(dict(rec))
             for rec in self._store.read_all(segment=self.segment_name, include_internal=True)

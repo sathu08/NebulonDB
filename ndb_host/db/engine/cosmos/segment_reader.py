@@ -18,7 +18,6 @@ import struct
 
 from pathlib import Path
 from collections import OrderedDict
-from typing import Dict, Optional, Tuple
 
 from utils.logger import NebulonDBLogger
 
@@ -39,7 +38,7 @@ def validate_segment(
     segment_header_size: int,
     segment_magic: int,
     segment_version: int,
-) -> Tuple[bool, int, Optional[bytes], bool]:
+) -> tuple[bool, int, bytes | None, bool]:
     """
     Read and validate the fixed-size header of *seg_path*.
 
@@ -113,11 +112,11 @@ def read_payload_at_offset(
     seg_dir: Path,
     segment_cache: "OrderedDict[str, tuple]",
     max_open_segments: int,
-    segment_info: Dict[int, dict],
+    segment_info: dict[int, dict],
     compress_segments: bool,
     record_header_size: int,
     record_header_format: str,
-) -> Optional[bytes]:
+) -> bytes | None:
     """
     Return the raw (decompressed, CRC-verified) payload bytes of one record.
 
@@ -185,13 +184,13 @@ def scan_segment_payloads(
     compressed: bool,
     record_header_size: int,
     record_header_format: str,
-) -> "List[Tuple[int, bytes]]":
+) -> "list[tuple[int, bytes]]":
     """
     Sequentially walk one segment and return (offset, payload) for every
     valid record. A single mmap + one pass replaces per-record lookups, so
     batch reads avoid the LRU-cache/bloom/index overhead of read_payload_at_offset.
     """
-    results: "List[Tuple[int, bytes]]" = []
+    results: list[tuple[int, bytes]] = []
     try:
         with seg_path.open("rb") as f:
             mm = mmap.mmap(f.fileno(), 0, access=mmap.ACCESS_READ)

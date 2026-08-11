@@ -46,14 +46,14 @@ class NebulonInitializer:
 
     def bootstrap(self, **kwargs):
         """Bootstrap the NebulonInitializer."""
-        
+
         self.bootstrap_users(**kwargs)
         self.bootstrap_default_corpus()
         self.bootstrap_log_dir()
 
     def initialize(self):
         """Initialize the NebulonInitializer."""
-        
+
         self.initialize_model()
 
     def initialize_model(self):
@@ -62,7 +62,7 @@ class NebulonInitializer:
         logger.info("=" * 60)
         logger.info("Initializing NebulonDB AI Model Hub...")
         logger.info("=" * 60)
-        
+
         total_start = perf_counter()
 
         try:
@@ -142,8 +142,8 @@ class NebulonInitializer:
 
             logger.exception(
                 f"Model initialization failed: {e}"
-            ) 
-    
+            )
+
     def bootstrap_default_corpus(self) -> None:
         """
         Ensure that the default corpus exists.
@@ -231,7 +231,7 @@ class NebulonInitializer:
 
     def bootstrap_log_dir(self):
         """Ensure the log directory exists."""
-        
+
         try:
             log_dir = NDBConfig().NEBULONDB_LOG_PATH
             log_dir.mkdir(parents=True, exist_ok=True)
@@ -251,7 +251,7 @@ class NebulonInitializer:
     ):
         """
         Bootstrap default users if necessary.
-        
+
         Args:
             username (str): Username of the user to create.
             password (str): Password of the user to create.
@@ -262,12 +262,19 @@ class NebulonInitializer:
         """
 
         from ndb_host.services.user_service import create_user as service_create_user
-        
+
         try:
             system_password = generate_password()
-            service_create_user(username=NDBMeta.User.NEBULONDB_USER, password=system_password, user_role=UserRole.SYSTEM)
+            service_create_user(
+                username=NDBMeta.User.NEBULONDB_USER,
+                password=system_password,
+                user_role=UserRole.SYSTEM,
+            )
             service_create_user(username=username, password=password, user_role=user_role)
-            print(f"Default users created successfully. System user password: {system_password} Please store this password securely.")
+            print(
+                f"Default users created successfully. System user password: {system_password} "
+                "Please store this password securely."
+            )
 
         except Exception as e:
             logger.exception(f"Failed to create user: {e}")

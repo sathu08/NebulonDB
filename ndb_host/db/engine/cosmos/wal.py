@@ -8,12 +8,13 @@ Responsibilities:
   - Recovering the WAL on startup (rebuild memtable, flush to segment).
 """
 
+import contextlib
 import os
 import zlib
 import struct
 
 from pathlib import Path
-from typing import Any, Dict, Optional, Set
+from typing import Any
 
 from utils.logger import NebulonDBLogger
 
@@ -31,7 +32,7 @@ logger = NebulonDBLogger().get_logger()
 # ==========================================================
 
 def write_wal_record(
-    wal_handle: Optional[Any],
+    wal_handle: Any | None,
     record_bytes: bytes,
     auto_flush: bool = True,
     bytes_since_fsync: int = 0,
@@ -58,7 +59,7 @@ def write_wal_record(
 
 
 def write_wal_records_batch(
-    wal_handle: Optional[Any],
+    wal_handle: Any | None,
     record_bytes_list: list,
     auto_flush: bool = True,
     bytes_since_fsync: int = 0,
@@ -93,9 +94,9 @@ def write_wal_records_batch(
 
 def recover_wal(
     wal_file: Path,
-    memtable: Dict[int, bytes],
-    deleted: Set[int],
-    meta: Dict[str, Any],
+    memtable: dict[int, bytes],
+    deleted: set[int],
+    meta: dict[str, Any],
     save_meta_fn,  # callable: _save_meta()
 ) -> None:
     """
@@ -151,12 +152,8 @@ def recover_wal(
 
             # Restore segment counters
             segment = rec_dict.get("_segment") or "_main"
-            if isinstance(rec_id, int):
-                if (
-                    segment not in meta["tables"]
-                    or meta["tables"][segment] < rec_id
-                ):
-                    meta["tables"][segment] = rec_id
+            if segment not in meta["tables"] or meta["tables"][segment] < rec_id:
+                meta["tables"][segment] = rec_id
             # Restore global version / record id
             version = rec_dict.get("_version", 0)
             if isinstance(version, int) and version > meta["global_version"]:
@@ -193,9 +190,9 @@ def recover_wal(
 
 def checkpoint_wal(
     wal_file: Path,
-    wal_handle: Optional[Any],
-    memtable: Dict,
-) -> Optional[Any]:
+    wal_handle: Any | None,
+    memtable: dict,
+) -> Any | None:
     """
     Rewrite the WAL file with only the live memtable rows.
 
@@ -223,8 +220,6 @@ def checkpoint_wal(
 
     os.replace(tmp_path, wal_file)
     if wal_handle:
-        try:
+        with contextlib.suppress(Exception):
             wal_handle.close()
-        except Exception:
-            pass
     return wal_file.open("a+b")
