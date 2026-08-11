@@ -240,6 +240,15 @@ class NebulonCosmos:
             self.wal_fsync_interval,
         )
 
+    def _write_wal_records_batch(self, record_bytes_list: List[bytes]) -> None:
+        self._wal_bytes_since_fsync = _wal_mod.write_wal_records_batch(
+            self.wal_handle,
+            record_bytes_list,
+            self.wal_auto_flush,
+            self._wal_bytes_since_fsync,
+            self.wal_fsync_interval,
+        )
+
     def _recover_wal(self) -> None:
         _wal_mod.recover_wal(
             wal_file=self.wal_file,
@@ -498,6 +507,40 @@ class NebulonCosmos:
     def insert(self, segment: str, doc: Dict[str, Any]) -> int:
         doc.pop("id", None)
         return self._write_record(segment, doc, is_delete=False)
+
+    def insert_many(self, segment: str, docs: List[Dict[str, Any]]) -> List[int]:
+        """
+        Bulk insert: encode all docs, append them to the WAL in a single
+        write, and update the memtable under one lock acquisition.
+        """
+        with self._lock:
+            built = []
+            for doc in docs:
+                doc2 = doc.copy()
+                doc2.pop("id", None)
+                rec_bytes, rec_id, _ = self._build_record(segment, doc2, False)
+                built.append(((segment, rec_id), rec_bytes))
+
+            self._write_wal_records_batch([rb for _, rb in built])
+
+            was_empty = not self.memtable
+            rec_ids = []
+            for key, rec_bytes in built:
+                rec_id = key[1]
+                self._deleted.discard(key)
+                self._deleted.discard(rec_id)
+                self.memtable[key] = rec_bytes
+                self.memtable_bytes += len(rec_bytes)
+                rec_ids.append(rec_id)
+            self.wal_count += len(built)
+            if was_empty:
+                self.memtable_oldest_ts = time.time()
+
+            if self.memtable_bytes >= self.max_memtable_bytes:
+                self._flush(force=True)
+
+            logger.debug(f"BULK INSERT {len(built)} records segment={segment}")
+            return rec_ids
 
     def update(self, segment: str, doc: Dict[str, Any]) -> int:
         rec_id = doc.get("id", doc.get("_id"))

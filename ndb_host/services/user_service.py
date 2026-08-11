@@ -237,19 +237,15 @@ def get_current_user(credentials: HTTPBasicCredentials = Depends(http_basic_secu
         logger.debug(f"Attempting authentication for user: {credentials.username}") 
 
         user_record = user_manager.get_user(credentials.username)
-        
-        if not user_record:
-            logger.warning("Invalid credentials")
-            return AuthenticationResult(username=credentials.username, is_authenticated=False, message="Invalid username")
 
-        hashed_password = user_record.get("password")
-        if not hashed_password:
-            logger.error(f"User record missing password hash: {credentials.username}")
-            return AuthenticationResult(username=credentials.username, is_authenticated=False, message="Invalid password")
-
-        if not verify_password(credentials.password, hashed_password):
-            logger.warning(f"Authentication failed - invalid password: {credentials.username}")
-            return AuthenticationResult(username=credentials.username, is_authenticated=False, message="Invalid password")
+        hashed_password = user_record.get("password") if user_record else None
+        if not hashed_password or not verify_password(credentials.password, hashed_password):
+            logger.warning(f"Authentication failed for user: {credentials.username}")
+            return AuthenticationResult(
+                username=credentials.username,
+                is_authenticated=False,
+                message="Invalid credentials"
+            )
 
         user_role = UserRole(user_record.get("role", UserRole.USER.value))
 
@@ -276,14 +272,11 @@ def create_user(username: str, password: str, user_role: str = UserRole.USER.val
         if not username or not username.strip():
             return StandardErrorResponse(success=False, message="Username cannot be empty").model_dump()
 
-        if not password or len(password) < 6:
-            return StandardErrorResponse(success=False, message="Password must be at least 6 characters long").model_dump()
+        if not password or len(password) < 8:
+            return StandardErrorResponse(success=False, message="Password must be at least 8 characters long").model_dump()
 
         validated_role = _validate_user_role(user_role)
         hashed_password = hash_password(password)
-
-        if not hashed_password:
-            return StandardErrorResponse(success=False, message="Password hashing failed").model_dump()
 
         user_data = {
             "password": hashed_password,
@@ -353,12 +346,10 @@ def change_password(username: str, current_password: str, new_password: str) -> 
             logger.warning(f"Password change failed - current password incorrect: {username}")
             return {"success": False, "message": "Current password is incorrect"}
 
-        if not new_password or len(new_password) < 6:
-            return {"success": False, "message": "Password must be at least 6 characters long"}
+        if not new_password or len(new_password) < 8:
+            return {"success": False, "message": "Password must be at least 8 characters long"}
 
         new_hashed_password = hash_password(new_password)
-        if not new_hashed_password:
-            return {"success": False, "message": "Password hashing failed"}
 
         success = user_manager.update_password(username, new_hashed_password)
         if not success:

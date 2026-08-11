@@ -51,12 +51,12 @@ class StandardErrorResponse(BaseModel):
     
 class UserRegistrationRequest(BaseModel):
     username: str = Field(..., min_length=3, max_length=50)
-    password: str = Field(..., min_length=6)
+    password: str = Field(..., min_length=8)
     user_role: str
 
 class ChangePasswordRequest(BaseModel):
-    current_password: str = Field(..., min_length=6)
-    new_password: str = Field(..., min_length=6)
+    current_password: str = Field(..., min_length=8)
+    new_password: str = Field(..., min_length=8)
 
 class DeleteUserRequest(BaseModel):
     username: str = Field(..., min_length=3, max_length=50)

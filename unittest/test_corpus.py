@@ -70,7 +70,7 @@ def test_small_create_wrong_password_rejected(client):
                     json={"corpus_name": corpus_name(), "ndb_type": "cosmos"})
     body = r.json()
     assert body["success"] is False
-    assert "Invalid password" in body["message"]
+    assert "Invalid credentials" in body["message"]
 
 
 def test_small_list_corpus(client):

@@ -57,6 +57,36 @@ def write_wal_record(
     return bytes_since_fsync
 
 
+def write_wal_records_batch(
+    wal_handle: Optional[Any],
+    record_bytes_list: list,
+    auto_flush: bool = True,
+    bytes_since_fsync: int = 0,
+    fsync_interval: int = 65536,
+) -> int:
+    """
+    Append many length-prefixed, CRC-checked records in a single write.
+
+    Used by bulk inserts so N records cost one buffer build, one write and
+    (at most) one fsync instead of N x (write + flush + fsync).
+    """
+    if wal_handle is None or not record_bytes_list:
+        return bytes_since_fsync
+    buf = bytearray()
+    for record_bytes in record_bytes_list:
+        crc = zlib.crc32(record_bytes) & 0xFFFFFFFF
+        buf += struct.pack("<II", crc, len(record_bytes))
+        buf += record_bytes
+    wal_handle.write(bytes(buf))
+    if auto_flush:
+        wal_handle.flush()
+        bytes_since_fsync += len(buf)
+        if bytes_since_fsync >= fsync_interval:
+            os.fsync(wal_handle.fileno())
+            bytes_since_fsync = 0
+    return bytes_since_fsync
+
+
 # ==========================================================
 #  WAL recovery
 # ==========================================================
