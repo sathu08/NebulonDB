@@ -273,7 +273,7 @@ NebulonCosmos (`nebulon_userinfo` segment) and cached in memory.
 
 #### 1.1 `POST /auth/register` — Register a new user
 Create a new user with a specific role. The caller must be an authenticated user.
-Validates username (≥3 chars) and password (≥6 chars), hashes the password with
+Validates username (≥3 chars) and password (≥8 chars), hashes the password with
 bcrypt, and returns a structured response.
 
 ```bash
@@ -299,7 +299,11 @@ curl -X GET "http://localhost:6969/api/NebulonDB/auth/verify" \
 #### 1.3 `POST /auth/change_password` — Change the current user's password
 Changes the password of the currently authenticated user. The caller must supply
 their current password (verified against the stored bcrypt hash) and a new
-password (≥6 chars). Returns an error if the current password is incorrect.
+password (≥8 chars). Returns an error if the current password is incorrect.
+
+> **Auth errors are generic** — failed logins return a uniform
+> `"Invalid credentials"` message (no user-existence hints), and password
+> policy failures are reported as `"Password must be at least 8 characters long"`.
 
 ```bash
 curl -X POST "http://localhost:6969/api/NebulonDB/auth/change_password" \
@@ -425,7 +429,6 @@ segment in the corpus metadata.
 | `is_precomputed` | bool | When true, columns already contain embeddings (no encoding) |
 | `doc_type` | str | Document type tag stored in metadata (e.g. `txt`, `markdown`) |
 | `lang_type` | str | Language tag stored in metadata (e.g. `en`) |
-| `relations` | list | Explicit `[source, target, relation]` tuples to add as **Mesh** graph edges |
 | `relations` | list | Explicit `[source, target, relation]` tuples to add as **Mesh** graph edges |
 | `source_column` | str | Column name holding relation source IDs (auto-detected if omitted) |
 | `target_column` | str | Column name holding relation target IDs (auto-detected if omitted) |
@@ -805,7 +808,47 @@ Within each **ORBIT** corpus, the Cosmos engine stores four normalized tables
 
 ---
 
+## ⚡ Performance & Durability
+
+* **Batched ingestion** — `load_segment` on a `cosmos` corpus now inserts all
+  documents of a column in one call via the engine's `insert_many` (a single
+  lock acquisition and a single WAL write), instead of one WAL write per row.
+  If the batch fails, the engine falls back to row-by-row inserts to isolate
+  the offending records.
+* **Group-commit WAL** — WAL `fsync` is deferred and batched. Bytes are buffered
+  and forced to disk only after `wal_fsync_interval` bytes accumulate
+  (or on a flush/close). Configure it in `[segments]`:
+  ```ini
+  [segments]
+  wal_fsync_interval = 65536   ; bytes written before an fsync is forced
+  ```
+* **Whole-segment scan for batch reads** — `read_all` walks a segment once via
+  a single `mmap` pass (`segment_reader.scan_segment_payloads`), bypassing the
+  per-record LRU-cache / bloom / index lookups that `get` uses.
+* **Engine-level bulk API** — `NebulonCosmos.insert_many(segment, docs)` is
+  available directly to embedders for offline bulk loads.
+
+---
+
 ## 📝 Changelog — recent changes
+
+### Batch Cosmos ingestion + WAL group-commit + auth hardening
+
+* **`insert_many` wired into the API** — `ComosDBManager.insert_many_data`
+  delegates to the engine's `NebulonCosmos.insert_many` (single lock, single
+  WAL append, batched memtable update). `SegmentManager.load_segment` now uses
+  it for every COSMOS column, with a per-row fallback that reports the exact
+  failing rows when the batch errors.
+* **Group-commit WAL** — new `[segments] wal_fsync_interval` setting
+  (default `65536`): `_write_wal_records_batch` appends many records to the WAL
+  in one write and fsyncs only once the buffered byte count is exceeded.
+* **Fast whole-segment reads** — `segment_reader.scan_segment_payloads` reads a
+  full segment with a single mmap pass (single zlib decompression path per
+  record), used by `read_all` for batch/`get_data` retrieval.
+* **Auth hardening** — failed authentication now returns the generic
+  `"Invalid credentials"` message everywhere (no user-existence side channel);
+  minimum password length raised from 6 to **8 characters** for both
+  `/auth/register` and `/auth/change_password`.
 
 ### Normalized 4-table storage + bulk graph load (ORBIT)
 * **Split ORBIT storage into four normalized Cosmos tables**, shared by a common
@@ -834,9 +877,10 @@ Within each **ORBIT** corpus, the Cosmos engine stores four normalized tables
   * `orbit` → original vector path (text → embeddings → `insert_vec`, Mesh
     relation loading, `initialize_or_flush`) — unchanged.
   * `cosmos` → **direct document insert** (no embedding): each non-empty text
-    row is stored via `insert_data(segment, document)` with `text` / `lang` /
-    `type` / `created_at` metadata, then the backend is left to persist via the
-    engine's threshold / background flush (no forced `flush()`).
+    row is stored via `insert_many` (batched per column; falls back to
+    row-by-row `insert_data`) with `text` / `lang` / `type` / `created_at`
+    metadata, then the backend is left to persist via the engine's threshold /
+    background flush (no forced `flush()`).
 * **New `SegmentManager.get_data(limit, include_internal)`** — reads stored
   records from the corpus's own backend:
   * `orbit` → `OrbitDBManager.get_all_records(limit=...)`
@@ -873,15 +917,13 @@ Within each **ORBIT** corpus, the Cosmos engine stores four normalized tables
   `PydanticSerializationError` when `/search_segment` returned JSON.
 
 ### Tests
-* **`tests/test_cosmos_dual_load.py`** — validates COSMOS direct load +
-  `get_data` with `limit`, and ORBIT vector load + `get_data`.
-* **`tests/test_user_noflush.py`** — validates user CRUD durability without
-  explicit `flush()`.
-* **`tests/test_full.py`** — end-to-end API walkthrough (register → change
-  password → verify → create ORBIT/COSMOS corpora → load segments → get_data →
-  delete record (Cosmos + Orbit) → list/search segments). Run:
+* **`unittest/`** — pytest suite hitting the live API (server on
+  `127.0.0.1:6969`, user `sathya`): `test_auth.py` (registration, RBAC,
+  password policy, generic error responses), `test_corpus.py`, `test_segment.py`
+  (load/list/search/stats/record/mesh), `test_system.py`. Run:
   ```bash
-  cd tests/ndb_host
-  PYTHONPATH=/home/sathyaprakash/CodeBase/tests:/home/sathyaprakash/CodeBase/tests/ndb_host \
-      python3 tests/test_full.py
+  cd unittest
+  pytest -v
   ```
+  > ⚠️ Tests expect an 8+-char password; the `sathya:sathya` credential is
+  > created via `nebulondb --create-user` (interactive prompt).

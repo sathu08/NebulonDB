@@ -60,6 +60,9 @@ class ComosDBManager:
     def insert_data(self, segment:str, document: Dict[str, Any]) -> int:
         return self._db.insert(segment, document)
 
+    def insert_many_data(self, segment: str, docs: List[Dict[str, Any]]) -> List[int]:
+        return self._db.insert_many(segment, docs)
+
     def delete_data(self, segment:str, record_id: Any) -> int:
         return self._db.delete(segment, record_id)
 
@@ -811,7 +814,11 @@ class SegmentManager:
             try:
                 if not is_orbit:
                     # COSMOS: store documents directly, no vectorisation.
+                    # Documents are batched and written via the engine's
+                    # single-WAL-write `insert_many`, falling back to
+                    # row-by-row inserts to isolate failing rows.
                     texts = segment_dataset[col].fill_null("").to_list()
+                    batch = []
                     for idx, text in enumerate(texts):
                         if not text.strip():
                             total_skipped += 1
@@ -823,14 +830,25 @@ class SegmentManager:
                             "created_at": created_at,
                         }
                         document = MetadataRetention.apply(document)
+                        batch.append(document)
+                    if batch:
                         try:
-                            self.db_manager.insert_data(
+                            self.db_manager.insert_many_data(
                                 segment=self.segment_name,
-                                document=document,
+                                docs=batch,
                             )
-                            total_inserted += 1
+                            total_inserted += len(batch)
                         except Exception as e:
-                            errors.append(f"Cosmos Row {idx} in {col}: {e}")
+                            errors.append(f"Cosmos batch in {col}: {e}")
+                            for idx, document in enumerate(batch):
+                                try:
+                                    self.db_manager.insert_data(
+                                        segment=self.segment_name,
+                                        document=document,
+                                    )
+                                    total_inserted += 1
+                                except Exception as err:
+                                    errors.append(f"Cosmos Row {idx} in {col}: {err}")
                     continue
 
                 if is_precomputed:
