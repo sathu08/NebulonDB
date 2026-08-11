@@ -75,7 +75,13 @@ class NebulonOrbit:
         self._store = NebulonCosmos(db_dir, reset=reset)
 
         # NOVA Config
-        nova_segment = config.NOVA_SEGMENT_NAME
+        # Record-store segments are derived from `segment_name` so that
+        # different orbit segments of the same corpus keep their vector /
+        # document / mesh rows isolated in separate COSMOS segments. Without
+        # this, every segment shares the fixed `nebulon_nova` etc. record
+        # stores and rebuilds leak records across users.
+        nova_segment = f"{config.NOVA_SEGMENT_NAME}_{segment_name}"
+        docs_segment = f"{config.DOCUMENTS_SEGMENT_NAME}_{segment_name}"
         dim = config.VECTOR_DIM
         space = config.VECTOR_SPACE.lower()
         M = config.VECTOR_M
@@ -88,7 +94,7 @@ class NebulonOrbit:
         self.nova_wal_path = nova_dir / config.NOVA_WAL.name
         self.compaction_deleted_ratio = config.COMPACTION_DELETED_RATIO
         self.nova_store = NovaStore(self._store, nova_segment)
-        self.doc_store = DocumentStore(self._store, config.DOCUMENTS_SEGMENT_NAME)
+        self.doc_store = DocumentStore(self._store, docs_segment)
 
         self.nova_engine = NovaEngine(
             dim=dim, space=space, M=M,
@@ -99,10 +105,10 @@ class NebulonOrbit:
             nova_config_path=nova_config_path,
         )
 
-        # MESH Config
-        mesh_segment = config.MESH_SEGMENT_NAME
-        node_segment = config.MESH_NODE_SEGMENT_NAME
-        edge_segment = config.MESH_EDGE_SEGMENT_NAME
+        # MESH Config (record segments derived from segment_name, see NOVA)
+        mesh_segment = f"{config.MESH_SEGMENT_NAME}_{segment_name}"
+        node_segment = f"{config.MESH_NODE_SEGMENT_NAME}_{segment_name}"
+        edge_segment = f"{config.MESH_EDGE_SEGMENT_NAME}_{segment_name}"
         self.mesh_graph_viz_html = config.MESH_GRAPH_VIZ_HTML
         self.mesh_engine = MeshEngine(
             store=self._store,
