@@ -334,7 +334,7 @@ def delete_user(username: str) -> dict[str, str]:
 #        Password Change
 # ==========================================================
 
-def change_password(username: str, current_password: str, new_password: str) -> dict[str, str]:
+def change_password(username: str, current_password: str | None, new_password: str) -> dict[str, str]:
     try:
         logger.info(f"Attempting to change password for user: {username}")
 
@@ -343,10 +343,11 @@ def change_password(username: str, current_password: str, new_password: str) -> 
             logger.warning(f"Password change failed - user not found: {username}")
             return {"success": False, "message": "User not found"}
 
-        hashed_password = user_record.get("password")
-        if not hashed_password or not verify_password(current_password, hashed_password):
-            logger.warning(f"Password change failed - current password incorrect: {username}")
-            return {"success": False, "message": "Current password is incorrect"}
+        if current_password:
+            hashed_password = user_record.get("password")
+            if not hashed_password or not verify_password(current_password, hashed_password):
+                logger.warning(f"Password change failed - current password incorrect: {username}")
+                return {"success": False, "message": "Current password is incorrect"}
 
         if not new_password or len(new_password) < 8:
             return {"success": False, "message": "Password must be at least 8 characters long"}

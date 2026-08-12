@@ -943,11 +943,19 @@ async def mesh_visualization(
                 segment_name=segment_query.segment_name,
                 message=error_msg
             )
+
+        html = ""
+        if html_path and html_path.exists():
+            try:
+                html = html_path.read_text(encoding="utf-8")
+            except OSError:
+                html = ""
+
         return StandardResponse(
             success=True,
             corpus_name=segment_query.corpus_name,
             segment_name=segment_query.segment_name,
-            data={"html_path": str(html_path)},
+            data={"html": html, "html_path": str(html_path)},
             message="Mesh visualization HTML generated"
         )
     except Exception as e:

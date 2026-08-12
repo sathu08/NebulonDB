@@ -4,44 +4,52 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Dashboard - NebulonDB</title>
-  <link rel="stylesheet" href="/assets/css/style.css">
+  <link rel="stylesheet" href="/assets/css/style.css?v=7">
 </head>
 <body class="dash-body">
-  <aside class="sidebar">
+  <aside class="sidebar" id="sidebar">
     <div class="sidebar-head">
-      <div class="sidebar-brand">
+      <div class="sidebar-brand" id="brandExpand" title="NebulonDB">
         <div class="brand-logo">N</div>
-        <div>
+        <div class="brand-text">
           <div class="brand-name">NebulonDB</div>
           <div class="brand-sub">Nova &amp; Mesh database console</div>
         </div>
       </div>
+      <button type="button" class="btn btn-ghost btn-sm sidebar-toggle-btn" id="sidebarIconToggle" title="Toggle sidebar" aria-label="Toggle sidebar">«</button>
     </div>
 
     <div class="sidebar-search">
-      <input id="corpusSearch" class="input" type="text" placeholder="Search corpora...">
+      <form autocomplete="off" onsubmit="return false;">
+        <input id="corpusSearch" class="input" type="text" placeholder="Search corpora..." name="corpus_search" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false" data-lpignore="true" data-1p-ignore="true" aria-label="Search corpora">
+      </form>
+    </div>
+
+    <div class="sidebar-list-head">
+      <span class="small muted">Corpora</span>
     </div>
 
     <div class="sidebar-list" id="corpusList"></div>
 
-    <div class="sidebar-head" style="border-top:1px solid var(--border);">
+    <div class="sidebar-head sidebar-foot" style="border-top:1px solid var(--border);">
       <button class="btn btn-primary" id="newCorpusBtn" style="width:100%;">+ New corpus</button>
     </div>
+    <div class="sidebar-drag" id="sidebarDrag" title="Drag to resize sidebar"></div>
   </aside>
 
   <div class="main">
     <header class="topbar">
       <div class="topbar-title" id="topbarTitle">Overview</div>
       <div class="topbar-right">
-        <div class="user-chip" id="userChip" title="Account">
-          <div class="user-avatar" id="userAvatar">U</div>
+        <div class="user-chip" id="userChip" role="button" tabindex="0" title="Account">
+          <div class="user-avatar" id="userAvatar" aria-hidden="true">U</div>
           <div class="user-info">
             <span class="user-name" id="userName">—</span>
             <span class="user-role" id="userRole">—</span>
           </div>
         </div>
-        <button class="btn btn-ghost btn-sm" id="settingsBtn" title="Settings">⚙️ Settings</button>
-        <button class="btn btn-ghost btn-sm" id="logoutBtn">Sign out</button>
+        <button type="button" class="btn btn-ghost btn-sm" id="settingsBtn" title="Settings">⚙️ <span>Settings</span></button>
+        <button type="button" class="btn btn-ghost btn-sm" id="logoutBtn">Sign out</button>
       </div>
     </header>
 
@@ -131,7 +139,7 @@
     </div>
   </div>
 
-  <script src="/assets/js/api.js"></script>
-  <script src="/assets/js/dashboard.js"></script>
+  <script src="/assets/js/api.js?v=7"></script>
+  <script src="/assets/js/dashboard.js?v=7"></script>
 </body>
 </html>

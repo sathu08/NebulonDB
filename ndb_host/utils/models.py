@@ -55,7 +55,7 @@ class UserRegistrationRequest(BaseModel):
     user_role: str
 
 class ChangePasswordRequest(BaseModel):
-    current_password: str = Field(..., min_length=8)
+    current_password: str | None = Field(default=None, max_length=256)
     new_password: str = Field(..., min_length=8)
 
 class DeleteUserRequest(BaseModel):

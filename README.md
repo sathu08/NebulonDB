@@ -6,7 +6,7 @@ on a custom storage engine. It combines a durable **LSM-tree** key/value store
 (vector similarity) and **Mesh** (graph traversal) — exposed through a secure
 **FastAPI** REST API.
 
-> 🔗 **Architecture** — See [Architecture & Engine Overview](ndb_host/db/engine/OVERVIEW.md)
+> 🔗 **Architecture** — See [Architecture & Engine Overview](docs/NDBENGINE.md)
 > for detailed diagrams and explanations of the `NebulonCosmos` and
 > `NebulonOrbit` engines (memtable/WAL/segments/compaction, HNSW generations,
 > Mesh persistence, ranking pipeline).
@@ -40,7 +40,7 @@ vector hits, then Mesh expands around them (and an optional seed node) through
 graph neighbors.
 
 > Every code module, class and file layout behind Nova and Mesh is documented
-> in the [Architecture & Engine Overview](ndb_host/db/engine/OVERVIEW.md).
+> in the [Architecture & Engine Overview](docs/NDBENGINE.md).
 
 ---
 
@@ -118,7 +118,7 @@ The engine is split into two packages under `ndb_host/db/engine/`:
 Full architecture diagrams, component tables, on-disk layout, and write/read
 path explanations are in the dedicated overview document:
 
-➡️ **[Architecture & Engine Overview](ndb_host/db/engine/OVERVIEW.md)**
+➡️ **[Architecture & Engine Overview](docs/NDBENGINE.md)**
 
 ```
 ndb_host/
@@ -136,7 +136,7 @@ ndb_host/
 │   │   ├── cosmos/         # storage engine submodules
 │   │   ├── orbit/          # search engine submodules
 │   │   ├── utils/          # config, serializer, bloom, models, constants
-│   │   └── OVERVIEW.md     # architecture & engine documentation
+│   │   └── (docs → docs/NDBENGINE.md)  # engine docs live in the repo docs/
 │   ├── index_manager.py    # CorpusManager / SegmentManager orchestration
 │   └── ndb_settings.py     # NDBConfig (paths, model, tuning settings)
 ├── services/
@@ -253,6 +253,10 @@ nebulondb start
 ```
 The server will start on `http://localhost:6969` (default). Interactive API docs
 are available at `http://localhost:6969/docs`.
+
+> 📄 Every `nebulondb.cfg` option (server, segments, vector/HNSW, ranking, models,
+> warmup/cache toggles) is documented in
+> [docs/CONFIGURATION.md](docs/CONFIGURATION.md).
 
 ### 3. Authentication & RBAC
 All endpoints use **HTTP Basic Authentication**. The user store is persisted in

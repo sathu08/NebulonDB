@@ -41,6 +41,7 @@ class MeshEngine:
             edge_segment: str,
             mesh_graph_viz_html: str | None = None,
         ):
+        
         self._store = MeshStore(
             store, node_segment, edge_segment, mesh_graph_viz_html
         )

@@ -267,8 +267,6 @@ def start_server(cfg: NDBConfig, foreground: bool = False):
     accounthub_corpus_path = cfg.NEBULONDB_ACCOUNTHUB_CORPUS_PATH
     default_corpus_path = cfg.NEBULONDB_DEFAULT_CORPUS_PATH
 
-    clear_pycache()
-
     if not (accounthub_corpus_path.exists() and default_corpus_path.exists()):
         logger.info("Please create user credentials first using:")
         logger.info("nebulondb --create-user")
@@ -291,8 +289,12 @@ def start_server(cfg: NDBConfig, foreground: bool = False):
         logger.info("Server is already listening on %s:%s.", cfg.HOST, cfg.PORT)
         return
 
-    initializer = NebulonInitializer()
-    initializer.initialize()
+    logger.info("We are Working on Starting the NebulonDB Server...")
+    if cfg.NEBULONDB_CLEAR_CACHE:
+        logger.info("Clearing Python bytecode and cache files...")
+        clear_pycache()
+        logger.info("Cleared Python bytecode and cache files...")
+    logger.info("Models will warm up in the background inside each worker after start.")
 
     # --- Resolve gunicorn log file targets (default to NDB log dir) ---
     log_path = cfg.NEBULONDB_LOG_PATH

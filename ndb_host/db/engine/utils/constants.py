@@ -5,6 +5,7 @@ fixed binary format strings, and graph (mesh) visualisation constants.
 
 import struct
 
+from pathlib import Path
 from dataclasses import dataclass
 from typing import Any
 
@@ -134,6 +135,14 @@ searchInput.addEventListener('input', function(e) {
 </body>
 </html>"""
 
+# -------------------- Bundled Cytoscape.js asset --------------------
+# Vendored Cytoscape.js library served from the web assets folder and
+# inlined into generated mesh visualisation HTML so the graph renders in
+# sandboxed iframes and offline environments. Resolved relative to this
+# file (ndb_host/db/engine/utils -> ndb_host/web_dir).
+CYTO_BUNDLE_PATH: Path = (
+    Path(__file__).resolve().parents[3] / "web_dir" / "assets" / "js" / "cytoscape.min.js"
+)
 
 @dataclass(frozen=True)
 class NebulonRenderOptions:

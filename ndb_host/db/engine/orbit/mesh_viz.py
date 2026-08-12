@@ -25,6 +25,7 @@ from db.engine.utils.constants import (
     LAYOUTS,
     RENDER_OPTIONS,
     DEFAULT_TEMPLATE,
+    CYTO_BUNDLE_PATH,
     NebulonConfig,
     NebulonColors,
     NebulonRenderOptions,
@@ -32,6 +33,10 @@ from db.engine.utils.constants import (
 from utils.logger import NebulonDBLogger
 
 logger = NebulonDBLogger().get_logger()
+
+# CDN tag in the templates that gets replaced by the bundled library
+# (CYTO_BUNDLE_PATH in db.engine.utils.constants).
+CYTO_CDN_TAG = '<script src="https://unpkg.com/cytoscape/dist/cytoscape.min.js"></script>'
 
 # ---------- Type aliases ----------
 NebulonNodeStyle = dict[str, Any]
@@ -251,6 +256,21 @@ class NebulonCytoscapeGraph:
     def _final_layout(self, profile: NebulonGraphProfile) -> NebulonLayout:
         return profile.layout
 
+    def _inline_cytoscape(self, html: str) -> str:
+        """Replace the CDN Cytoscape <script src> tag with the bundled library.
+
+        Sandboxed iframes get an opaque origin that blocks loading the remote
+        CDN script, leaving the graph blank. Inlining the library makes the
+        visualization self-contained and offline-capable.
+        """
+        if CYTO_CDN_TAG not in html:
+            return html
+        if not CYTO_BUNDLE_PATH.exists():
+            logger.warning("Cytoscape bundle missing at %s; keeping CDN tag", CYTO_BUNDLE_PATH)
+            return html
+        bundle = CYTO_BUNDLE_PATH.read_text(encoding="utf-8")
+        return html.replace(CYTO_CDN_TAG, f"<script>\n{bundle}\n</script>")
+
     def _render_html(
         self,
         elements: list[dict],
@@ -264,7 +284,8 @@ class NebulonCytoscapeGraph:
             if template_path.exists()
             else DEFAULT_TEMPLATE
         )
-        html = template.replace("__ELEMENTS_JSON__", json.dumps(elements))
+        html = self._inline_cytoscape(template)
+        html = html.replace("__ELEMENTS_JSON__", json.dumps(elements))
         html = html.replace("__LAYOUT_JSON__", json.dumps(final_layout))
         html = html.replace("__NODE_STYLE__", json.dumps(node_style))
         html = html.replace("__EDGE_STYLES__", json.dumps(edge_styles))

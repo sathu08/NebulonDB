@@ -177,6 +177,9 @@ class NDBConfig:
         self.NEBULONDB_CROSS_ENCODER_MODEL_DEVICE = self._config.get(
             'llm', 'NEBULONDB_CROSS_ENCODER_MODEL_DEVICE', fallback=''
         )
+        self.NEBULONDB_WARM_MODELS = self._config.getboolean(
+            'llm', 'NEBULONDB_WARM_MODELS', fallback=True
+        )
 
     def _load_logging(self):
         self.LOG_RETENTION_DAYS = self._config.getint(
@@ -236,6 +239,9 @@ class NDBConfig:
         self.ACCESS_LOGFILE = self._config.get('server', 'ACCESS_LOGFILE', fallback='')
         self.ERROR_LOGFILE = self._config.get('server', 'ERROR_LOGFILE', fallback='')
         self.LOG_LEVEL = self._config.get('server', 'LOG_LEVEL', fallback='info')
+        self.NEBULONDB_CLEAR_CACHE = self._config.getboolean(
+            'server', 'NEBULONDB_CLEAR_CACHE', fallback=True
+        )
 
     def update_model_config(self, device: str, batch_size: int, model_type: str):
         section = 'llm'

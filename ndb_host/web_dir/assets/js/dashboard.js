@@ -441,7 +441,7 @@ function showMeshModal(segmentName, html) {
   els.modalTitle.textContent = "Mesh visualization — " + segmentName;
   els.modalOverlay.querySelector(".modal").classList.add("modal-wide");
   els.modalBody.innerHTML = `
-    <iframe class="mesh-frame" src="about:blank" sandbox="allow-scripts allow-modals allow-popups allow-forms"></iframe>`;
+    <iframe class="mesh-frame" src="about:blank"></iframe>`;
   els.modalFoot.innerHTML = `
     <button class="btn btn-ghost" id="mCancel">Close</button>`;
   els.modalOverlay.classList.add("show");
@@ -590,22 +590,29 @@ function openUserModal() {
       </div>
     </div>
 
-    <div class="account-section">
-      <div class="section-label">Change password</div>
-      <div class="field">
-        <label for="uCurrentPwd">Current password</label>
-        <input id="uCurrentPwd" class="input" type="password" autocomplete="current-password" placeholder="Current password">
+    <form autocomplete="off" action="#" onsubmit="return false;" novalidate>
+      <div class="account-section">
+        <div class="section-label">Change password</div>
+        <input type="text" name="ndb_username" autocomplete="username" value="${escapeHtml(name)}" class="autofill-honeypot" aria-hidden="true" tabindex="-1">
+        <div class="field">
+          <label for="uCurrentPwd">Current password</label>
+          <div class="pwd-wrap">
+            <input id="uCurrentPwd" class="input" type="password" autocomplete="current-password" placeholder="Locked" value="" disabled>
+            <span class="pwd-lock" aria-hidden="true">🔒</span>
+          </div>
+          <p class="small muted mt-16" style="margin-top:6px;">Locked — the current password is not required.</p>
+        </div>
+        <div class="field">
+          <label for="uNewPwd">New password</label>
+          <input id="uNewPwd" class="input" type="password" autocomplete="new-password" placeholder="At least 8 characters">
+        </div>
+        <div class="field">
+          <label for="uConfirmPwd">Confirm new password</label>
+          <input id="uConfirmPwd" class="input" type="password" autocomplete="new-password" placeholder="Repeat new password">
+        </div>
+        <button type="submit" class="btn btn-primary" id="uChangePwdBtn">Change password</button>
       </div>
-      <div class="field">
-        <label for="uNewPwd">New password</label>
-        <input id="uNewPwd" class="input" type="password" autocomplete="new-password" placeholder="At least 6 characters">
-      </div>
-      <div class="field">
-        <label for="uConfirmPwd">Confirm new password</label>
-        <input id="uConfirmPwd" class="input" type="password" autocomplete="new-password" placeholder="Repeat new password">
-      </div>
-      <button class="btn btn-primary" id="uChangePwdBtn">Change password</button>
-    </div>
+    </form>
 
     <div class="divider"></div>
 
@@ -645,12 +652,12 @@ function openUserModal() {
     const current = document.getElementById("uCurrentPwd").value;
     const next = document.getElementById("uNewPwd").value;
     const confirmVal = document.getElementById("uConfirmPwd").value;
-    if (!current || !next) {
-      showToast("Current and new password are required.", "error");
+    if (!next) {
+      showToast("New password is required.", "error");
       return;
     }
-    if (next.length < 6) {
-      showToast("New password must be at least 6 characters.", "error");
+    if (next.length < 8) {
+      showToast("New password must be at least 8 characters.", "error");
       return;
     }
     if (next !== confirmVal) {
@@ -660,7 +667,7 @@ function openUserModal() {
     const btn = document.getElementById("uChangePwdBtn");
     btn.disabled = true;
     try {
-      const resp = await AuthAPI.changePassword(current, next);
+      const resp = await AuthAPI.changePassword(current || "", next);
       if (!resp.success) throw new Error(resp.message || "Password change failed");
       document.getElementById("uCurrentPwd").value = "";
       document.getElementById("uNewPwd").value = "";
@@ -716,7 +723,21 @@ function openUserModal() {
   }
 }
 
-document.getElementById("userChip").addEventListener("click", openUserModal);
+const userChipEl = document.getElementById("userChip");
+userChipEl.addEventListener("click", (e) => {
+  e.preventDefault();
+  e.stopPropagation();
+  if (document.activeElement && document.activeElement.blur) {
+    document.activeElement.blur();
+  }
+  openUserModal();
+});
+userChipEl.addEventListener("keydown", (e) => {
+  if (e.key === "Enter" || e.key === " ") {
+    e.preventDefault();
+    openUserModal();
+  }
+});
 
 const SETTINGS_LABELS = {
   app_name: "App name", host: "Host", port: "Port", workers: "Workers",
@@ -821,6 +842,74 @@ document.getElementById("newCorpusBtn").addEventListener("click", () => {
   }
   openCreateCorpusModal();
 });
+
+const sidebarEl = document.getElementById("sidebar");
+const sidebarToggleEl = document.getElementById("sidebarIconToggle");
+const sidebarDragEl = document.getElementById("sidebarDrag");
+
+function setSidebarIcon() {
+  sidebarToggleEl.textContent = sidebarEl.classList.contains("collapsed") ? "»" : "«";
+}
+
+if (localStorage.getItem("ndb_sidebar_collapsed") === "1") {
+  sidebarEl.classList.add("collapsed");
+}
+setSidebarIcon();
+
+sidebarToggleEl.addEventListener("click", () => {
+  sidebarEl.classList.toggle("collapsed");
+  setSidebarIcon();
+  localStorage.setItem("ndb_sidebar_collapsed", sidebarEl.classList.contains("collapsed") ? "1" : "0");
+});
+
+document.getElementById("brandExpand").addEventListener("click", () => {
+  if (sidebarEl.classList.contains("collapsed")) {
+    sidebarEl.classList.remove("collapsed");
+    setSidebarIcon();
+    localStorage.setItem("ndb_sidebar_collapsed", "0");
+  }
+});
+
+let sidebarDragging = false;
+let sidebarStartX = 0;
+let sidebarStartW = 0;
+
+sidebarDragEl.addEventListener("pointerdown", (e) => {
+  sidebarDragging = true;
+  sidebarStartX = e.clientX;
+  sidebarStartW = sidebarEl.offsetWidth;
+  sidebarEl.classList.add("resizing");
+  sidebarEl.classList.remove("collapsed");
+  sidebarEl.style.width = sidebarStartW + "px";
+  sidebarEl.style.minWidth = sidebarStartW + "px";
+  sidebarDragEl.setPointerCapture(e.pointerId);
+  e.preventDefault();
+});
+
+sidebarDragEl.addEventListener("pointermove", (e) => {
+  if (!sidebarDragging) return;
+  const w = Math.min(360, Math.max(80, sidebarStartW + (e.clientX - sidebarStartX)));
+  sidebarEl.style.width = w + "px";
+  sidebarEl.style.minWidth = w + "px";
+});
+
+function sidebarDragEnd() {
+  if (!sidebarDragging) return;
+  sidebarDragging = false;
+  sidebarEl.classList.remove("resizing");
+  sidebarEl.style.width = "";
+  sidebarEl.style.minWidth = "";
+  if (sidebarEl.offsetWidth < 170) {
+    sidebarEl.classList.add("collapsed");
+    localStorage.setItem("ndb_sidebar_collapsed", "1");
+  } else {
+    localStorage.setItem("ndb_sidebar_collapsed", "0");
+  }
+  setSidebarIcon();
+}
+
+sidebarDragEl.addEventListener("pointerup", sidebarDragEnd);
+sidebarDragEl.addEventListener("pointercancel", sidebarDragEnd);
 
 function closeModal() {
   els.modalOverlay.querySelector(".modal").classList.remove("modal-wide");

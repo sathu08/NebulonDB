@@ -14,6 +14,7 @@ Top-level orchestration layer integrating vector, graph, and ranking subsystems,
 
 import os
 import json
+import re
 import threading
 
 import contextlib
@@ -111,7 +112,13 @@ class NebulonOrbit:
         mesh_segment = f"{config.MESH_SEGMENT_NAME}_{segment_name}"
         node_segment = f"{config.MESH_NODE_SEGMENT_NAME}_{segment_name}"
         edge_segment = f"{config.MESH_EDGE_SEGMENT_NAME}_{segment_name}"
-        self.mesh_graph_viz_html = config.MESH_GRAPH_VIZ_HTML
+
+        # Per-segment visualization file so different segments of the same
+        # corpus never overwrite each other's HTML graph output.
+        safe_segment = re.sub(r"[^A-Za-z0-9._-]", "_", segment_name) or "default"
+        self.mesh_graph_viz_html = (
+            config.NEBULON_MESH_DIR / f"mesh_graph_visualization_{safe_segment}.html"
+        )
         self.mesh_engine = MeshEngine(
             store=self._store,
             mesh_segment=mesh_segment,
