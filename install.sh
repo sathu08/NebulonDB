@@ -174,6 +174,15 @@ log "Installing NebulonDB dependencies..."
 uv sync --python "$PYTHON_VERSION"
 
 # ------------------------------------------------------------
+# Optional ML / Vector Extras (off by default)
+# ------------------------------------------------------------
+
+if [[ "${NEBULONDB_INSTALL_ML:-0}" == "1" ]]; then
+    log "Installing optional ML/vector extras (CPU-only torch)..."
+    uv sync --python "$PYTHON_VERSION" --extra ml
+fi
+
+# ------------------------------------------------------------
 # Activate Virtual Environment
 # ------------------------------------------------------------
 

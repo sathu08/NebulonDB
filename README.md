@@ -167,13 +167,32 @@ persisting `NEBULONDB_HOME`.
 
 **Linux / macOS:**
 ```bash
-curl -fsSL https://raw.githubusercontent.com/sathu08/NebulonDB/dev/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/sathu08/NebulonDB/master/install.sh | bash
 ```
 
 **Windows (PowerShell):**
 ```powershell
-irm https://raw.githubusercontent.com/sathu08/NebulonDB/dev/install.bat -OutFile "$env:TEMP\install.bat"; & "$env:TEMP\install.bat"
+irm https://raw.githubusercontent.com/sathu08/NebulonDB/master/install.bat -OutFile "$env:TEMP\install.bat"; & "$env:TEMP\install.bat"
 ```
+
+> **Install with ML / vector extras (optional):** the default install ships the
+> slim core (~240 MB) — enough for document, graph, BM25 and HNSW search.
+> Semantic embeddings (torch/sentence-transformers) need the `ml` extra
+> (~1.4 GB). Set the `NEBULONDB_INSTALL_ML=1` environment variable before the
+> installer runs:
+>
+> **Linux / macOS:**
+> ```bash
+> curl -fsSL https://raw.githubusercontent.com/sathu08/NebulonDB/master/install.sh | NEBULONDB_INSTALL_ML=1 bash
+> ```
+>
+> **Windows (PowerShell):**
+> ```powershell
+> $env:NEBULONDB_INSTALL_ML="1"; irm https://raw.githubusercontent.com/sathu08/NebulonDB/master/install.bat -OutFile "$env:TEMP\install.bat"; & "$env:TEMP\install.bat"
+> ```
+>
+> You can also enable it later in an existing install with
+> `uv sync --extra ml` from the NebulonDB directory.
 
 Alternatively, run the installers from a local clone:
 
@@ -186,7 +205,7 @@ install.bat              # Windows (Command Prompt)
 
 What the installer does:
 
-1. Clones the `dev` branch into `~/CodeBase/NebulonDB` (Linux/macOS) or
+1. Clones the `master` branch into `~/CodeBase/NebulonDB` (Linux/macOS) or
    `%USERPROFILE%\CodeBase\NebulonDB` (Windows).
 2. Installs `uv` if it is not already available.
 3. Installs **Python 3.10** via `uv` (only if not found).
@@ -196,8 +215,38 @@ What the installer does:
    (user-level environment variable) on Windows.
 
 > Re-running the installer updates an existing clone by fetching the latest
-> `dev` branch with `git pull --ff-only`. Dependencies are kept in sync with
+> `master` branch with `git pull --ff-only`. Dependencies are kept in sync with
 > `pyproject.toml`.
+
+### Updating & Changing Extras
+
+An existing install can be updated to the latest code, or switched between the
+slim core and the ML/vector extras — all from the NebulonDB directory
+(`~/CodeBase/NebulonDB` on Linux/macOS, `%USERPROFILE%\CodeBase\NebulonDB` on
+Windows).
+
+**Update the code to the latest `master` branch:**
+```bash
+nebulondb stop          # stop the server before updating
+git pull                # pull the latest master branch
+uv sync                 # refresh the virtual environment (core-only)
+nebulondb start         # restart the server
+```
+
+**Add the ML / vector extras later (torch, sentence-transformers, ~1.4 GB):**
+```bash
+uv sync --extra ml
+```
+Windows (Command Prompt): use `uv sync --python 3.10 --extra ml`. The running
+server reuses the cached model after a restart.
+
+**Remove the ML extras and shrink back to the slim core (~240 MB):**
+```bash
+uv sync                 # prunes packages no longer in the dependency set
+```
+
+> The default install only attempts an embedding warmup if the `ml` extras are
+> present — a core-only server starts cleanly without the extra dependencies.
 
 ### Manual Installation (uv)
 

@@ -73,6 +73,7 @@ class SegmentQueryRequest(BaseModel):
     segment_dataset: dict[str, list[Any]] | list[dict[str, Any]] | None = None
     set_columns: str | list[str] | None = None
     search_item: str | None = None
+    query_vector: list[float] | None = None
     doc_type: str | None = None
     lang_type: str | None = None
 

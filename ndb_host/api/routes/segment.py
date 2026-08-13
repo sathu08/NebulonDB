@@ -358,6 +358,7 @@ async def search_segment(
         corpus_name = segment_query.corpus_name
         segment_name = segment_query.segment_name
         search_item = segment_query.search_item
+        query_vector = segment_query.query_vector
         doc_type = segment_query.doc_type
         lang_type = segment_query.lang_type
         set_columns = segment_query.set_columns or ColumnPick.ALL
@@ -384,19 +385,20 @@ async def search_segment(
         if not current_user.is_authenticated:
             return _unauth_response(segment_query)
 
-        if not search_item or not search_item.strip():
+        if (not search_item or not search_item.strip()) and not query_vector:
             return StandardResponse(
                 success=False,
                 corpus_name=corpus_name,
                 segment_name=segment_name,
-                message="search_item must not be empty"
+                message="search_item or query_vector must be provided"
             )
 
         logger.info(
             f"User '{current_user.username}' is attempting to search in corpus '{corpus_name}'"
         )
         vector_results = segment_manager.search_vector(
-            search_item=search_item,
+            search_item=search_item or "",
+            query_vector=query_vector,
             top_k=(top_matches or 10) * 2,
             set_columns=set_columns,
             min_score=min_score,

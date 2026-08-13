@@ -8,6 +8,7 @@ It provides endpoints for index creation, listing, and deletion.
 """
 
 import shutil
+import importlib.util
 import numpy as np
 import polars as pl
 
@@ -27,6 +28,18 @@ from utils.time_utils import utc_now_iso
 # ==========================================================
 
 config_settings = NDBConfig()
+
+ML_INSTALL_HINT = (
+    "This operation requires the 'ml' extras (sentence-transformers) for "
+    "on-the-fly vectorisation, but they are not installed. Install them with "
+    "`uv sync --extra ml` in the NebulonDB directory and retry, or pass "
+    "pre-computed embeddings instead of relying on the embedding model."
+)
+
+
+def _ml_available() -> bool:
+    """True when the ML/embedding stack (sentence-transformers) is installed."""
+    return importlib.util.find_spec("sentence_transformers") is not None
 
 class ComosDBManager:
     _instances: dict[str, "ComosDBManager"] = {}
@@ -910,6 +923,12 @@ class SegmentManager:
                         total_skipped += 1
                         continue
 
+                    # NOT pre-computed: we must embed the text ourselves, which
+                    # requires the optional ml stack (sentence-transformers).
+                    if not _ml_available():
+                        errors.append(f"Column '{col}': {ML_INSTALL_HINT}")
+                        continue
+
                     embeddings = self.embedding_model.encode(
                         texts,
                         convert_to_numpy=True,
@@ -1003,7 +1022,7 @@ class SegmentManager:
 
     def search_vector(
         self,
-        search_item:str,
+        search_item: str,
         top_k: int | None = None,
         set_columns: list[str] | None = None,
         min_score: float | None = None,
@@ -1015,12 +1034,16 @@ class SegmentManager:
         expand_depth: int | None = None,
         graph_boost: float | None = None,
         lang: str | None = None,
+        query_vector: list[float] | None = None,
     ) -> list[dict[str, Any]]:
         """
         Search for nearest neighbors of a vector across all segments in a namespace.
 
         Args:
             search_item (str): The text query.
+            query_vector (list[float], optional): Pre-computed query embedding.
+                           When supplied, the embedding model is skipped entirely,
+                           so search works on a core-only install (no 'ml' extras).
             top_k (int): Number of top results to return.
             set_columns (list): Restrict returned metadata to these columns.
             min_score (float): Minimum normalised score threshold in [0.0, 1.0].
@@ -1058,11 +1081,24 @@ class SegmentManager:
             filter_["type"] = doc_type
 
 
-        query_vec = self.embedding_model.encode(
-                    search_item,
-                    convert_to_numpy=True,
-                    normalize_embeddings=True
-                ).astype("float32")
+        query_vec = (
+            np.asarray(query_vector, dtype=np.float32)
+            if query_vector is not None
+            else None
+        )
+        if query_vec is not None and query_vec.size == 0:
+            raise ValueError("query_vector must contain at least one element")
+
+        if query_vec is None:
+            # No pre-computed vector supplied: embedding the query text on the
+            # fly requires the optional ml stack (sentence-transformers).
+            if not _ml_available():
+                raise RuntimeError(ML_INSTALL_HINT)
+            query_vec = self.embedding_model.encode(
+                search_item,
+                convert_to_numpy=True,
+                normalize_embeddings=True,
+            ).astype("float32")
 
         if hasattr(query_vec, "flatten"):
             query_vec = query_vec.flatten()

@@ -9,6 +9,7 @@ It provides endpoints for corpus creation, listing, and deletion.
 
 import sys
 import shutil
+import importlib.util
 
 from pathlib import Path
 
@@ -46,6 +47,13 @@ def _warmup_models(cfg: NDBConfig = None) -> None:
     cfg = cfg or NDBConfig()
     if not getattr(cfg, "NEBULONDB_WARM_MODELS", True):
         logger.info("[ModelHub] Warmup disabled (nebulondb_warm_models=False)")
+        return
+
+    if importlib.util.find_spec("sentence_transformers") is None:
+        logger.info(
+            "[ModelHub] Warmup skipped: 'ml' extras not installed "
+            "(run `uv sync --extra ml` to enable embeddings)."
+        )
         return
 
     try:

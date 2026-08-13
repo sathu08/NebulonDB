@@ -150,6 +150,16 @@ uv sync --python %PYTHON_VERSION%
 if errorlevel 1 goto :error
 
 rem ------------------------------------------------------------
+rem Optional ML / Vector Extras (off by default)
+rem ------------------------------------------------------------
+
+if "%NEBULONDB_INSTALL_ML%"=="1" (
+    echo [NebulonDB] Installing optional ML/vector extras (CPU-only torch)...
+    uv sync --python %PYTHON_VERSION% --extra ml
+    if errorlevel 1 goto :error
+)
+
+rem ------------------------------------------------------------
 rem Verify NebulonDB CLI
 rem ------------------------------------------------------------
 
