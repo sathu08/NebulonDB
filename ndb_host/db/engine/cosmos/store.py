@@ -14,7 +14,6 @@ and delegates all logic to the purpose-built submodules:
     compactor      – LSM-tree compaction & background daemon
 """
 
-import os
 import time
 import shutil
 
@@ -22,7 +21,7 @@ import threading
 
 from pathlib import Path
 from collections import OrderedDict
-from typing import Any, Dict, List, Optional, Union
+from typing import Any
 
 from db.engine.utils import DatabaseConfig, BloomFilter, IndexEntry
 from utils.logger import NebulonDBLogger
@@ -63,7 +62,7 @@ class NebulonCosmos:
     """
 
     # ==========================================================
-    def __init__(self, db_dir: Union[str, Path], reset: bool = False) -> None:
+    def __init__(self, db_dir: str | Path, reset: bool = False) -> None:
         self.config = DatabaseConfig(db_dir=db_dir)
 
         # ── paths ─────────────────────────────────────────────
@@ -84,6 +83,7 @@ class NebulonCosmos:
         self.max_segments_before_compact  = self.config.MAX_SEGMENTS_BEFORE_COMPACT
         self.flush_interval               = self.config.FLUSH_INTERVAL
         self.flush_size_threshold         = self.config.FLUSH_SIZE_THRESHOLD
+        self.wal_fsync_interval           = self.config.WAL_FSYNC_INTERVAL
 
         # ── format strings / constants ────────────────────────
         self.segment_magic         = self.config.MAGIC
@@ -97,25 +97,26 @@ class NebulonCosmos:
 
         # ── in-memory state ───────────────────────────────────
         self._lock                                          = threading.RLock()
-        self.memtable:             Dict[int, bytes]         = {}
+        self.memtable:             dict[int, bytes]         = {}
         self._deleted:             set                      = set()
-        self.latest:               Dict[int, IndexEntry]    = {}
-        self.meta:                 Dict[str, Any]           = _meta_mod.default_meta()
+        self.latest:               dict[int, IndexEntry]    = {}
+        self.meta:                 dict[str, Any]           = _meta_mod.default_meta()
         self.wal_count:            int                      = 0
+        self._wal_bytes_since_fsync: int                    = 0
         self.memtable_oldest_ts:   float                    = 0.0
-        self.wal_handle:           Optional[Any]            = None
+        self.wal_handle:           Any | None            = None
         self.segment_cache:        OrderedDict              = OrderedDict()
-        self.segment_size_cache:   Dict[int, int]           = {}
-        self.bloom_filter_cache:   Dict[int, BloomFilter]   = {}
-        self.segment_info:         Dict[int, dict]          = {}
-        self.manifest:             List[str]                = []
+        self.segment_size_cache:   dict[int, int]           = {}
+        self.bloom_filter_cache:   dict[int, BloomFilter]   = {}
+        self.segment_info:         dict[int, dict]          = {}
+        self.manifest:             list[str]                = []
         self.memtable_bytes:       int                      = 0
         self.max_memtable_bytes = 256 * 1024 * 1024
 
         # ── background threads ─────────────────────────────────
-        self._compaction_thread:     Optional[threading.Thread] = None
+        self._compaction_thread:     threading.Thread | None = None
         self._compaction_stop_event: threading.Event           = threading.Event()
-        self._flush_thread:          Optional[threading.Thread] = None
+        self._flush_thread:          threading.Thread | None = None
         self._flush_stop_event:      threading.Event           = threading.Event()
 
         self._init_db(reset)
@@ -134,19 +135,19 @@ class NebulonCosmos:
     def _load_meta(self) -> None:
         self.meta = _meta_mod.load_meta(self.meta_file)
 
-    def _default_meta(self) -> Dict[str, Any]:
+    def _default_meta(self) -> dict[str, Any]:
         return _meta_mod.default_meta()
 
     def _save_manifest(self) -> None:
         _meta_mod.save_manifest(self.manifest_file, self.manifest)
-        
+
 
     def _load_manifest(self) -> None:
         self.manifest = _meta_mod.load_manifest(self.manifest_file, self.seg_dir)
 
     # ── id / version generators ───────────────────────────────
     def _ensure_global_record_id(self) -> None:
-        """Seed the global record-id counter from existing per-table counters."""
+        """Seed the global record-id counter from existing per-segment counters."""
         if self.meta.get("global_record_id"):
             return
         self.meta["global_record_id"] = max(
@@ -187,9 +188,6 @@ class NebulonCosmos:
     # ── index ─────────────────────────────────────────────────
     def _append_index_entries(self, entries) -> None:
         _idx_mod.append_index_entries(self.index_file, entries, self.index_entry_format)
-        fd = os.open(str(self.index_file), os.O_RDONLY)
-        os.fsync(fd)
-        os.close(fd)
 
     def _rewrite_index_from_latest(self) -> None:
         with self._lock:
@@ -233,7 +231,22 @@ class NebulonCosmos:
 
     # ── WAL ───────────────────────────────────────────────────
     def _write_wal_record(self, record_bytes: bytes) -> None:
-        _wal_mod.write_wal_record(self.wal_handle, record_bytes, self.wal_auto_flush)
+        self._wal_bytes_since_fsync = _wal_mod.write_wal_record(
+            self.wal_handle,
+            record_bytes,
+            self.wal_auto_flush,
+            self._wal_bytes_since_fsync,
+            self.wal_fsync_interval,
+        )
+
+    def _write_wal_records_batch(self, record_bytes_list: list[bytes]) -> None:
+        self._wal_bytes_since_fsync = _wal_mod.write_wal_records_batch(
+            self.wal_handle,
+            record_bytes_list,
+            self.wal_auto_flush,
+            self._wal_bytes_since_fsync,
+            self.wal_fsync_interval,
+        )
 
     def _recover_wal(self) -> None:
         _wal_mod.recover_wal(
@@ -246,7 +259,7 @@ class NebulonCosmos:
         self.wal_count = len(self.memtable)
 
     # ── segment writer ────────────────────────────────────────
-    def _write_segment(self, seg_path: Path, record_list: List[bytes], seg_id: int) -> None:
+    def _write_segment(self, seg_path: Path, record_list: list[bytes], seg_id: int) -> None:
         _writer_mod.write_segment(
             seg_path=seg_path,
             record_list=record_list,
@@ -268,7 +281,7 @@ class NebulonCosmos:
     def _write_segment_streaming(
         self,
         seg_path: Path,
-        sources: Dict[int, tuple],
+        sources: dict[int, tuple],
         seg_id: int,
         append_index: bool = True,
     ) -> None:
@@ -315,11 +328,12 @@ class NebulonCosmos:
                 force=force,
             )
             self.wal_count = wal_count_ref[0]
+            self._wal_bytes_since_fsync = 0
             self.memtable_bytes = 0
             self.memtable_oldest_ts = 0.0
 
     # ── compaction ────────────────────────────────────────────
-    def _cleanup_segments(self, fnames: List[str], delete_files: bool = True) -> None:
+    def _cleanup_segments(self, fnames: list[str], delete_files: bool = True) -> None:
         _compact_mod.cleanup_segments(
             fnames=fnames,
             seg_dir=self.seg_dir,
@@ -330,7 +344,7 @@ class NebulonCosmos:
             delete_files=delete_files,
         )
 
-    def _remove_segments_and_rebuild(self, fnames: List[str]) -> None:
+    def _remove_segments_and_rebuild(self, fnames: list[str]) -> None:
         _compact_mod.remove_segments_and_rebuild(
             fnames=fnames,
             seg_dir=self.seg_dir,
@@ -346,7 +360,7 @@ class NebulonCosmos:
             rebuild_index_fn=self._rebuild_index_from_all_segments,
         )
 
-    def _compact(self, segments_to_merge: Optional[List[str]] = None) -> None:
+    def _compact(self, segments_to_merge: list[str] | None = None) -> None:
         with self._lock:
             _compact_mod.compact(
             segments_to_merge=segments_to_merge,
@@ -405,7 +419,7 @@ class NebulonCosmos:
                         self._flush(force=True)
 
     # ── segment reader ────────────────────────────────────────
-    def _read_payload_at_offset(self, seg_id: int, offset: int) -> Optional[bytes]:
+    def _read_payload_at_offset(self, seg_id: int, offset: int) -> bytes | None:
         return _reader_mod.read_payload_at_offset(
             seg_id=seg_id,
             offset=offset,
@@ -418,33 +432,33 @@ class NebulonCosmos:
             record_header_format=self.record_header_format,
         )
 
-    def _read_payload_from_file(self, seg_path: Path, offset: int) -> Optional[bytes]:
+    def _read_payload_from_file(self, seg_path: Path, offset: int) -> bytes | None:
         seg_id = int(seg_path.stem.split('_')[1])
         return self._read_payload_at_offset(seg_id, offset)
 
     # ── record building ───────────────────────────────────────
-    def _build_record(self, segment: str, doc: Dict[str, Any], is_delete: bool = False) -> bytes:
+    def _build_record(
+        self, segment: str, doc: dict[str, Any], is_delete: bool = False
+    ) -> "tuple[bytes, int, int]":
         record = doc.copy()
         if "id" in record:
             record["_id"] = record.pop("id")
         elif "_id" not in record or record["_id"] is None:
             record["_id"] = self._next_id(segment)
         record["_segment"]   = segment
-        record["_version"] = self._next_version()
+        version = self._next_version()
+        record["_version"] = version
         if is_delete:
             record["_deleted"] = True
-        return encode_object(record)
+        return encode_object(record), record["_id"], version
 
     # ── write record (memtable + WAL) ─────────────────────────
-    def _write_record(self, segment: str, doc: Dict[str, Any], is_delete: bool = False) -> int:
+    def _write_record(self, segment: str, doc: dict[str, Any], is_delete: bool = False) -> int:
         with self._lock:
             return self._write_record_unsafe(segment, doc, is_delete)
 
-    def _write_record_unsafe(self, segment: str, doc: Dict[str, Any], is_delete: bool = False) -> int:
-        rec_bytes = self._build_record(segment, doc, is_delete)
-        rec_dict  = decode_object(rec_bytes)
-        rec_id    = rec_dict["_id"]
-        version   = rec_dict["_version"]
+    def _write_record_unsafe(self, segment: str, doc: dict[str, Any], is_delete: bool = False) -> int:
+        rec_bytes, rec_id, version = self._build_record(segment, doc, is_delete)
         key       = (segment, rec_id)
 
         self._write_wal_record(rec_bytes)
@@ -489,11 +503,45 @@ class NebulonCosmos:
     # Public API
     # =========================================================
 
-    def insert(self, segment: str, doc: Dict[str, Any]) -> int:
+    def insert(self, segment: str, doc: dict[str, Any]) -> int:
         doc.pop("id", None)
         return self._write_record(segment, doc, is_delete=False)
 
-    def update(self, segment: str, doc: Dict[str, Any]) -> int:
+    def insert_many(self, segment: str, docs: list[dict[str, Any]]) -> list[int]:
+        """
+        Bulk insert: encode all docs, append them to the WAL in a single
+        write, and update the memtable under one lock acquisition.
+        """
+        with self._lock:
+            built = []
+            for doc in docs:
+                doc2 = doc.copy()
+                doc2.pop("id", None)
+                rec_bytes, rec_id, _ = self._build_record(segment, doc2, False)
+                built.append(((segment, rec_id), rec_bytes))
+
+            self._write_wal_records_batch([rb for _, rb in built])
+
+            was_empty = not self.memtable
+            rec_ids = []
+            for key, rec_bytes in built:
+                rec_id = key[1]
+                self._deleted.discard(key)
+                self._deleted.discard(rec_id)
+                self.memtable[key] = rec_bytes
+                self.memtable_bytes += len(rec_bytes)
+                rec_ids.append(rec_id)
+            self.wal_count += len(built)
+            if was_empty:
+                self.memtable_oldest_ts = time.time()
+
+            if self.memtable_bytes >= self.max_memtable_bytes:
+                self._flush(force=True)
+
+            logger.debug(f"BULK INSERT {len(built)} records segment={segment}")
+            return rec_ids
+
+    def update(self, segment: str, doc: dict[str, Any]) -> int:
         rec_id = doc.get("id", doc.get("_id"))
         if rec_id is None:
             logger.error("Document must contain 'id' or '_id'")
@@ -507,7 +555,7 @@ class NebulonCosmos:
             return self._write_record_unsafe(segment, {"id": record_id}, is_delete=True)
 
     # ── reading ───────────────────────────────────────────────
-    def get(self, record_id: int, segment: str = "_main", include_internal: bool = False) -> Optional[Dict[str, Any]]:
+    def get(self, record_id: int, segment: str = "_main", include_internal: bool = False) -> dict[str, Any] | None:
         """
         Retrieve a document by its record ID and segment.
         """
@@ -552,6 +600,12 @@ class NebulonCosmos:
             if rec_dict.get("_deleted", False):
                 return None
 
+            # The persisted index is keyed only by bare record_id while the
+            # id space is global across tables, so a fallback hit may belong
+            # to another segment; reject it to avoid cross-table leakage.
+            if segment and rec_dict.get("_segment") != segment:
+                return None
+
             if include_internal:
                 return rec_dict
             res = {k: v for k, v in rec_dict.items() if not k.startswith("_")}
@@ -561,43 +615,95 @@ class NebulonCosmos:
 
     def read_all(
         self,
-        segment: Optional[str] = None,
+        segment: str | None = None,
         include_internal: bool = False,
-    ) -> List[Dict[str, Any]]:
+    ) -> list[dict[str, Any]]:
         target_segment = segment or "_main"
         docs = []
-        all_keys = set(self.latest.keys()) | set(self.memtable.keys())
-        for k in all_keys:
-            if isinstance(k, tuple):
-                t, rec_id = k
-                if segment is not None and t != segment:
-                    continue
-            else:
-                rec_id = k
-                t = target_segment
-                # The memtable holds a newer version of this record than the
-                # persisted index; it is already covered by its tuple key, so
-                # the bare record-id key must not be processed again.
-                if (t, rec_id) in self.memtable:
-                    continue
 
-            doc = self.get(rec_id, segment=t, include_internal=True)
-            if doc is None:
-                continue
-            # Persisted index entries are keyed only by record_id, so the
-            # record itself must be checked to avoid leaking across tables.
-            if segment is not None and doc.get("_segment", t) != segment:
-                continue
-            if include_internal:
-                docs.append(doc)
-            else:
-                res = {k: v for k, v in doc.items() if not k.startswith("_")}
-                if "_id" in doc and "_id" not in res:
-                    res["_id"] = doc["_id"]
-                docs.append(res)
-        return docs
+        with self._lock:
+            memtable = self.memtable
 
-    def get_by_id(self, segment: str, record_id: Any) -> Optional[Dict[str, Any]]:
+            # ── fast path 1: memtable (in-memory, zero disk I/O) ──
+            for key, payload in memtable.items():
+                if isinstance(key, tuple):
+                    t, rec_id = key
+                    if segment is not None and t != segment:
+                        continue
+                else:
+                    rec_id = key
+                    t = target_segment
+                    if target_segment != "_main":
+                        continue
+                    if (t, rec_id) in memtable:
+                        continue
+                rec_dict = decode_object(payload)
+                if rec_dict.get("_deleted", False):
+                    continue
+                if rec_dict.get("_segment", t) != target_segment:
+                    continue
+                docs.append(rec_dict)
+
+            # ── fast path 2: one sequential scan per segment ────
+            # `latest` is the authority on which (segment_id, offset) holds the
+            # newest version; memtable always wins over disk.
+            live_locations = {
+                (e.segment_id, e.offset)
+                for e in self.latest.values()
+                if e.segment_id in self.segment_info
+            }
+            mem_ids = set()
+            for key in memtable:
+                mem_ids.add(key[1] if isinstance(key, tuple) else key)
+
+            for fname in self.manifest:
+                seg_path = self.seg_dir / fname
+                try:
+                    seg_id = int(fname.split("_")[1].split(".")[0])
+                except (IndexError, ValueError):
+                    continue
+                info = self.segment_info.get(seg_id)
+                if not info:
+                    continue
+                count = info.get("count", 0)
+                compressed = info.get("compressed", self.compress_segments)
+                bf = info.get("bf")
+                bf_size = len(bf.to_bytes()) if bf else 0
+                data_offset = self._get_segment_data_offset(seg_path, bf_size)
+
+                for offset, payload in _reader_mod.scan_segment_payloads(
+                    seg_path=seg_path,
+                    data_offset=data_offset,
+                    count=count,
+                    compressed=compressed,
+                    record_header_size=self.record_header_size,
+                    record_header_format=self.record_header_format,
+                ):
+                    if (seg_id, offset) not in live_locations:
+                        continue
+                    try:
+                        rec_dict = decode_object(payload)
+                    except Exception:
+                        continue
+                    if rec_dict.get("_deleted", False):
+                        continue
+                    if rec_dict.get("_segment", target_segment) != target_segment:
+                        continue
+                    if rec_dict.get("_id") in mem_ids:
+                        continue
+                    docs.append(rec_dict)
+
+        if include_internal:
+            return docs
+        results = []
+        for doc in docs:
+            res = {k: v for k, v in doc.items() if not k.startswith("_")}
+            if "_id" in doc and "_id" not in res:
+                res["_id"] = doc["_id"]
+            results.append(res)
+        return results
+
+    def get_by_id(self, segment: str, record_id: Any) -> dict[str, Any] | None:
         return self.get(record_id, segment=segment)
 
     # =========================================================
@@ -651,6 +757,22 @@ class NebulonCosmos:
         """Flush the current memtable to a new segment immediately."""
         with self._lock:
             self._flush(force=True)
+
+    def checkpoint_wal(self) -> None:
+        """
+        Rewrite the WAL from the live memtable without writing a segment.
+
+        Keeps the WAL as the sole durable store below the flush threshold
+        while dropping superseded versions, so a fresh engine init no longer
+        replays stale rows.
+        """
+        with self._lock:
+            self.wal_handle = _wal_mod.checkpoint_wal(
+                self.wal_file, self.wal_handle, self.memtable
+            )
+            self.wal_count = len(self.memtable)
+            self._wal_bytes_since_fsync = 0
+            self.memtable_bytes = sum(len(v) for v in self.memtable.values())
 
     def close(self) -> None:
         # Signal threads to stop

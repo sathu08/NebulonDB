@@ -11,7 +11,7 @@ from fastapi.security import HTTPBasic, HTTPBasicCredentials
 
 import threading
 
-from typing import Dict, Any, Optional, List
+from typing import Any
 
 from utils.constants import NDBMeta
 from db.ndb_settings import NDBConfig
@@ -31,7 +31,7 @@ from core.security import verify_password, hash_password
 logger = NebulonDBLogger().get_logger()
 
 # ==========================================================
-#        Security and Config Initialization 
+#        Security and Config Initialization
 # ==========================================================
 
 http_basic_security = HTTPBasic()
@@ -49,9 +49,9 @@ class UserManager:
 
     _instance = None
     _lock = threading.RLock()
-    _users_cache: Dict[str, Dict[str, Any]]
+    _users_cache: dict[str, dict[str, Any]]
     _cache_loaded: bool
-    _db_manager: Optional[ComosDBManager]
+    _db_manager: ComosDBManager | None
     _segment_name = NDBMeta.Corpus.DEFAULT_SEGMENT_NAME
 
     def __new__(cls):
@@ -76,7 +76,7 @@ class UserManager:
                     logger.info("ComosDBManager initialized.")
         return self._db_manager
 
-    def _read_table(self, segment: str) -> List[Dict[str, Any]]:
+    def _read_table(self, segment: str) -> list[dict[str, Any]]:
         """Read all records from a segment."""
         return self._get_db_manager().read_data(segment)
 
@@ -109,13 +109,13 @@ class UserManager:
     #  Public API – thread‑safe, cache‑first
     # ==========================================================
 
-    def get_user(self, username: str) -> Optional[Dict[str, Any]]:
+    def get_user(self, username: str) -> dict[str, Any] | None:
         """Retrieve a user by username from cache (loading cache if needed)."""
         self._ensure_cache_loaded()
         with self._lock:
             return self._users_cache.get(username)
 
-    def get_all_users(self) -> List[Dict[str, Any]]:
+    def get_all_users(self) -> list[dict[str, Any]]:
         """Return a list of all users (public fields only, no passwords)."""
         self._ensure_cache_loaded()
         with self._lock:
@@ -129,7 +129,7 @@ class UserManager:
                 for k, v in self._users_cache.items()
             ]
 
-    def create_user(self, username: str, user_data: Dict[str, Any]) -> bool:
+    def create_user(self, username: str, user_data: dict[str, Any]) -> bool:
         """
         Insert a new user into the database and update the cache.
         user_data must contain 'password', 'role', 'created_at'.
@@ -230,26 +230,22 @@ def _validate_user_role(user_role: str) -> UserRole:
 
 
 # ==========================================================
-#        Authentication Functions 
+#        Authentication Functions
 # ==========================================================
 def get_current_user(credentials: HTTPBasicCredentials = Depends(http_basic_security)) -> AuthenticationResult:
     try:
-        logger.debug(f"Attempting authentication for user: {credentials.username}") 
+        logger.debug(f"Attempting authentication for user: {credentials.username}")
 
         user_record = user_manager.get_user(credentials.username)
-        
-        if not user_record:
-            logger.warning("Invalid credentials")
-            return AuthenticationResult(username=credentials.username, is_authenticated=False, message="Invalid username")
 
-        hashed_password = user_record.get("password")
-        if not hashed_password:
-            logger.error(f"User record missing password hash: {credentials.username}")
-            return AuthenticationResult(username=credentials.username, is_authenticated=False, message="Invalid password")
-
-        if not verify_password(credentials.password, hashed_password):
-            logger.warning(f"Authentication failed - invalid password: {credentials.username}")
-            return AuthenticationResult(username=credentials.username, is_authenticated=False, message="Invalid password")
+        hashed_password = user_record.get("password") if user_record else None
+        if not hashed_password or not verify_password(credentials.password, hashed_password):
+            logger.warning(f"Authentication failed for user: {credentials.username}")
+            return AuthenticationResult(
+                username=credentials.username,
+                is_authenticated=False,
+                message="Invalid credentials"
+            )
 
         user_role = UserRole(user_record.get("role", UserRole.USER.value))
 
@@ -266,24 +262,23 @@ def get_current_user(credentials: HTTPBasicCredentials = Depends(http_basic_secu
 
 
 # ==========================================================
-#        User Management 
+#        User Management
 # ==========================================================
 
-def create_user(username: str, password: str, user_role: str = UserRole.USER.value) -> Dict[str, str]:
+def create_user(username: str, password: str, user_role: str = UserRole.USER.value) -> dict[str, str]:
     try:
         logger.info(f"Attempting to create user: {username} with role: {user_role}")
 
         if not username or not username.strip():
             return StandardErrorResponse(success=False, message="Username cannot be empty").model_dump()
 
-        if not password or len(password) < 6:
-            return StandardErrorResponse(success=False, message="Password must be at least 6 characters long").model_dump()
+        if not password or len(password) < 8:
+            return StandardErrorResponse(
+                success=False, message="Password must be at least 8 characters long"
+            ).model_dump()
 
         validated_role = _validate_user_role(user_role)
         hashed_password = hash_password(password)
-
-        if not hashed_password:
-            return StandardErrorResponse(success=False, message="Password hashing failed").model_dump()
 
         user_data = {
             "password": hashed_password,
@@ -296,7 +291,7 @@ def create_user(username: str, password: str, user_role: str = UserRole.USER.val
              return StandardErrorResponse(success=False, message="User already exists").model_dump()
 
         success = user_manager.create_user(username, user_data)
-        
+
         if success:
             logger.info(f"User created successfully: {username} with role: {validated_role.value}")
             return {
@@ -317,7 +312,7 @@ def create_user(username: str, password: str, user_role: str = UserRole.USER.val
 #        User Deletion
 # ==========================================================
 
-def delete_user(username: str) -> Dict[str, str]:
+def delete_user(username: str) -> dict[str, str]:
     try:
         logger.info(f"Attempting to delete user: {username}")
 
@@ -339,7 +334,7 @@ def delete_user(username: str) -> Dict[str, str]:
 #        Password Change
 # ==========================================================
 
-def change_password(username: str, current_password: str, new_password: str) -> Dict[str, str]:
+def change_password(username: str, current_password: str | None, new_password: str) -> dict[str, str]:
     try:
         logger.info(f"Attempting to change password for user: {username}")
 
@@ -348,17 +343,16 @@ def change_password(username: str, current_password: str, new_password: str) -> 
             logger.warning(f"Password change failed - user not found: {username}")
             return {"success": False, "message": "User not found"}
 
-        hashed_password = user_record.get("password")
-        if not hashed_password or not verify_password(current_password, hashed_password):
-            logger.warning(f"Password change failed - current password incorrect: {username}")
-            return {"success": False, "message": "Current password is incorrect"}
+        if current_password:
+            hashed_password = user_record.get("password")
+            if not hashed_password or not verify_password(current_password, hashed_password):
+                logger.warning(f"Password change failed - current password incorrect: {username}")
+                return {"success": False, "message": "Current password is incorrect"}
 
-        if not new_password or len(new_password) < 6:
-            return {"success": False, "message": "Password must be at least 6 characters long"}
+        if not new_password or len(new_password) < 8:
+            return {"success": False, "message": "Password must be at least 8 characters long"}
 
         new_hashed_password = hash_password(new_password)
-        if not new_hashed_password:
-            return {"success": False, "message": "Password hashing failed"}
 
         success = user_manager.update_password(username, new_hashed_password)
         if not success:
@@ -376,7 +370,7 @@ def change_password(username: str, current_password: str, new_password: str) -> 
 #        User Retrieval
 # ==========================================================
 
-def get_all_users() -> Dict[str, Any]:
+def get_all_users() -> dict[str, Any]:
     try:
         logger.info("Retrieving all users")
 

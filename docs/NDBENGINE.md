@@ -375,7 +375,7 @@ flowchart TB
 ```
 db/engine/
 ├── __init__.py              # public: NebulonCosmos, NebulonOrbit, RankConfig
-├── OVERVIEW.md              # this file
+├── (docs)                   # this document lives at docs/NDBENGINE.md
 ├── cosmos/                  # LSM storage engine
 │   ├── __init__.py
 │   ├── store.py             # NebulonCosmos orchestrator

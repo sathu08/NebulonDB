@@ -6,7 +6,7 @@ on a custom storage engine. It combines a durable **LSM-tree** key/value store
 (vector similarity) and **Mesh** (graph traversal) — exposed through a secure
 **FastAPI** REST API.
 
-> 🔗 **Architecture** — See [Architecture & Engine Overview](ndb_host/db/engine/OVERVIEW.md)
+> 🔗 **Architecture** — See [Architecture & Engine Overview](docs/NDBENGINE.md)
 > for detailed diagrams and explanations of the `NebulonCosmos` and
 > `NebulonOrbit` engines (memtable/WAL/segments/compaction, HNSW generations,
 > Mesh persistence, ranking pipeline).
@@ -40,7 +40,7 @@ vector hits, then Mesh expands around them (and an optional seed node) through
 graph neighbors.
 
 > Every code module, class and file layout behind Nova and Mesh is documented
-> in the [Architecture & Engine Overview](ndb_host/db/engine/OVERVIEW.md).
+> in the [Architecture & Engine Overview](docs/NDBENGINE.md).
 
 ---
 
@@ -54,11 +54,11 @@ graph neighbors.
   * **Background compaction** daemon that merges segments, drops tombstones, and
     **rebuilds the in-memory index from the surviving segments** so reads never hit
     removed files
-  * **Globally-unique record IDs** across all tables (single `meta` counter) so
-    tables like `nebulon_userinfo` / `nebulon_metadata` can never collide; compaction
-    keys merges by `(table, id)` so records are never dropped across tables
+  * **Globally-unique record IDs** across all segments (single `meta` counter) so
+    segments like `nebulon_userinfo` / `nebulon_metadata` can never collide; compaction
+    keys merges by `(segment, id)` so records are never dropped across segments
   * Atomic metadata / manifest persistence (`meta.bin`, `manifest.bin`)
-  * Multi-table ("segment") namespacing and versioned records
+  * Multi-segment namespacing and versioned records
 * **NebulonOrbit** — unified **Nova** (vector) + **Mesh** (graph) search engine built on Cosmos:
   * **Nova** — **HNSW** ANN index (`hnswlib`) with generational saves, SHA-256
     checksums and manifest-based fallback recovery
@@ -118,7 +118,7 @@ The engine is split into two packages under `ndb_host/db/engine/`:
 Full architecture diagrams, component tables, on-disk layout, and write/read
 path explanations are in the dedicated overview document:
 
-➡️ **[Architecture & Engine Overview](ndb_host/db/engine/OVERVIEW.md)**
+➡️ **[Architecture & Engine Overview](docs/NDBENGINE.md)**
 
 ```
 ndb_host/
@@ -136,7 +136,7 @@ ndb_host/
 │   │   ├── cosmos/         # storage engine submodules
 │   │   ├── orbit/          # search engine submodules
 │   │   ├── utils/          # config, serializer, bloom, models, constants
-│   │   └── OVERVIEW.md     # architecture & engine documentation
+│   │   └── (docs → docs/NDBENGINE.md)  # engine docs live in the repo docs/
 │   ├── index_manager.py    # CorpusManager / SegmentManager orchestration
 │   └── ndb_settings.py     # NDBConfig (paths, model, tuning settings)
 ├── services/
@@ -167,13 +167,32 @@ persisting `NEBULONDB_HOME`.
 
 **Linux / macOS:**
 ```bash
-curl -fsSL https://raw.githubusercontent.com/sathu08/NebulonDB/dev/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/sathu08/NebulonDB/master/install.sh | bash
 ```
 
 **Windows (PowerShell):**
 ```powershell
-irm https://raw.githubusercontent.com/sathu08/NebulonDB/dev/install.bat -OutFile "$env:TEMP\install.bat"; & "$env:TEMP\install.bat"
+irm https://raw.githubusercontent.com/sathu08/NebulonDB/master/install.bat -OutFile "$env:TEMP\install.bat"; & "$env:TEMP\install.bat"
 ```
+
+> **Install with ML / vector extras (optional):** the default install ships the
+> slim core (~240 MB) — enough for document, graph, BM25 and HNSW search.
+> Semantic embeddings (torch/sentence-transformers) need the `ml` extra
+> (~1.4 GB). Set the `NEBULONDB_INSTALL_ML=1` environment variable before the
+> installer runs:
+>
+> **Linux / macOS:**
+> ```bash
+> curl -fsSL https://raw.githubusercontent.com/sathu08/NebulonDB/master/install.sh | NEBULONDB_INSTALL_ML=1 bash
+> ```
+>
+> **Windows (PowerShell):**
+> ```powershell
+> $env:NEBULONDB_INSTALL_ML="1"; irm https://raw.githubusercontent.com/sathu08/NebulonDB/master/install.bat -OutFile "$env:TEMP\install.bat"; & "$env:TEMP\install.bat"
+> ```
+>
+> You can also enable it later in an existing install with
+> `uv sync --extra ml` from the NebulonDB directory.
 
 Alternatively, run the installers from a local clone:
 
@@ -186,7 +205,7 @@ install.bat              # Windows (Command Prompt)
 
 What the installer does:
 
-1. Clones the `dev` branch into `~/CodeBase/NebulonDB` (Linux/macOS) or
+1. Clones the `master` branch into `~/CodeBase/NebulonDB` (Linux/macOS) or
    `%USERPROFILE%\CodeBase\NebulonDB` (Windows).
 2. Installs `uv` if it is not already available.
 3. Installs **Python 3.10** via `uv` (only if not found).
@@ -196,8 +215,38 @@ What the installer does:
    (user-level environment variable) on Windows.
 
 > Re-running the installer updates an existing clone by fetching the latest
-> `dev` branch with `git pull --ff-only`. Dependencies are kept in sync with
+> `master` branch with `git pull --ff-only`. Dependencies are kept in sync with
 > `pyproject.toml`.
+
+### Updating & Changing Extras
+
+An existing install can be updated to the latest code, or switched between the
+slim core and the ML/vector extras — all from the NebulonDB directory
+(`~/CodeBase/NebulonDB` on Linux/macOS, `%USERPROFILE%\CodeBase\NebulonDB` on
+Windows).
+
+**Update the code to the latest `master` branch:**
+```bash
+nebulondb stop          # stop the server before updating
+git pull                # pull the latest master branch
+uv sync                 # refresh the virtual environment (core-only)
+nebulondb start         # restart the server
+```
+
+**Add the ML / vector extras later (torch, sentence-transformers, ~1.4 GB):**
+```bash
+uv sync --extra ml
+```
+Windows (Command Prompt): use `uv sync --python 3.10 --extra ml`. The running
+server reuses the cached model after a restart.
+
+**Remove the ML extras and shrink back to the slim core (~240 MB):**
+```bash
+uv sync                 # prunes packages no longer in the dependency set
+```
+
+> The default install only attempts an embedding warmup if the `ml` extras are
+> present — a core-only server starts cleanly without the extra dependencies.
 
 ### Manual Installation (uv)
 
@@ -254,6 +303,10 @@ nebulondb start
 The server will start on `http://localhost:6969` (default). Interactive API docs
 are available at `http://localhost:6969/docs`.
 
+> 📄 Every `nebulondb.cfg` option (server, segments, vector/HNSW, ranking, models,
+> warmup/cache toggles) is documented in
+> [docs/CONFIGURATION.md](docs/CONFIGURATION.md).
+
 ### 3. Authentication & RBAC
 All endpoints use **HTTP Basic Authentication**. The user store is persisted in
 NebulonCosmos (`nebulon_userinfo` segment) and cached in memory.
@@ -273,7 +326,7 @@ NebulonCosmos (`nebulon_userinfo` segment) and cached in memory.
 
 #### 1.1 `POST /auth/register` — Register a new user
 Create a new user with a specific role. The caller must be an authenticated user.
-Validates username (≥3 chars) and password (≥6 chars), hashes the password with
+Validates username (≥3 chars) and password (≥8 chars), hashes the password with
 bcrypt, and returns a structured response.
 
 ```bash
@@ -299,7 +352,11 @@ curl -X GET "http://localhost:6969/api/NebulonDB/auth/verify" \
 #### 1.3 `POST /auth/change_password` — Change the current user's password
 Changes the password of the currently authenticated user. The caller must supply
 their current password (verified against the stored bcrypt hash) and a new
-password (≥6 chars). Returns an error if the current password is incorrect.
+password (≥8 chars). Returns an error if the current password is incorrect.
+
+> **Auth errors are generic** — failed logins return a uniform
+> `"Invalid credentials"` message (no user-existence hints), and password
+> policy failures are reported as `"Password must be at least 8 characters long"`.
 
 ```bash
 curl -X POST "http://localhost:6969/api/NebulonDB/auth/change_password" \
@@ -425,7 +482,6 @@ segment in the corpus metadata.
 | `is_precomputed` | bool | When true, columns already contain embeddings (no encoding) |
 | `doc_type` | str | Document type tag stored in metadata (e.g. `txt`, `markdown`) |
 | `lang_type` | str | Language tag stored in metadata (e.g. `en`) |
-| `relations` | list | Explicit `[source, target, relation]` tuples to add as **Mesh** graph edges |
 | `relations` | list | Explicit `[source, target, relation]` tuples to add as **Mesh** graph edges |
 | `source_column` | str | Column name holding relation source IDs (auto-detected if omitted) |
 | `target_column` | str | Column name holding relation target IDs (auto-detected if omitted) |
@@ -777,10 +833,10 @@ NEBULONDB_HOME/
 Corpus metadata (including registered segments) lives in the account hub's
 `nebulon_metadata` segment, and user accounts live in `nebulon_userinfo`.
 
-Within each **ORBIT** corpus, the Cosmos engine stores four normalized tables
+Within each **ORBIT** corpus, the Cosmos engine stores four normalized segments
 (keyed by a shared record `id`):
 
-| Table | Fields | Contents |
+| Segment | Fields | Contents |
 |-------|--------|----------|
 | `nebulon_documents` | `id`, `text`, `metadata` (incl. `label`), `created_at` | Document text + metadata |
 | `nebulon_nova` | `id`, `vector`, `created_at` | Embedding vectors only |
@@ -805,10 +861,50 @@ Within each **ORBIT** corpus, the Cosmos engine stores four normalized tables
 
 ---
 
+## ⚡ Performance & Durability
+
+* **Batched ingestion** — `load_segment` on a `cosmos` corpus now inserts all
+  documents of a column in one call via the engine's `insert_many` (a single
+  lock acquisition and a single WAL write), instead of one WAL write per row.
+  If the batch fails, the engine falls back to row-by-row inserts to isolate
+  the offending records.
+* **Group-commit WAL** — WAL `fsync` is deferred and batched. Bytes are buffered
+  and forced to disk only after `wal_fsync_interval` bytes accumulate
+  (or on a flush/close). Configure it in `[segments]`:
+  ```ini
+  [segments]
+  wal_fsync_interval = 65536   ; bytes written before an fsync is forced
+  ```
+* **Whole-segment scan for batch reads** — `read_all` walks a segment once via
+  a single `mmap` pass (`segment_reader.scan_segment_payloads`), bypassing the
+  per-record LRU-cache / bloom / index lookups that `get` uses.
+* **Engine-level bulk API** — `NebulonCosmos.insert_many(segment, docs)` is
+  available directly to embedders for offline bulk loads.
+
+---
+
 ## 📝 Changelog — recent changes
 
-### Normalized 4-table storage + bulk graph load (ORBIT)
-* **Split ORBIT storage into four normalized Cosmos tables**, shared by a common
+### Batch Cosmos ingestion + WAL group-commit + auth hardening
+
+* **`insert_many` wired into the API** — `ComosDBManager.insert_many_data`
+  delegates to the engine's `NebulonCosmos.insert_many` (single lock, single
+  WAL append, batched memtable update). `SegmentManager.load_segment` now uses
+  it for every COSMOS column, with a per-row fallback that reports the exact
+  failing rows when the batch errors.
+* **Group-commit WAL** — new `[segments] wal_fsync_interval` setting
+  (default `65536`): `_write_wal_records_batch` appends many records to the WAL
+  in one write and fsyncs only once the buffered byte count is exceeded.
+* **Fast whole-segment reads** — `segment_reader.scan_segment_payloads` reads a
+  full segment with a single mmap pass (single zlib decompression path per
+  record), used by `read_all` for batch/`get_data` retrieval.
+* **Auth hardening** — failed authentication now returns the generic
+  `"Invalid credentials"` message everywhere (no user-existence side channel);
+  minimum password length raised from 6 to **8 characters** for both
+  `/auth/register` and `/auth/change_password`.
+
+### Normalized 4-segment storage + bulk graph load (ORBIT)
+* **Split ORBIT storage into four normalized Cosmos segments**, shared by a common
   record `id`:
   * `document_store.py` (**new**) → `nebulon_documents` `{id, text, metadata, created_at}`
   * `nova_store.py` → `nebulon_nova` `{id, vector, created_at}` (dropped embedded
@@ -834,9 +930,10 @@ Within each **ORBIT** corpus, the Cosmos engine stores four normalized tables
   * `orbit` → original vector path (text → embeddings → `insert_vec`, Mesh
     relation loading, `initialize_or_flush`) — unchanged.
   * `cosmos` → **direct document insert** (no embedding): each non-empty text
-    row is stored via `insert_data(segment, document)` with `text` / `lang` /
-    `type` / `created_at` metadata, then the backend is left to persist via the
-    engine's threshold / background flush (no forced `flush()`).
+    row is stored via `insert_many` (batched per column; falls back to
+    row-by-row `insert_data`) with `text` / `lang` / `type` / `created_at`
+    metadata, then the backend is left to persist via the engine's threshold /
+    background flush (no forced `flush()`).
 * **New `SegmentManager.get_data(limit, include_internal)`** — reads stored
   records from the corpus's own backend:
   * `orbit` → `OrbitDBManager.get_all_records(limit=...)`
@@ -873,15 +970,13 @@ Within each **ORBIT** corpus, the Cosmos engine stores four normalized tables
   `PydanticSerializationError` when `/search_segment` returned JSON.
 
 ### Tests
-* **`tests/test_cosmos_dual_load.py`** — validates COSMOS direct load +
-  `get_data` with `limit`, and ORBIT vector load + `get_data`.
-* **`tests/test_user_noflush.py`** — validates user CRUD durability without
-  explicit `flush()`.
-* **`tests/test_full.py`** — end-to-end API walkthrough (register → change
-  password → verify → create ORBIT/COSMOS corpora → load segments → get_data →
-  delete record (Cosmos + Orbit) → list/search segments). Run:
+* **`unittest/`** — pytest suite hitting the live API (server on
+  `127.0.0.1:6969`, user `sathya`): `test_auth.py` (registration, RBAC,
+  password policy, generic error responses), `test_corpus.py`, `test_segment.py`
+  (load/list/search/stats/record/mesh), `test_system.py`. Run:
   ```bash
-  cd tests/ndb_host
-  PYTHONPATH=/home/sathyaprakash/CodeBase/tests:/home/sathyaprakash/CodeBase/tests/ndb_host \
-      python3 tests/test_full.py
+  cd unittest
+  pytest -v
   ```
+  > ⚠️ Tests expect an 8+-char password; the `sathya:sathya` credential is
+  > created via `nebulondb --create-user` (interactive prompt).

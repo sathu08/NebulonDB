@@ -8,12 +8,13 @@ Responsibilities:
   - Recovering the WAL on startup (rebuild memtable, flush to segment).
 """
 
+import contextlib
 import os
 import zlib
 import struct
 
 from pathlib import Path
-from typing import Any, Dict, Optional, Set
+from typing import Any
 
 from utils.logger import NebulonDBLogger
 
@@ -31,20 +32,60 @@ logger = NebulonDBLogger().get_logger()
 # ==========================================================
 
 def write_wal_record(
-    wal_handle: Optional[Any],
+    wal_handle: Any | None,
     record_bytes: bytes,
     auto_flush: bool = True,
-) -> None:
-    """Append a length-prefixed, CRC-checked record to the open WAL handle."""
+    bytes_since_fsync: int = 0,
+    fsync_interval: int = 65536,
+) -> int:
+    """Append a length-prefixed, CRC-checked record to the open WAL handle.
+
+    The userspace buffer is always flushed, but ``os.fsync`` is only issued
+    once *fsync_interval* bytes have accumulated (group commit). Returns the
+    updated byte counter so the caller can track it across calls.
+    """
     if wal_handle is None:
-        return
+        return bytes_since_fsync
     crc = zlib.crc32(record_bytes) & 0xFFFFFFFF
-    wal_handle.write(struct.pack("<I", crc))
-    wal_handle.write(struct.pack("<I", len(record_bytes)))
+    wal_handle.write(struct.pack("<II", crc, len(record_bytes)))
     wal_handle.write(record_bytes)
     if auto_flush:
         wal_handle.flush()
-        os.fsync(wal_handle.fileno())
+        bytes_since_fsync += 8 + len(record_bytes)
+        if bytes_since_fsync >= fsync_interval:
+            os.fsync(wal_handle.fileno())
+            bytes_since_fsync = 0
+    return bytes_since_fsync
+
+
+def write_wal_records_batch(
+    wal_handle: Any | None,
+    record_bytes_list: list,
+    auto_flush: bool = True,
+    bytes_since_fsync: int = 0,
+    fsync_interval: int = 65536,
+) -> int:
+    """
+    Append many length-prefixed, CRC-checked records in a single write.
+
+    Used by bulk inserts so N records cost one buffer build, one write and
+    (at most) one fsync instead of N x (write + flush + fsync).
+    """
+    if wal_handle is None or not record_bytes_list:
+        return bytes_since_fsync
+    buf = bytearray()
+    for record_bytes in record_bytes_list:
+        crc = zlib.crc32(record_bytes) & 0xFFFFFFFF
+        buf += struct.pack("<II", crc, len(record_bytes))
+        buf += record_bytes
+    wal_handle.write(bytes(buf))
+    if auto_flush:
+        wal_handle.flush()
+        bytes_since_fsync += len(buf)
+        if bytes_since_fsync >= fsync_interval:
+            os.fsync(wal_handle.fileno())
+            bytes_since_fsync = 0
+    return bytes_since_fsync
 
 
 # ==========================================================
@@ -53,22 +94,20 @@ def write_wal_record(
 
 def recover_wal(
     wal_file: Path,
-    memtable: Dict[int, bytes],
-    deleted: Set[int],
-    meta: Dict[str, Any],
+    memtable: dict[int, bytes],
+    deleted: set[int],
+    meta: dict[str, Any],
     save_meta_fn,  # callable: _save_meta()
 ) -> None:
     """
-    Replay the WAL into *memtable*, then flush the memtable to a new segment.
+    Replay the WAL into *memtable*.
 
     Parameters
     ----------
     wal_file      : path to the WAL file on disk
-    wal_handle    : open file handle (a+b) – truncated after recovery
     memtable      : the store's in-memory dict {rec_id -> bytes}
     deleted       : the store's deleted-ID set
     meta          : the store's meta dict (tables, global_version, …)
-    flush_fn      : callable that performs the actual flush to a segment
     save_meta_fn  : callable that persists *meta* to disk
     """
     if not wal_file.exists() or wal_file.stat().st_size == 0:
@@ -113,12 +152,8 @@ def recover_wal(
 
             # Restore segment counters
             segment = rec_dict.get("_segment") or "_main"
-            if isinstance(rec_id, int):
-                if (
-                    segment not in meta["tables"]
-                    or meta["tables"][segment] < rec_id
-                ):
-                    meta["tables"][segment] = rec_id
+            if segment not in meta["tables"] or meta["tables"][segment] < rec_id:
+                meta["tables"][segment] = rec_id
             # Restore global version / record id
             version = rec_dict.get("_version", 0)
             if isinstance(version, int) and version > meta["global_version"]:
@@ -151,3 +186,40 @@ def recover_wal(
         f"Memtable now has {len(memtable)} live records, "
         f"{len(deleted)} deleted markers"
     )
+
+
+def checkpoint_wal(
+    wal_file: Path,
+    wal_handle: Any | None,
+    memtable: dict,
+) -> Any | None:
+    """
+    Rewrite the WAL file with only the live memtable rows.
+
+    Drops superseded versions without creating a segment file, so the WAL
+    stays the sole durable store below the flush threshold. Returns the
+    (possibly re-opened) WAL file handle.
+    """
+    if not memtable:
+        if wal_handle:
+            wal_handle.seek(0)
+            wal_handle.truncate(0)
+            wal_handle.flush()
+            os.fsync(wal_handle.fileno())
+        return wal_handle
+
+    tmp_path = wal_file.with_name(wal_file.name + ".tmp")
+    with tmp_path.open("wb") as f:
+        for rec_bytes in memtable.values():
+            crc = zlib.crc32(rec_bytes) & 0xFFFFFFFF
+            f.write(struct.pack("<I", crc))
+            f.write(struct.pack("<I", len(rec_bytes)))
+            f.write(rec_bytes)
+        f.flush()
+        os.fsync(f.fileno())
+
+    os.replace(tmp_path, wal_file)
+    if wal_handle:
+        with contextlib.suppress(Exception):
+            wal_handle.close()
+    return wal_file.open("a+b")

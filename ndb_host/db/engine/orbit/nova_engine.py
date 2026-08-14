@@ -14,12 +14,14 @@ Core HNSW vector index engine with atomic operations, containing:
 import os
 import hnswlib
 
+import contextlib
 import hashlib
 import threading
 
 import numpy as np
 from pathlib import Path
-from typing import Optional, List, Dict, Any, Set, Tuple, Sequence
+from typing import Any
+from collections.abc import Sequence
 
 from .manifest import Manifest
 from utils.logger import NebulonDBLogger
@@ -56,7 +58,7 @@ class NovaEngine:
         self.ef_construction = ef_construction
         self.ef_search = ef_search
 
-        self.nova_dir = nova_dir 
+        self.nova_dir = nova_dir
         self.nova_dir.mkdir(parents=True, exist_ok=True)
 
         self.manifest = Manifest(nova_manifest_dir)
@@ -65,14 +67,14 @@ class NovaEngine:
         self._load_config()
 
         # In‑memory state
-        self.index: Optional[hnswlib.Index] = None
-        self.id_map: Dict[int, int] = {}
-        self.reverse_map: Dict[int, int] = {}
-        self.deleted_ids: Set[int] = set()
+        self.index: hnswlib.Index | None = None
+        self.id_map: dict[int, int] = {}
+        self.reverse_map: dict[int, int] = {}
+        self.deleted_ids: set[int] = set()
         self.next_id: int = 0
         self._active_count: int = 0
         self.last_applied_lsn: int = 0
-        self._current_gen: Optional[int] = None
+        self._current_gen: int | None = None
 
         # Lock for all mutable operations (save, add, update, delete)
         self._lock = threading.RLock()
@@ -187,7 +189,7 @@ class NovaEngine:
             vec = np.asarray(vector, dtype=np.float32)
             return self._add_new_internal(record_id, vec)
 
-    def add_items(self, items: List[Tuple[int, Sequence[float]]]) -> None:
+    def add_items(self, items: list[tuple[int, Sequence[float]]]) -> None:
         """Batch add new records. All must be new."""
         with self._lock:
             if not items:
@@ -203,7 +205,7 @@ class NovaEngine:
             ids = list(range(n, n + len(items)))
             vectors = np.asarray([v for _, v in items], dtype=np.float32)
             self.index.add_items(vectors, np.array(ids, dtype=np.int32))
-            for (rid, _), int_id in zip(items, ids):
+            for (rid, _), int_id in zip(items, ids, strict=True):
                 self.id_map[rid] = int_id
                 self.reverse_map[int_id] = rid
             self.next_id += len(items)
@@ -219,6 +221,7 @@ class NovaEngine:
             old_internal = self.id_map.get(record_id)
             if old_internal is None:
                 logger.error(f"Record ID {record_id} not found for update.")
+                return 0
             self.validate_vector(vector, self.dim)
 
             vec = np.asarray(vector, dtype=np.float32)
@@ -246,7 +249,7 @@ class NovaEngine:
 
             return new_internal
 
-    def batch_upsert(self, items: List[Tuple[int, Sequence[float]]]) -> None:
+    def batch_upsert(self, items: list[tuple[int, Sequence[float]]]) -> None:
         """
         Atomic batch upsert: adds new records and updates existing ones.
         If any step fails, all changes in this call are rolled back.
@@ -257,7 +260,7 @@ class NovaEngine:
             self._load_config()
 
             # Validate all first
-            for rid, vec in items:
+            for _, vec in items:
                 self.validate_vector(vec, self.dim)
 
             # Snapshot state for rollback
@@ -292,7 +295,7 @@ class NovaEngine:
                     ids = list(range(start, start + len(new_items_np)))
                     vectors = np.asarray([v for _, v in new_items_np], dtype=np.float32)
                     self.index.add_items(vectors, np.array(ids, dtype=np.int32))
-                    for (rid, _), int_id in zip(new_items_np, ids):
+                    for (rid, _), int_id in zip(new_items_np, ids, strict=True):
                         self.id_map[rid] = int_id
                         self.reverse_map[int_id] = rid
                         added_internals.append(int_id)
@@ -313,10 +316,8 @@ class NovaEngine:
                 logger.exception("Batch upsert failed, rolling back %d changes", len(added_internals))
                 # Mark all newly added internals as deleted
                 for int_id in added_internals:
-                    try:
+                    with contextlib.suppress(Exception):
                         self.index.mark_deleted(int_id)
-                    except Exception:
-                        pass
                     self.deleted_ids.add(int_id)
                     self.reverse_map.pop(int_id, None)
                 # Restore original mappings for updates
@@ -326,7 +327,7 @@ class NovaEngine:
                     if old_int not in self.reverse_map:
                         self.reverse_map[old_int] = rid
                 # Restore for new records: remove their id_map entries
-                for (rid, _), int_id in zip(new_items_np, added_internals[:len(new_items_np)]):
+                for (rid, _), int_id in zip(new_items_np, added_internals[:len(new_items_np)], strict=True):
                     if self.id_map.get(rid) == int_id:
                         del self.id_map[rid]
                 # Restore state completely
@@ -346,7 +347,7 @@ class NovaEngine:
                 return
             self._mark_deleted_by_internal(int_id)
 
-    def search(self, vector: Sequence[float], top_k: int = 10) -> List[Dict[str, Any]]:
+    def search(self, vector: Sequence[float], top_k: int = 10) -> list[dict[str, Any]]:
         """Search. Lock is only needed for reads of mutable structures? We'll use lock for consistency."""
         with self._lock:
             self._load_config()
@@ -370,7 +371,7 @@ class NovaEngine:
 
             results = []
             seen = set()
-            for label, dist in zip(labels[0], distances[0]):
+            for label, dist in zip(labels[0], distances[0], strict=True):
                 if label in self.deleted_ids:
                     continue
                 rid = self.reverse_map.get(label)

@@ -7,7 +7,7 @@ Endpoints: create_corpus, list_corpus, delete_corpus, deactivate_corpus, activat
 
 import pytest
 from conftest import (BASE_URL, AUTH, unique_suffix, create_corpus,
-                      delete_corpus, make_dataset)
+                      delete_corpus)
 
 pytestmark = pytest.mark.corpus
 
@@ -70,7 +70,7 @@ def test_small_create_wrong_password_rejected(client):
                     json={"corpus_name": corpus_name(), "ndb_type": "cosmos"})
     body = r.json()
     assert body["success"] is False
-    assert "Invalid password" in body["message"]
+    assert "Invalid credentials" in body["message"]
 
 
 def test_small_list_corpus(client):
@@ -104,7 +104,8 @@ def test_medium_create_then_list_contains(client):
     name = corpus_name()
     create_corpus(client, name, "cosmos")
     body = client.get(f"{BASE_URL}/corpus/list_corpus", auth=AUTH, timeout=30).json()
-    assert name in body["data"]["corpus_list"]
+    listed = [entry["name"] for entry in body["data"]["corpus_list"]]
+    assert name in listed
     delete_corpus(client, name)
 
 
@@ -201,7 +202,7 @@ def test_large_bulk_create_ten_corpora(client):
     for n in names:
         assert create_corpus(client, n, "cosmos")["success"] is True
     body = client.get(f"{BASE_URL}/corpus/list_corpus", auth=AUTH, timeout=30).json()
-    listed = body["data"]["corpus_list"]
+    listed = [entry["name"] for entry in body["data"]["corpus_list"]]
     assert all(n in listed for n in names)
     for n in names:
         delete_corpus(client, n)
@@ -218,7 +219,8 @@ def test_large_bulk_create_and_delete_all(client):
         body = delete_corpus(client, n)
         assert body["success"] is True
     body = client.get(f"{BASE_URL}/corpus/list_corpus", auth=AUTH, timeout=30).json()
-    assert all(n not in body["data"]["corpus_list"] for n in names)
+    listed = [entry["name"] for entry in body["data"]["corpus_list"]]
+    assert all(n not in listed for n in names)
 
 
 def test_large_create_long_corpus_name(client):
@@ -264,7 +266,7 @@ def test_large_many_list_calls_stable(client):
     for _ in range(5):
         body = client.get(f"{BASE_URL}/corpus/list_corpus", auth=AUTH, timeout=30).json()
         assert body["success"] is True
-        cur = tuple(sorted(body["data"]["corpus_list"]))
+        cur = tuple(sorted(entry["name"] for entry in body["data"]["corpus_list"]))
         if prev is not None:
             assert cur == prev
         prev = cur

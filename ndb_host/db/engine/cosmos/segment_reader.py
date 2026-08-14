@@ -18,7 +18,6 @@ import struct
 
 from pathlib import Path
 from collections import OrderedDict
-from typing import Dict, Optional, Tuple
 
 from utils.logger import NebulonDBLogger
 
@@ -39,7 +38,7 @@ def validate_segment(
     segment_header_size: int,
     segment_magic: int,
     segment_version: int,
-) -> Tuple[bool, int, Optional[bytes], bool]:
+) -> tuple[bool, int, bytes | None, bool]:
     """
     Read and validate the fixed-size header of *seg_path*.
 
@@ -113,11 +112,11 @@ def read_payload_at_offset(
     seg_dir: Path,
     segment_cache: "OrderedDict[str, tuple]",
     max_open_segments: int,
-    segment_info: Dict[int, dict],
+    segment_info: dict[int, dict],
     compress_segments: bool,
     record_header_size: int,
     record_header_format: str,
-) -> Optional[bytes]:
+) -> bytes | None:
     """
     Return the raw (decompressed, CRC-verified) payload bytes of one record.
 
@@ -172,3 +171,57 @@ def read_payload_at_offset(
     if (zlib.crc32(payload) & 0xFFFFFFFF) != stored_crc:
         return None
     return payload
+
+
+# ==========================================================
+#  Whole-segment scan (for read_all-style batch reads)
+# ==========================================================
+
+def scan_segment_payloads(
+    seg_path: Path,
+    data_offset: int,
+    count: int,
+    compressed: bool,
+    record_header_size: int,
+    record_header_format: str,
+) -> "list[tuple[int, bytes]]":
+    """
+    Sequentially walk one segment and return (offset, payload) for every
+    valid record. A single mmap + one pass replaces per-record lookups, so
+    batch reads avoid the LRU-cache/bloom/index overhead of read_payload_at_offset.
+    """
+    results: list[tuple[int, bytes]] = []
+    try:
+        with seg_path.open("rb") as f:
+            mm = mmap.mmap(f.fileno(), 0, access=mmap.ACCESS_READ)
+            try:
+                pos = data_offset
+                for _ in range(count):
+                    offset = pos
+                    header_end = pos + record_header_size
+                    if header_end > len(mm):
+                        break
+                    stored_crc, comp_len, _ = struct.unpack(
+                        record_header_format, mm[pos:header_end]
+                    )
+                    pos = header_end
+                    payload_end = pos + comp_len
+                    if payload_end > len(mm):
+                        break
+                    comp_data = mm[pos:payload_end]
+                    pos = payload_end
+                    if compressed:
+                        try:
+                            payload = zlib.decompress(comp_data)
+                        except Exception:
+                            continue
+                    else:
+                        payload = comp_data
+                    if (zlib.crc32(payload) & 0xFFFFFFFF) != stored_crc:
+                        continue
+                    results.append((offset, payload))
+            finally:
+                mm.close()
+    except Exception:
+        return []
+    return results

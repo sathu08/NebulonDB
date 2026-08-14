@@ -9,15 +9,14 @@ Storage layer bridging NovaEngine vectors to NebulonCosmos, containing:
 """
 
 
-from typing import Optional, List, Dict, Any, Sequence
+from typing import Any
+from collections.abc import Sequence
 
 from db.engine import NebulonCosmos
-from utils.logger import NebulonDBLogger
 
 from db.engine.utils import (
     FIELD_ID,
     FIELD_VECTOR,
-    FIELD_METADATA,
     FIELD_CREATED_AT,
 )
 
@@ -47,8 +46,8 @@ class NovaStore:
         self,
         record_id: int,
         vector: Sequence[float],
-        metadata: Optional[Dict] = None,
-        created_at: Optional[str] = None,
+        metadata: dict | None = None,
+        created_at: str | None = None,
     ) -> int:
         doc = {
             FIELD_ID: record_id,
@@ -61,13 +60,13 @@ class NovaStore:
         self._store.update(self.segment_name, doc)
         return record_id
 
-    def get(self, record_id: int) -> Optional[Dict[str, Any]]:
+    def get(self, record_id: int) -> dict[str, Any] | None:
         return _rename_id(self._store.get_by_id(self.segment_name, record_id))
 
     def delete(self, record_id: int) -> int:
         return self._store.delete(self.segment_name, record_id)
 
-    def read_all(self) -> List[Dict[str, Any]]:
+    def read_all(self) -> list[dict[str, Any]]:
         for rec in self._store.read_all(segment=self.segment_name, include_internal=True):
             yield _rename_id(dict(rec))
 

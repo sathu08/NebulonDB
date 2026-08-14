@@ -5,7 +5,7 @@ NebulonDB Unified Search Orchestrator
 Top-level orchestration layer integrating vector, graph, and ranking subsystems, containing:
     NebulonOrbit          – unified API for insert/delete/search with transaction safety
     WAL Recovery          – write-ahead log replay with LSN tracking for crash consistency
-    Hybrid Search         – vector + graph BFS expansion with configurable boost/depth
+    Hybrid Search         – Nova + Mesh BFS expansion with configurable boost/depth
     Ranked Search         – multi-signal fusion (BM25 + metadata + freshness) with optional RRF
     Cross-Encoder Rerank  – lazy-loaded re-ranking on top of ranked candidates
     Compaction            – automatic rebuild when deleted ratio exceeds threshold
@@ -14,13 +14,16 @@ Top-level orchestration layer integrating vector, graph, and ranking subsystems,
 
 import os
 import json
+import re
 import threading
 
+import contextlib
 import numpy as np
 
 from pathlib import Path
 from collections import deque
-from typing import Optional, List, Dict, Any, Tuple, Union, Sequence, Set
+from typing import Any
+from collections.abc import Sequence
 
 from db.engine import NebulonCosmos
 from db.engine.utils import DatabaseConfig
@@ -60,22 +63,28 @@ def _cosine_similarity(a, b) -> float:
 
 
 # =============================================================================
-# VectorStore – persistent storage (unchanged except thread-safety note)
+# NovaStore – persistent storage (thread-safe)
 # =============================================================================
 class NebulonOrbit:
     def __init__(
             self,
-            db_dir: Union[str, Path],
+            db_dir: str | Path,
             segment_name: str = "default",
-            ef_search: int = 50, 
+            ef_search: int = 50,
             reset: bool = False,
-            rank_config: Optional[RankConfig] = None
+            rank_config: RankConfig | None = None
         ):
         config = DatabaseConfig(db_dir, is_vector=True, is_graph=True)
         self._store = NebulonCosmos(db_dir, reset=reset)
 
         # NOVA Config
-        nova_segment = config.NOVA_SEGMENT_NAME
+        # Record-store segments are derived from `segment_name` so that
+        # different orbit segments of the same corpus keep their vector /
+        # document / mesh rows isolated in separate COSMOS segments. Without
+        # this, every segment shares the fixed `nebulon_nova` etc. record
+        # stores and rebuilds leak records across users.
+        nova_segment = f"{config.NOVA_SEGMENT_NAME}_{segment_name}"
+        docs_segment = f"{config.DOCUMENTS_SEGMENT_NAME}_{segment_name}"
         dim = config.VECTOR_DIM
         space = config.VECTOR_SPACE.lower()
         M = config.VECTOR_M
@@ -88,22 +97,28 @@ class NebulonOrbit:
         self.nova_wal_path = nova_dir / config.NOVA_WAL.name
         self.compaction_deleted_ratio = config.COMPACTION_DELETED_RATIO
         self.nova_store = NovaStore(self._store, nova_segment)
-        self.doc_store = DocumentStore(self._store, config.DOCUMENTS_SEGMENT_NAME)
+        self.doc_store = DocumentStore(self._store, docs_segment)
 
         self.nova_engine = NovaEngine(
             dim=dim, space=space, M=M,
-            ef_construction=ef_construction, 
+            ef_construction=ef_construction,
             ef_search=ef_search,
             nova_dir=nova_dir,
             nova_manifest_dir=nova_manifest_dir,
             nova_config_path=nova_config_path,
         )
 
-        # MESH Config
-        mesh_segment = config.MESH_SEGMENT_NAME
-        node_segment = config.MESH_NODE_SEGMENT_NAME
-        edge_segment = config.MESH_EDGE_SEGMENT_NAME
-        self.mesh_graph_viz_html = config.MESH_GRAPH_VIZ_HTML
+        # MESH Config (record segments derived from segment_name, see NOVA)
+        mesh_segment = f"{config.MESH_SEGMENT_NAME}_{segment_name}"
+        node_segment = f"{config.MESH_NODE_SEGMENT_NAME}_{segment_name}"
+        edge_segment = f"{config.MESH_EDGE_SEGMENT_NAME}_{segment_name}"
+
+        # Per-segment visualization file so different segments of the same
+        # corpus never overwrite each other's HTML graph output.
+        safe_segment = re.sub(r"[^A-Za-z0-9._-]", "_", segment_name) or "default"
+        self.mesh_graph_viz_html = (
+            config.NEBULON_MESH_DIR / f"mesh_graph_visualization_{safe_segment}.html"
+        )
         self.mesh_engine = MeshEngine(
             store=self._store,
             mesh_segment=mesh_segment,
@@ -128,7 +143,7 @@ class NebulonOrbit:
         self._lsn_lock = threading.Lock()
 
         # --- Record ID auto-generation support ---
-        self._auto_id: Optional[int] = None
+        self._auto_id: int | None = None
 
         self.weight = config.WEIGHT
         # Correct initialisation order
@@ -151,19 +166,19 @@ class NebulonOrbit:
         # --- Ranking support (lazy) ---
         self.rank_config: RankConfig = rank_config or RankConfig()
         self._rank_lock = threading.RLock()
-        self._corpus: Optional[List[Dict[str, Any]]] = None
+        self._corpus: list[dict[str, Any]] | None = None
         self._corpus_dirty: bool = True
-        self._bm25: Optional[BM25Scorer] = None
-        self._rank_engine: Optional[RankEngine] = None
+        self._bm25: BM25Scorer | None = None
+        self._rank_engine: RankEngine | None = None
         self._intent_cls: type = QueryIntent
         self._rrf_merger: RRFMerger = RRFMerger(k=60)
-        self._reranker: Optional[CrossEncoderReranker] = None
-        self._reranker_available: Optional[bool] = None
+        self._reranker: CrossEncoderReranker | None = None
+        self._reranker_available: bool | None = None
 
     # ------------------------------------------------------------------ #
     # Initialisation & Rebuild                                           #
     # ------------------------------------------------------------------ #
-    
+
     def _load_or_build(self) -> None:
         logger.info("Rebuilding Nova from stored vectors...")
         records = self.nova_store.read_all()
@@ -269,12 +284,12 @@ class NebulonOrbit:
         return self._auto_id
 
     def _wal_log(self, action: str, record_id: int,
-                 vector: Optional[List[float]] = None,
-                 metadata: Optional[Dict] = None,
-                 target: Optional[int] = None,
-                 relation: Optional[str] = None,
-                 weight: Optional[float] = None,
-                 created_at: Optional[str] = None) -> None:
+                 vector: list[float] | None = None,
+                 metadata: dict | None = None,
+                 target: int | None = None,
+                 relation: str | None = None,
+                 weight: float | None = None,
+                 created_at: str | None = None) -> None:
         """Append an LSN‑tagged operation to the WAL."""
         lsn = self._next_lsn()
         entry = {"lsn": lsn, "action": action, "id": record_id}
@@ -290,18 +305,15 @@ class NebulonOrbit:
             entry["weight"] = weight
         if created_at is not None:
             entry["created_at"] = created_at
-        with self._wal_lock:
-            with open(self.nova_wal_path, "a") as f:
-                f.write(json.dumps(entry) + "\n")
-                f.flush()
-                os.fsync(f.fileno())
+        with self._wal_lock, open(self.nova_wal_path, "a") as f:
+            f.write(json.dumps(entry) + "\n")
+            f.flush()
+            os.fsync(f.fileno())
 
     def _wal_clear(self) -> None:
         """Clear the WAL after a successful save."""
-        try:
+        with contextlib.suppress(FileNotFoundError):
             os.remove(self.nova_wal_path)
-        except FileNotFoundError:
-            pass
 
     def _replay_wal(self) -> None:
         """
@@ -314,9 +326,8 @@ class NebulonOrbit:
         # Retrieve the last applied LSN from the currently loaded nova
         last_applied = getattr(self.nova_engine, 'last_applied_lsn', 0)
 
-        with self._wal_lock:
-            with open(self.nova_wal_path, "r") as f:
-                lines = f.readlines()
+        with self._wal_lock, open(self.nova_wal_path) as f:
+            lines = f.readlines()
 
         max_replayed = last_applied
         for line in lines:
@@ -390,11 +401,11 @@ class NebulonOrbit:
         self._set_dirty(True)
 
     # ------------------------------------------------------------------ #
-    # Transaction‑safe Insert (unchanged except WAL log already has LSN) #
+    # Transaction‑safe Insert (WAL log carries the LSN) #
     # ------------------------------------------------------------------ #
 
-    def insert(self, record_id: Optional[int] = None, vector: Optional[Sequence[float]] = None,
-               metadata: Optional[Dict] = None, text: Optional[str] = None) -> Tuple[int, Optional[str]]:
+    def insert(self, record_id: int | None = None, vector: Sequence[float] | None = None,
+               metadata: dict | None = None, text: str | None = None) -> tuple[int, str | None]:
         """
         Insert a vector into the store.
 
@@ -458,18 +469,18 @@ class NebulonOrbit:
             return None, str(e)
 
     # ------------------------------------------------------------------ #
-    # Transaction‑safe Batch Insert (unchanged)                          #
+    # Transaction‑safe Batch Insert #
     # ------------------------------------------------------------------ #
 
-    def add_items(self, items: List[Tuple[int, Sequence[float]]],
-                  metadatas: Optional[List[Dict]] = None) -> None:
+    def add_items(self, items: list[tuple[int, Sequence[float]]],
+                  metadatas: list[dict] | None = None) -> None:
         if not items:
             return
         with self._op_lock:
             ids = [rid for rid, _ in items]
             if len(ids) != len(set(ids)):
                 logger.error("Duplicate record IDs in batch")
-            for rid, vec in items:
+            for _, vec in items:
                 self.nova_engine.validate_vector(vec, self.nova_engine.dim)
             # Log each item with LSN
             for i, (rid, vec) in enumerate(items):
@@ -524,7 +535,7 @@ class NebulonOrbit:
             logger.debug("Batch added %d items", len(items))
 
     # ------------------------------------------------------------------ #
-    # Transaction‑safe Delete (unchanged)                                #
+    # Transaction‑safe Delete #
     # ------------------------------------------------------------------ #
 
     def delete(self, record_id: int) -> None:
@@ -547,8 +558,8 @@ class NebulonOrbit:
             self._set_dirty(True)
             self._invalidate_corpus()
 
-    def update(self, record_id: int, vector: Optional[Sequence[float]] = None,
-               metadata: Optional[Dict] = None) -> Tuple[int, Optional[str]]:
+    def update(self, record_id: int, vector: Sequence[float] | None = None,
+               metadata: dict | None = None) -> tuple[int, str | None]:
         """
         Update an existing record's vector and/or metadata (upsert semantics).
 
@@ -607,7 +618,7 @@ class NebulonOrbit:
     # ------------------------------------------------------------------ #
 
     def add_relation(self, source, target: int, relation: str,
-                     weight: Optional[float] = None) -> int:
+                     weight: float | None = None) -> int:
         """Add a directed relationship between two nodes.
 
         ``source``/``target`` may be a node id (int) or a node label (string);
@@ -627,7 +638,7 @@ class NebulonOrbit:
             self._set_dirty(True)
             return edge_id
 
-    def remove_relation(self, source: int, target: int, relation: Optional[str] = None) -> None:
+    def remove_relation(self, source: int, target: int, relation: str | None = None) -> None:
         with self._op_lock:
             self._wal_log("remove_relation", source, target=target, relation=relation)
             self.mesh_engine.remove_edge(source, target, relation)
@@ -645,8 +656,8 @@ class NebulonOrbit:
             return 1.0
         return _cosine_similarity(va, vb)
 
-    def load_graph(self, nodes: Optional[List[Dict]] = None,
-                   edges: Optional[List[Dict]] = None) -> Dict[str, Any]:
+    def load_graph(self, nodes: list[dict] | None = None,
+                   edges: list[dict] | None = None) -> dict[str, Any]:
         """Bulk graph load: create nodes and edges (Option A flow).
 
         nodes: [{"id":..., "label":..., "metadata":{...}}, ...]
@@ -661,7 +672,6 @@ class NebulonOrbit:
             for node in nodes:
                 nid = node.get("id")
                 label = node.get("label")
-                meta = node.get("metadata") or {}
                 if nid is not None:
                     nid = int(nid)
                     if not self.mesh_engine.has_node(nid):
@@ -687,7 +697,7 @@ class NebulonOrbit:
         return {"nodes_added": node_count, "edges_added": edge_count}
 
     # ------------------------------------------------------------------ #
-    # Compaction (unchanged)                                             #
+    # Compaction #
     # ------------------------------------------------------------------ #
 
     def compact(self) -> None:
@@ -701,10 +711,10 @@ class NebulonOrbit:
             self.compact()
 
     # ------------------------------------------------------------------ #
-    # Search, Get, Count (unchanged)                                     #
+    # Search, Get, Count #
     # ------------------------------------------------------------------ #
 
-    def _record_payload(self, rid) -> Dict[str, Any]:
+    def _record_payload(self, rid) -> dict[str, Any]:
         """Merge document + nova + node state for a record id."""
         nova = self.nova_store.get(rid)
         doc = self.doc_store.get(rid) or {}
@@ -718,7 +728,7 @@ class NebulonOrbit:
             "label": meta.get(FIELD_LABEL) or node.get(FIELD_LABEL),
         }
 
-    def _nova_search(self, vector: Sequence[float], top_k: int) -> List[Dict[str, Any]]:
+    def _nova_search(self, vector: Sequence[float], top_k: int) -> list[dict[str, Any]]:
         """Pure vector similarity search."""
         with self._op_lock:
             results = self.nova_engine.search(vector, top_k)
@@ -726,7 +736,7 @@ class NebulonOrbit:
                 result.update(self._record_payload(result["id"]))
             return results
 
-    def _mesh_search(self, max_depth: int, top_k: int, start_node: Optional[int] = None) -> List[Dict[str, Any]]:
+    def _mesh_search(self, max_depth: int, top_k: int, start_node: int | None = None) -> list[dict[str, Any]]:
         """
         Graph‑only search: BFS from a start node, returning discovered nodes.
         Scores are based on distance (closer = higher).
@@ -773,18 +783,18 @@ class NebulonOrbit:
             results.sort(key=lambda x: x["score"], reverse=True)
             return results[:top_k]
 
-    def _hybrid_search(self, vector: Optional[Sequence[float]], top_k: int, expand_depth: int,
-                       graph_boost: float, graph_start_node: Optional[int] = None) -> List[Dict[str, Any]]:
-        """Hybrid vector + graph expansion (existing hybrid_search logic)."""
+    def _hybrid_search(self, vector: Sequence[float] | None, top_k: int, expand_depth: int,
+                       graph_boost: float, graph_start_node: int | None = None) -> list[dict[str, Any]]:
+        """Hybrid Nova + Mesh expansion (existing hybrid_search logic)."""
         if vector is None:
             logger.error("vector is required for hybrid mode; returning empty results")
             return []
-        
+
         with self._op_lock:
             candidates = self.nova_engine.search(vector, top_k=top_k * 2)
             if not candidates:
                 return []
-            
+
             score_map = {c["id"]: c["score"] for c in candidates}
             seeds = [c["id"] for c in candidates]
             if graph_start_node is not None:
@@ -821,17 +831,17 @@ class NebulonOrbit:
                     })
             results.sort(key=lambda x: x["score"], reverse=True)
             return results[:top_k]
-    
-    def search(self, 
-        mode: str = "auto", 
-        expand_depth: int = 1, 
+
+    def search(self,
+        mode: str = "auto",
+        expand_depth: int = 1,
         graph_boost: float = 0.1,
         rank: bool = True,
-        top_k: int = None, 
-        vector: Optional[Sequence[float]] = None, 
-        graph_start_node: Optional[int] = None,
-        query: Optional[str] = None, 
-        **rank_kwargs: Any) -> List[Dict[str, Any]]:
+        top_k: int = None,
+        vector: Sequence[float] | None = None,
+        graph_start_node: int | None = None,
+        query: str | None = None,
+        **rank_kwargs: Any) -> list[dict[str, Any]]:
         """
         Unified search interface.
 
@@ -917,12 +927,12 @@ class NebulonOrbit:
             self._bm25 = None
             self._rank_engine = None
 
-    def _build_corpus(self) -> List[Dict[str, Any]]:
+    def _build_corpus(self) -> list[dict[str, Any]]:
         """Lazily build the document corpus used for BM25 scoring."""
         with self._rank_lock:
             if self._corpus is not None and not self._corpus_dirty:
                 return self._corpus
-            corpus: List[Dict[str, Any]] = []
+            corpus: list[dict[str, Any]] = []
             for rec in self.doc_store.read_all():
                 rid = rec.get("id")
                 if rid is None:
@@ -936,7 +946,7 @@ class NebulonOrbit:
 
     def _ensure_rank_engine(
         self,
-        weights: Optional[Dict[str, float]] = None,
+        weights: dict[str, float] | None = None,
         half_life: float = 30.0,
     ) -> RankEngine:
         """Ensure the multi-signal RankEngine (with BM25) is built."""
@@ -959,7 +969,7 @@ class NebulonOrbit:
                 self._rank_engine.metadata_rules = cfg.metadata_rules
             return self._rank_engine
 
-    def _ensure_reranker(self) -> Optional[CrossEncoderReranker]:
+    def _ensure_reranker(self) -> CrossEncoderReranker | None:
         """Lazily load the cross-encoder; returns None if unavailable."""
         if self._reranker_available is False:
             return None
@@ -974,12 +984,12 @@ class NebulonOrbit:
 
     def ranked_search(
         self,
-        query: Optional[str] = None,
-        query_vector: Optional[Sequence[float]] = None,
+        query: str | None = None,
+        query_vector: Sequence[float] | None = None,
         top_k: int = 10,
         mode: str = "nova",
         **search_kwargs: Any,
-    ) -> List[Dict[str, Any]]:
+    ) -> list[dict[str, Any]]:
         """
         Hybrid ranked search: vector retrieval + (optional) BM25, fused with
         multi-signal ranking and optional cross-encoder re-ranking.
@@ -1058,9 +1068,9 @@ class NebulonOrbit:
     def rerank(
         self,
         query: str,
-        candidates: List[Dict[str, Any]],
-        top_k: Optional[int] = None,
-    ) -> List[Dict[str, Any]]:
+        candidates: list[dict[str, Any]],
+        top_k: int | None = None,
+    ) -> list[dict[str, Any]]:
         """
         Re-rank an existing list of candidate results (no new retrieval).
 
@@ -1102,11 +1112,11 @@ class NebulonOrbit:
         for doc in ranked:
             doc.pop("_rank_debug", None)
         return ranked
-    
+
     # ------------------------------------------------------------------ #
     # Graph traversal methods exposed                                     #
     # ------------------------------------------------------------------ #
-    def add_node(self, node_id: int, label: Optional[str] = None) -> None:
+    def add_node(self, node_id: int, label: str | None = None) -> None:
         """Create a graph node explicitly (no vector required)."""
         with self._op_lock:
             self._wal_log("add_node", node_id, metadata={FIELD_LABEL: label})
@@ -1120,7 +1130,7 @@ class NebulonOrbit:
             self.mesh_engine.remove_node(node_id)
             self._set_dirty(True)
 
-    def get_node(self, node_id: int) -> Optional[Dict]:
+    def get_node(self, node_id: int) -> dict | None:
         """Return the graph node's metadata, or None if it does not exist."""
         return self.mesh_engine.get_node(node_id)
 
@@ -1140,45 +1150,45 @@ class NebulonOrbit:
         """Return True if the graph contains at least one edge."""
         return self.mesh_engine.has_edges()
 
-    def get_edges(self) -> List[Dict]:
+    def get_edges(self) -> list[dict]:
         """Return all edges as dict rows (edge_id, source, target, ...)."""
         return self.mesh_engine.get_all_edges()
 
-    def get_all_nodes(self) -> List[Dict[str, Any]]:
+    def get_all_nodes(self) -> list[dict[str, Any]]:
         """Return every graph node as {"id": ..., "label": ...}."""
         return [
             {"id": node_id, "label": (self.mesh_engine.get_node(node_id) or {}).get(FIELD_LABEL)}
             for node_id in self.mesh_engine.get_all_nodes()
         ]
 
-    def edges_by_relation(self, relation: str) -> List[Dict]:
+    def edges_by_relation(self, relation: str) -> list[dict]:
         """Return all edges that carry the given relation label."""
         return self.mesh_engine.edges_by_relation(relation)
 
-    def get_neighbors(self, node_id: int, direction: str = "both") -> List[Tuple[int, str]]:
+    def get_neighbors(self, node_id: int, direction: str = "both") -> list[tuple[int, str]]:
         return self.mesh_engine.get_neighbors(node_id, direction)
 
-    def get_in_neighbors(self, node_id: int) -> List[Tuple[int, str]]:
+    def get_in_neighbors(self, node_id: int) -> list[tuple[int, str]]:
         """Neighbours pointing at node_id (incoming edges)."""
         return self.mesh_engine.get_neighbors(node_id, "in")
 
-    def get_out_neighbors(self, node_id: int) -> List[Tuple[int, str]]:
+    def get_out_neighbors(self, node_id: int) -> list[tuple[int, str]]:
         """Neighbours node_id points at (outgoing edges)."""
         return self.mesh_engine.get_neighbors(node_id, "out")
 
-    def bfs(self, start: int, max_depth: int = 3) -> List[int]:
+    def bfs(self, start: int, max_depth: int = 3) -> list[int]:
         return self.mesh_engine.bfs(start, max_depth)
 
-    def dfs(self, start: int, max_depth: int = 3) -> List[int]:
+    def dfs(self, start: int, max_depth: int = 3) -> list[int]:
         return self.mesh_engine.dfs(start, max_depth)
 
-    def shortest_path(self, source: int, target: int) -> Optional[List[int]]:
+    def shortest_path(self, source: int, target: int) -> list[int] | None:
         return self.mesh_engine.shortest_path(source, target)
 
-    def connected_components(self) -> List[Set[int]]:
+    def connected_components(self) -> list[set[int]]:
         return self.mesh_engine.connected_components()
 
-    def get_visualization_html(self) ->  Tuple[Optional[str], Optional[Path]]:
+    def get_visualization_html(self) ->  tuple[str | None, Path | None]:
         """Return an HTML string for visualizing the graph."""
         if not self.mesh_graph_viz_html.exists():
             return "Mesh graph visualization HTML template not configured.", None
@@ -1187,16 +1197,16 @@ class NebulonOrbit:
     # ------------------------------------------------------------------ #
     # Get, Count, Flush                                                   #
     # ------------------------------------------------------------------ #
-    def get(self, record_id: int) -> Optional[Dict[str, Any]]:
+    def get(self, record_id: int) -> dict[str, Any] | None:
         with self._op_lock:
             return self._record_payload(record_id)
 
-    def get_metadata(self, record_id: int) -> Optional[Dict]:
+    def get_metadata(self, record_id: int) -> dict | None:
         """Return only the metadata of a record, or None."""
         doc = self.get(record_id)
         return doc.get(FIELD_METADATA) if doc else None
 
-    def get_vector(self, record_id: int) -> Optional[List[float]]:
+    def get_vector(self, record_id: int) -> list[float] | None:
         """Return only the vector of a record, or None."""
         return (self.nova_store.get(record_id) or {}).get(FIELD_VECTOR)
 
@@ -1204,12 +1214,12 @@ class NebulonOrbit:
         """Return True if a record with this ID exists."""
         return self.nova_store.get(record_id) is not None
 
-    def list_ids(self) -> List[int]:
+    def list_ids(self) -> list[int]:
         """Return all record IDs currently stored."""
         with self._op_lock:
             return [rec.get("id") for rec in self.nova_store.read_all() if rec.get("id") is not None]
 
-    def get_all(self) -> List[Dict[str, Any]]:
+    def get_all(self) -> list[dict[str, Any]]:
         """Return all records (id, vector, text, metadata, label)."""
         with self._op_lock:
             return [self._record_payload(rec.get("id")) for rec in self.nova_store.read_all()]
@@ -1218,8 +1228,8 @@ class NebulonOrbit:
         with self._op_lock:
             return self.nova_engine.get_current_count()
 
-    def stats(self) -> Dict[str, Any]:
-        """Return a summary snapshot of vector + graph state."""
+    def stats(self) -> dict[str, Any]:
+        """Return a summary snapshot of Nova + Mesh state."""
         with self._op_lock:
             return {
                 "vector_count": self.nova_engine.get_current_count(),
@@ -1242,19 +1252,22 @@ class NebulonOrbit:
         Save the current state, including the last applied LSN.
         After a successful save, the WAL is cleared.
         """
-        with self._op_lock:
-            with self._save_lock:
-                if not self._is_dirty():
-                    return
-                self._maybe_compact()
+        with self._op_lock, self._save_lock:
+            if not self._is_dirty():
+                return
+            self._maybe_compact()
 
-                # Tell the graph which LSN to write into its mapping
-                current_lsn = self._lsn_counter   # thread‑safe read (atomic int)
-                self.nova_engine.set_last_applied_lsn(current_lsn)
-                self.mesh_engine.save()
-                self.nova_engine.save()
-                self._set_dirty(False)
-                self._wal_clear()
+            # Tell the graph which LSN to write into its mapping
+            current_lsn = self._lsn_counter   # thread‑safe read (atomic int)
+            self.nova_engine.set_last_applied_lsn(current_lsn)
+            self.mesh_engine.save()
+            self.nova_engine.save()
+            self._set_dirty(False)
+            self._wal_clear()
+            # Rewrite the Cosmos WAL from the live memtable so a fresh
+            # engine init never replays stale entries. No segment file
+            # is written below the flush threshold.
+            self._store.checkpoint_wal()
 
     def close(self) -> None:
         try:

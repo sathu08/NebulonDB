@@ -13,7 +13,6 @@ Higher-level graph traversal and persistence layer, containing:
 import threading
 
 from collections import deque
-from typing import Optional, List, Dict, Set, Tuple
 
 from db.engine import NebulonCosmos
 from .mesh_store import MeshStore
@@ -40,22 +39,23 @@ class MeshEngine:
             mesh_segment: str,
             node_segment: str,
             edge_segment: str,
-            mesh_graph_viz_html: Optional[str] = None,
+            mesh_graph_viz_html: str | None = None,
         ):
+        
         self._store = MeshStore(
             store, node_segment, edge_segment, mesh_graph_viz_html
         )
         self._lock = threading.RLock()
 
     # ---------- Core operations (delegate to store) ----------
-    def add_node(self, node_id: int, label: Optional[str] = None,
-                 created_at: Optional[str] = None) -> None:
+    def add_node(self, node_id: int, label: str | None = None,
+                 created_at: str | None = None) -> None:
         self._store.add_node(node_id, label, created_at)
 
     def remove_node(self, node_id: int) -> None:
         self._store.remove_node(node_id)
 
-    def get_node(self, node_id: int) -> Optional[Dict]:
+    def get_node(self, node_id: int) -> dict | None:
         return self._store.get_node(node_id)
 
     def has_node(self, node_id: int) -> bool:
@@ -65,7 +65,7 @@ class MeshEngine:
         return self._store.resolve_node(ref)
 
     def add_edge(self, source: int, target: int, relation: str,
-                 weight: float = 1.0, created_at: Optional[str] = None) -> int:
+                 weight: float = 1.0, created_at: str | None = None) -> int:
         # Ensure both nodes exist (auto‑create if missing)
         if self._store.get_node(source) is None:
             self._store.add_node(source)
@@ -73,26 +73,23 @@ class MeshEngine:
             self._store.add_node(target)
         return self._store.add_edge(source, target, relation, weight, created_at)
 
-    def remove_edge(self, source: int, target: int, relation: Optional[str] = None) -> None:
+    def remove_edge(self, source: int, target: int, relation: str | None = None) -> None:
         self._store.remove_edge(source, target, relation)
 
-    def get_neighbors(self, node_id: int, direction: str = "both") -> List[Tuple[int, str]]:
+    def get_neighbors(self, node_id: int, direction: str = "both") -> list[tuple[int, str]]:
         return self._store.get_neighbors(node_id, direction)
 
-    def get_all_edges(self) -> List[Dict]:
+    def get_all_edges(self) -> list[dict]:
         return self._store.get_all_edges()
 
-    def edges_by_relation(self, relation: str) -> List[Dict]:
+    def edges_by_relation(self, relation: str) -> list[dict]:
         return [
             e for e in self._store.get_all_edges()
             if e.get(FIELD_RELATION) == relation
         ]
 
-    def get_all_nodes(self) -> List[int]:
+    def get_all_nodes(self) -> list[int]:
         return self._store.get_all_node_ids()
-
-    def has_node(self, node_id: int) -> bool:
-        return self._store.get_node(node_id) is not None
 
     def count_nodes(self) -> int:
         return self._store.count_nodes()
@@ -104,7 +101,7 @@ class MeshEngine:
         return len(self._store.get_all_edges()) > 0
 
     # ---------- Traversal ----------
-    def bfs(self, start: int, max_depth: int = 3) -> List[int]:
+    def bfs(self, start: int, max_depth: int = 3) -> list[int]:
         """Return all nodes reachable within max_depth (undirected)."""
         visited = set()
         queue = deque([(start, 0)])
@@ -119,7 +116,7 @@ class MeshEngine:
                     queue.append((neighbor, depth + 1))
         return list(visited)
 
-    def dfs(self, start: int, max_depth: int = 3) -> List[int]:
+    def dfs(self, start: int, max_depth: int = 3) -> list[int]:
         """Return all nodes reachable within max_depth using depth-first search."""
         visited = set()
         stack = [(start, 0)]
@@ -134,7 +131,7 @@ class MeshEngine:
                     stack.append((neighbor, depth + 1))
         return list(visited)
 
-    def shortest_path(self, source: int, target: int) -> Optional[List[int]]:
+    def shortest_path(self, source: int, target: int) -> list[int] | None:
         """BFS shortest path (unweighted). Returns None if unreachable."""
         if source == target:
             return [source]
@@ -156,7 +153,7 @@ class MeshEngine:
                     queue.append(neighbor)
         return None
 
-    def connected_components(self) -> List[Set[int]]:
+    def connected_components(self) -> list[set[int]]:
         """Find all connected components (undirected)."""
         all_nodes = set(self._store.get_all_node_ids())
         visited = set()

@@ -2,7 +2,7 @@
 Basic API tests for the System routes (ndb_host/api/routes/system.py).
 
 Per requirement, system gets a small set of "test one" style checks.
-Endpoint: GET /system/config
+Endpoint: GET /dashboard/config
 """
 
 import pytest
@@ -20,7 +20,7 @@ def client():
 
 
 def test_config_returns_host_port_url(client):
-    r = client.get(f"{BASE_URL}/system/config", timeout=30)
+    r = client.get(f"{BASE_URL}/dashboard/config", timeout=30)
     body = r.json()
     assert r.status_code == 200
     assert "server" in body
@@ -31,16 +31,16 @@ def test_config_returns_host_port_url(client):
 
 
 def test_config_works_without_auth(client):
-    r = client.get(f"{BASE_URL}/system/config", timeout=30)
+    r = client.get(f"{BASE_URL}/dashboard/config", timeout=30)
     assert r.status_code == 200
 
 
 def test_config_url_consistent_with_host_port(client):
-    body = client.get(f"{BASE_URL}/system/config", timeout=30).json()
+    body = client.get(f"{BASE_URL}/dashboard/config", timeout=30).json()
     assert body["server"]["url"] == f"http://{body['server']['host']}:{body['server']['port']}"
 
 
 def test_config_host_is_nonempty(client):
-    body = client.get(f"{BASE_URL}/system/config", timeout=30).json()
+    body = client.get(f"{BASE_URL}/dashboard/config", timeout=30).json()
     assert isinstance(body["server"]["host"], str)
     assert body["server"]["host"].strip() != ""

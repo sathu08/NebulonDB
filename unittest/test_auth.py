@@ -6,7 +6,7 @@ Endpoints: POST /auth/register, GET /auth/verify
 """
 
 import pytest
-from conftest import BASE_URL, USERNAME, PASSWORD, AUTH, unique_suffix
+from conftest import BASE_URL, USERNAME, AUTH, unique_suffix
 
 pytestmark = pytest.mark.auth
 
@@ -33,7 +33,7 @@ def test_verify_wrong_password(client):
     body = r.json()
     assert r.status_code == 200
     assert body["user"]["is_authenticated"] is False
-    assert body["user"]["message"] == "Invalid password"
+    assert body["user"]["message"] == "Invalid credentials"
 
 
 def test_verify_unknown_user(client):
@@ -41,7 +41,7 @@ def test_verify_unknown_user(client):
     body = r.json()
     assert r.status_code == 200
     assert body["user"]["is_authenticated"] is False
-    assert body["user"]["message"] == "Invalid username"
+    assert body["user"]["message"] == "Invalid credentials"
 
 
 def test_verify_no_credentials(client):

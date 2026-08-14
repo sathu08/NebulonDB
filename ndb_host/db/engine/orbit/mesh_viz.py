@@ -2,8 +2,8 @@
 NebulonDB Mesh Visualization
 ==========================
 
-This module provides functionality to visualize NebulonDB mesh structures using Cytoscape.js. 
-It defines classes and methods to convert mesh data into a format suitable for rendering in a web browser, 
+This module provides functionality to visualize NebulonDB mesh structures using Cytoscape.js.
+It defines classes and methods to convert mesh data into a format suitable for rendering in a web browser,
 including generating HTML output with embedded graph data and styles.
 """
 
@@ -12,7 +12,7 @@ import json
 
 from pathlib import Path
 from collections import Counter
-from typing import Dict, List, Optional, Any
+from typing import Any
 
 from dataclasses import dataclass
 
@@ -25,6 +25,7 @@ from db.engine.utils.constants import (
     LAYOUTS,
     RENDER_OPTIONS,
     DEFAULT_TEMPLATE,
+    CYTO_BUNDLE_PATH,
     NebulonConfig,
     NebulonColors,
     NebulonRenderOptions,
@@ -33,10 +34,14 @@ from utils.logger import NebulonDBLogger
 
 logger = NebulonDBLogger().get_logger()
 
+# CDN tag in the templates that gets replaced by the bundled library
+# (CYTO_BUNDLE_PATH in db.engine.utils.constants).
+CYTO_CDN_TAG = '<script src="https://unpkg.com/cytoscape/dist/cytoscape.min.js"></script>'
+
 # ---------- Type aliases ----------
-NebulonNodeStyle = Dict[str, Any]
-NebulonNodeStyles = Dict[str, NebulonNodeStyle]
-NebulonLayout = Dict[str, Any]
+NebulonNodeStyle = dict[str, Any]
+NebulonNodeStyles = dict[str, NebulonNodeStyle]
+NebulonLayout = dict[str, Any]
 
 # ---------- NebulonGraphProfile ----------
 @dataclass(frozen=True)
@@ -47,7 +52,7 @@ class NebulonGraphProfile:
     optimize_large_graph: bool
 
     @classmethod
-    def from_graph(cls, nodes: List[Dict], edges: List[Dict]) -> "NebulonGraphProfile":
+    def from_graph(cls, nodes: list[dict], edges: list[dict]) -> "NebulonGraphProfile":
         node_count = len(nodes)
         mode = cls._render_mode(node_count)
         layout = LAYOUTS[mode]
@@ -68,7 +73,7 @@ class NebulonGraphProfile:
         return "huge"
 
     @staticmethod
-    def _calculate_degree(edges: List[Dict]) -> Counter:
+    def _calculate_degree(edges: list[dict]) -> Counter:
         degree = Counter()
         for e in edges:
             degree[e[EDGE_SOURCE]] += 1
@@ -76,7 +81,7 @@ class NebulonGraphProfile:
         return degree
 
     @staticmethod
-    def _auto_style_nodes(nodes: List[Dict], degrees: Counter) -> NebulonNodeStyles:
+    def _auto_style_nodes(nodes: list[dict], degrees: Counter) -> NebulonNodeStyles:
         styles: NebulonNodeStyles = {}
         for node in nodes:
             d = degrees.get(node[NODE_ID], 0)
@@ -98,11 +103,11 @@ class NebulonGraphProfile:
 class NebulonCytoscapeGraph:
     def __init__(
         self,
-        graph_data: Optional[Dict] = None,
+        graph_data: dict | None = None,
         template_path: str = "templates/graph.html",
     ):
-        self.nodes: List[Dict] = []
-        self.edges: List[Dict] = []
+        self.nodes: list[dict] = []
+        self.edges: list[dict] = []
         self.template_path = template_path
         if graph_data:
             self.nodes = graph_data.get("nodes", [])
@@ -169,7 +174,7 @@ class NebulonCytoscapeGraph:
             if target not in node_ids:
                 raise ValueError(f"Edge target '{target}' is not a node ID.")
 
-    def summary(self) -> Dict[str, Any]:
+    def summary(self) -> dict[str, Any]:
         if not self.nodes:
             isolated_count = 0
         else:
@@ -185,7 +190,7 @@ class NebulonCytoscapeGraph:
             "isolated_nodes": isolated_count,
         }
 
-    def _build_elements(self, profile: NebulonGraphProfile) -> List[dict]:
+    def _build_elements(self, profile: NebulonGraphProfile) -> list[dict]:
         elements = []
         for node in self.nodes:
             nid = node[NODE_ID]
@@ -225,7 +230,7 @@ class NebulonCytoscapeGraph:
             style["text-opacity"] = 0
         return style
 
-    def _build_edge_styles(self) -> List[dict]:
+    def _build_edge_styles(self) -> list[dict]:
         return [
             {
                 "selector": "edge",
@@ -251,12 +256,27 @@ class NebulonCytoscapeGraph:
     def _final_layout(self, profile: NebulonGraphProfile) -> NebulonLayout:
         return profile.layout
 
+    def _inline_cytoscape(self, html: str) -> str:
+        """Replace the CDN Cytoscape <script src> tag with the bundled library.
+
+        Sandboxed iframes get an opaque origin that blocks loading the remote
+        CDN script, leaving the graph blank. Inlining the library makes the
+        visualization self-contained and offline-capable.
+        """
+        if CYTO_CDN_TAG not in html:
+            return html
+        if not CYTO_BUNDLE_PATH.exists():
+            logger.warning("Cytoscape bundle missing at %s; keeping CDN tag", CYTO_BUNDLE_PATH)
+            return html
+        bundle = CYTO_BUNDLE_PATH.read_text(encoding="utf-8")
+        return html.replace(CYTO_CDN_TAG, f"<script>\n{bundle}\n</script>")
+
     def _render_html(
         self,
-        elements: List[dict],
+        elements: list[dict],
         final_layout: NebulonLayout,
         node_style: dict,
-        edge_styles: List[dict],
+        edge_styles: list[dict],
     ) -> str:
         template_path = Path(self.template_path)
         template = (
@@ -264,13 +284,14 @@ class NebulonCytoscapeGraph:
             if template_path.exists()
             else DEFAULT_TEMPLATE
         )
-        html = template.replace("__ELEMENTS_JSON__", json.dumps(elements))
+        html = self._inline_cytoscape(template)
+        html = html.replace("__ELEMENTS_JSON__", json.dumps(elements))
         html = html.replace("__LAYOUT_JSON__", json.dumps(final_layout))
         html = html.replace("__NODE_STYLE__", json.dumps(node_style))
         html = html.replace("__EDGE_STYLES__", json.dumps(edge_styles))
         return html
 
-    def to_html(self, output_path: Optional[str] = None) -> str:
+    def to_html(self, output_path: str | None = None) -> str:
         self.validate()
         profile = NebulonGraphProfile.from_graph(self.nodes, self.edges)
         elements = self._build_elements(profile)

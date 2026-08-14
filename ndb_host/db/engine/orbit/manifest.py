@@ -14,9 +14,8 @@ import os
 import threading
 
 from pathlib import Path
-from typing import Optional
 
-from ndb_host.utils.models import load_data, save_data  
+from ndb_host.utils.models import load_data, save_data
 
 
 # =============================================================================
@@ -30,7 +29,7 @@ class Manifest:
         self.path = manifest_path
         self._lock = threading.Lock()
 
-    def read_latest(self) -> Optional[int]:
+    def read_latest(self) -> int | None:
         """Return the latest generation number from manifest, or None if missing."""
         data = load_data(self.path, default={}) or {}
         return data.get("generation") if data else None

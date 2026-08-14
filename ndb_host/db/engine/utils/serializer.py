@@ -4,7 +4,7 @@ varint encoding and type tags. Used for storing values in segments.
 """
 
 import struct
-from typing import Any, Tuple
+from typing import Any
 
 from .constants import (
     TYPE_NULL, TYPE_BOOL, TYPE_INT, TYPE_FLOAT,
@@ -21,7 +21,7 @@ def _write_varint(value: int) -> bytes:
     result.append(value & 0x7F)
     return bytes(result)
 
-def _read_varint(data: bytes, pos: int) -> Tuple[int, int]:
+def _read_varint(data: bytes, pos: int) -> tuple[int, int]:
     value = 0
     shift = 0
     while True:
@@ -39,13 +39,65 @@ def _write_signed_varint(value: int) -> bytes:
     value = int(value)
     return _write_varint((value << 1) ^ (value >> 63))
 
-def _read_signed_varint(data: bytes, pos: int) -> Tuple[int, int]:
+def _read_signed_varint(data: bytes, pos: int) -> tuple[int, int]:
     value, pos = _read_varint(data, pos)
     return ((value >> 1) ^ -(value & 1)), pos
 
 # ---------- Public encoder / decoder ----------
+class _FastPathUnsupported(Exception):
+    pass
+
+
+def _encode_flat_dict(d: dict) -> bytes:
+    """
+    One-pass encoder for the common case: a flat dict of primitives.
+
+    Emits byte-for-byte the same output as the recursive path (TYPE_DICT,
+    key count, then per item: encoded key + encoded value). Falls back to the
+    recursive encoder via _FastPathUnsupported for anything exotic.
+    """
+    out = bytearray()
+    out.append(TYPE_DICT)
+    out += _write_varint(len(d))
+    for k, v in d.items():
+        if not isinstance(k, str):
+            raise _FastPathUnsupported
+        kb = k.encode('utf-8')
+        out.append(TYPE_STRING)
+        out += _write_varint(len(kb))
+        out += kb
+        if v is None:
+            out.append(TYPE_NULL)
+        elif isinstance(v, bool):
+            out.append(TYPE_BOOL)
+            out.append(1 if v else 0)
+        elif isinstance(v, int):
+            out.append(TYPE_INT)
+            out += _write_signed_varint(v)
+        elif isinstance(v, float):
+            out.append(TYPE_FLOAT)
+            out += struct.pack("<d", v)
+        elif isinstance(v, str):
+            vb = v.encode('utf-8')
+            out.append(TYPE_STRING)
+            out += _write_varint(len(vb))
+            out += vb
+        elif isinstance(v, bytes):
+            out.append(TYPE_BYTES)
+            out += _write_varint(len(v))
+            out += v
+        else:
+            raise _FastPathUnsupported
+    return bytes(out)
+
+
 def encode_object(obj: Any) -> bytes:
     """Encode any Python object into a binary blob."""
+    if isinstance(obj, dict):
+        try:
+            return _encode_flat_dict(obj)
+        except _FastPathUnsupported:
+            pass
     if obj is None:
         return bytes([TYPE_NULL])
     if isinstance(obj, bool):
@@ -80,7 +132,7 @@ def decode_object(data: bytes) -> Any:
         raise ValueError("Trailing data detected after deserialization")
     return obj
 
-def _decode_object_at(data: bytes, pos: int) -> Tuple[Any, int]:
+def _decode_object_at(data: bytes, pos: int) -> tuple[Any, int]:
     if pos >= len(data):
         raise ValueError("Unexpected end of binary payload")
     type_code = data[pos]

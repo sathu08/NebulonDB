@@ -69,7 +69,7 @@ class NDBConfig:
             self._config = ConfigParser()
             self._config.read(self.config_path, encoding=AuthenticationConfig.ENCODING)
         except Exception as e:
-            raise RuntimeError(f"Failed to load config file '{self.config_path}': {e}")
+            raise RuntimeError(f"Failed to load config file '{self.config_path}': {e}") from e
 
         self._validate_sections()
         self._apply_env_override()
@@ -83,7 +83,7 @@ class NDBConfig:
         self._load_llm()
 
     # ------------------------------
-    #  Private Utility Methods 
+    #  Private Utility Methods
     # ------------------------------
 
     @staticmethod
@@ -91,7 +91,7 @@ class NDBConfig:
         """Resolve variables using provided path_vars and environment, return a Path."""
         resolved = os.path.expandvars(Template(value).safe_substitute(path_vars))
         return Path(resolved).resolve()
-    
+
     def _write(self):
         """Persist current config state back to disk."""
         with self.config_path.open('w', encoding=AuthenticationConfig.ENCODING) as f:
@@ -102,10 +102,10 @@ class NDBConfig:
             for section in required_sections:
                 if section not in self._config:
                     raise KeyError(f"Missing required section: '{section}' in config file.")
-    
+
             if 'NEBULONDB_HOME' not in self._config['paths']:
                 raise KeyError("Missing 'NEBULONDB_HOME' in [paths] section.")
-    
+
             if 'NEBULONDB_MASTER_KEY' not in self._config['environment']:
                 raise KeyError("Missing 'NEBULONDB_MASTER_KEY' in [environment] section.")
 
@@ -165,10 +165,21 @@ class NDBConfig:
         self.NEBULONDB_MODEL_CACHE_DIR = cache_dir
         self.NEBULONDB_EMBEDDING_MODEL = self._config.get('llm', 'NEBULONDB_EMBEDDING_MODEL')
         self.NEBULONDB_CROSS_ENCODER_MODEL = self._config.get('llm', 'NEBULONDB_CROSS_ENCODER_MODEL')
-        self.NEBULONDB_EMBEDDING_BATCH_SIZE = self._config.getint('llm', 'NEBULONDB_EMBEDDING_BATCH_SIZE', fallback=0)
-        self.NEBULONDB_CROSS_ENCODER_BATCH_SIZE = self._config.getint('llm', 'NEBULONDB_CROSS_ENCODER_BATCH_SIZE', fallback=0)
-        self.NEBULONDB_EMBEDDING_MODEL_DEVICE = self._config.get('llm', 'NEBULONDB_EMBEDDING_MODEL_DEVICE', fallback='')
-        self.NEBULONDB_CROSS_ENCODER_MODEL_DEVICE = self._config.get('llm', 'NEBULONDB_CROSS_ENCODER_MODEL_DEVICE', fallback='')
+        self.NEBULONDB_EMBEDDING_BATCH_SIZE = self._config.getint(
+            'llm', 'NEBULONDB_EMBEDDING_BATCH_SIZE', fallback=0
+        )
+        self.NEBULONDB_CROSS_ENCODER_BATCH_SIZE = self._config.getint(
+            'llm', 'NEBULONDB_CROSS_ENCODER_BATCH_SIZE', fallback=0
+        )
+        self.NEBULONDB_EMBEDDING_MODEL_DEVICE = self._config.get(
+            'llm', 'NEBULONDB_EMBEDDING_MODEL_DEVICE', fallback=''
+        )
+        self.NEBULONDB_CROSS_ENCODER_MODEL_DEVICE = self._config.get(
+            'llm', 'NEBULONDB_CROSS_ENCODER_MODEL_DEVICE', fallback=''
+        )
+        self.NEBULONDB_WARM_MODELS = self._config.getboolean(
+            'llm', 'NEBULONDB_WARM_MODELS', fallback=True
+        )
 
     def _load_logging(self):
         self.LOG_RETENTION_DAYS = self._config.getint(
@@ -209,6 +220,7 @@ class NDBConfig:
     def _load_segments(self):
         self.FLUSH_RECORD_THRESHOLD = self._config.getint('segments', 'FLUSH_RECORD_THRESHOLD')
         self.WAL_AUTO_FLUSH = self._config.getboolean('segments', 'WAL_AUTO_FLUSH', fallback=True)
+        self.WAL_FSYNC_INTERVAL = self._config.getint('segments', 'wal_fsync_interval', fallback=65536)
         self.COMPRESS_SEGMENTS = self._config.getboolean('segments', 'COMPRESS_SEGMENTS', fallback=True)
         self.BLOOM_FILTER_ENABLED = self._config.getboolean('segments', 'BLOOM_FILTER_ENABLED', fallback=True)
         self.MAX_OPEN_SEGMENTS = self._config.getint('segments', 'MAX_OPEN_SEGMENTS', fallback=50)
@@ -227,6 +239,9 @@ class NDBConfig:
         self.ACCESS_LOGFILE = self._config.get('server', 'ACCESS_LOGFILE', fallback='')
         self.ERROR_LOGFILE = self._config.get('server', 'ERROR_LOGFILE', fallback='')
         self.LOG_LEVEL = self._config.get('server', 'LOG_LEVEL', fallback='info')
+        self.NEBULONDB_CLEAR_CACHE = self._config.getboolean(
+            'server', 'NEBULONDB_CLEAR_CACHE', fallback=True
+        )
 
     def update_model_config(self, device: str, batch_size: int, model_type: str):
         section = 'llm'
@@ -276,11 +291,11 @@ class NDBCryptoManager:
         env_key = os.environ.get("NEBULONDB_MASTER_KEY")
         if env_key:
             return env_key.encode()
-    
+
         config_key = getattr(self.config, "ENVIRONMENT_MASTER_KEY", None)
         if config_key:
             return config_key.encode()
-        
+
         # === As a last resort, generate a temporary in-memory key ===
         logger.warning("[Warning] No valid key found — generating temporary master key.")
 
@@ -312,9 +327,13 @@ class NDBCryptoManager:
         """Decrypt encrypted NDB content and return the original bytes."""
         master_key = self.get_master_key()
         fernet_master = Fernet(master_key)
-        ndb_key = fernet_master.decrypt(base64.b64decode(encrypted_content["ndb_key"].encode(AuthenticationConfig.ENCODING)))
+        ndb_key = fernet_master.decrypt(
+            base64.b64decode(encrypted_content["ndb_key"].encode(AuthenticationConfig.ENCODING))
+        )
         fernet_ndb = Fernet(ndb_key)
-        return fernet_ndb.decrypt(base64.b64decode(encrypted_content["ndb_data"].encode(AuthenticationConfig.ENCODING)))
+        return fernet_ndb.decrypt(
+            base64.b64decode(encrypted_content["ndb_data"].encode(AuthenticationConfig.ENCODING))
+        )
 
 
 # ==========================================================
@@ -390,12 +409,12 @@ class NDBSafeLocker:
     def _load_ndb(self, ndb_file):
         """Load the encrypted NDB file into memory."""
 
-        with open(ndb_file, 'r', encoding=AuthenticationConfig.ENCODING) as f:
+        with open(ndb_file, encoding=AuthenticationConfig.ENCODING) as f:
             content = json.load(f)
 
         zip_bytes = self.crypto_manager.decrypt_data(content)
         self._zip_bytes_io = BytesIO(zip_bytes)
-        self._zipfile = zipfile.ZipFile(self._zip_bytes_io, 'r') 
+        self._zipfile = zipfile.ZipFile(self._zip_bytes_io, 'r')
 
     # ------------------------------
     # File operations
@@ -453,7 +472,7 @@ class NDBSafeLocker:
         """logger summary of files and total compressed size."""
 
         total_size = sum(zinfo.file_size for zinfo in self._zipfile.infolist())
-        logger.info(f"NDB Summary:")
+        logger.info("NDB Summary:")
         logger.info(f" - Total Files: {len(self._zipfile.namelist())}")
         logger.info(f" - Total Size: {total_size / 1024:.2f} KB")
         logger.info(f" - Path: {self._ndb_path}")

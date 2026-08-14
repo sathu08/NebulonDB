@@ -33,7 +33,7 @@ router = APIRouter()
     response_model=StandardResponse,
     status_code=status.HTTP_201_CREATED,
     summary="Register a new user",
-    description="Create a new user account with specified username, password, and role" 
+    description="Create a new user account with specified username, password, and role"
 )
 async def register_user(
     user_data: UserRegistrationRequest,
@@ -48,7 +48,7 @@ async def register_user(
                 exists=False,
                 message=current_user.message
             )
-        
+
         result = create_user(
             username=user_data.username,
             password=user_data.password,
@@ -78,8 +78,8 @@ async def register_user(
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Internal server error during registration"
-        )
-    
+        ) from e
+
 @router.get(
     "/verify",
     response_model=UserAuthenticationResponse,
@@ -91,10 +91,10 @@ async def verify_authentication(
 ) -> UserAuthenticationResponse:
     """
     Verify user authentication and return user details.
-    
+
     Args:
         current_user: Current authenticated user details
-        
+
     Returns:
         UserAuthenticationResponse: Authentication verification result
     """
@@ -145,7 +145,7 @@ async def change_user_password(
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Internal server error during password change"
-        )
+        ) from e
 
 @router.post(
     "/delete_user",
@@ -192,4 +192,4 @@ async def delete_user_account(
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Internal server error during user deletion"
-        )
+        ) from e

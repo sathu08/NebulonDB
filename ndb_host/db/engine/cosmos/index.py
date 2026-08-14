@@ -13,7 +13,6 @@ import mmap
 import os
 import struct
 
-from typing import Dict, List, Tuple
 from pathlib import Path
 
 from db.engine.utils import BloomFilter, IndexEntry
@@ -35,19 +34,19 @@ logger = NebulonDBLogger().get_logger()
 
 def load_index(
     index_file: Path,
-    manifest: List[str],
+    manifest: list[str],
     seg_dir: Path,
     validate_segment_fn,          # (seg_path) -> (valid, count, bf_data, compressed)
-    segment_size_cache: Dict[int, int],
-    bloom_filter_cache: Dict[int, BloomFilter],
-    segment_info: Dict[int, dict],
+    segment_size_cache: dict[int, int],
+    bloom_filter_cache: dict[int, BloomFilter],
+    segment_info: dict[int, dict],
     bloom_filter_enabled: bool,
     segment_header_size: int,
     index_entry_size: int,
     index_entry_format: str,
     record_header_size: int,
     rebuild_fn,                    # callable: _rebuild_index_from_all_segments()
-) -> Dict[int, IndexEntry]:
+) -> dict[int, IndexEntry]:
     """Load (or rebuild) the in-memory latest-entry dict from disk."""
     try:
         if not index_file.exists() or index_file.stat().st_size == 0:
@@ -72,7 +71,7 @@ def load_index(
                 info["bf"] = bf
             segment_info[seg_id] = info
 
-        latest: Dict[int, IndexEntry] = {}
+        latest: dict[int, IndexEntry] = {}
         with index_file.open("rb") as f:
             mm = mmap.mmap(f.fileno(), 0, access=mmap.ACCESS_READ)
             try:
@@ -108,7 +107,7 @@ def load_index(
 
 def append_index_entries(
     index_file: Path,
-    entries: List[Tuple[int, int, int, int]],
+    entries: list[tuple[int, int, int, int]],
     index_entry_format: str,
 ) -> None:
     """Append a batch of (rec_id, seg_id, offset, version) entries to the index file."""
@@ -125,7 +124,7 @@ def append_index_entries(
 
 def rewrite_index_from_latest(
     index_file: Path,
-    latest: Dict[int, IndexEntry],
+    latest: dict[int, IndexEntry],
     index_entry_format: str,
 ) -> None:
     """Overwrite the index file with exactly the entries in *latest*."""
@@ -145,23 +144,23 @@ def rewrite_index_from_latest(
 # ==========================================================
 
 def rebuild_index_from_all_segments(
-    manifest: List[str],
+    manifest: list[str],
     seg_dir: Path,
     index_file: Path,
     validate_segment_fn,
     get_segment_data_offset_fn,
-    segment_size_cache: Dict[int, int],
-    bloom_filter_cache: Dict[int, BloomFilter],
-    segment_info: Dict[int, dict],
+    segment_size_cache: dict[int, int],
+    bloom_filter_cache: dict[int, BloomFilter],
+    segment_info: dict[int, dict],
     bloom_filter_enabled: bool,
     compress_segments: bool,
     record_header_size: int,
     record_header_format: str,
     index_entry_format: str,
-) -> Dict[int, IndexEntry]:
+) -> dict[int, IndexEntry]:
     import zlib
 
-    latest_per_id: Dict[int, IndexEntry] = {}
+    latest_per_id: dict[int, IndexEntry] = {}
 
     segment_size_cache.clear()
     bloom_filter_cache.clear()

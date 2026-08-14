@@ -8,18 +8,17 @@ This module handles logging for the NDB API.
 
 import logging
 import time
+import contextlib
 
 from datetime import datetime
-from typing import Optional
 from pathlib import Path
 from logging.handlers import TimedRotatingFileHandler
 
 from colorama import Fore, Style, init as colorama_init
+from utils.constants import NDBMeta
 
 # Initialize colorama for cross-platform color support
 colorama_init(autoreset=False)
-
-from utils.constants import NDBMeta
 
 
 # ==========================================================
@@ -36,7 +35,7 @@ class TZColoredFormatter(logging.Formatter):
         "CRITICAL": Fore.RED + Style.BRIGHT,
     }
 
-    def formatTime(self, record, datefmt: Optional[str] = None) -> str:
+    def formatTime(self, record, datefmt: str | None = None) -> str:
         local_time = datetime.fromtimestamp(record.created).astimezone()
         tz_offset = local_time.strftime("%z")
         if datefmt:
@@ -120,10 +119,8 @@ class DatedTimedRotatingFileHandler(TimedRotatingFileHandler):
         if len(files) <= self.backupCount:
             return
         for old in files[:-self.backupCount]:
-            try:
+            with contextlib.suppress(OSError):
                 old.unlink()
-            except OSError:
-                pass
 
 
 # ==========================================================
@@ -265,23 +262,23 @@ class NebulonDBLogger:
     @classmethod
     def configure_server_logging(cls):
         """Apply colored formatter to gunicorn and uvicorn loggers."""
-        
+
         formatter = TZColoredFormatter(
             "[%(asctime)s] [%(process)d] [%(levelname)s] %(message)s"
         )
-        
+
         # Configure these server-related loggers
         logger_names = [
             "gunicorn.error",
-            "gunicorn.access", 
+            "gunicorn.access",
             "uvicorn",
             "uvicorn.error",
             "uvicorn.access"
         ]
-        
+
         for logger_name in logger_names:
             logger = logging.getLogger(logger_name)
-            
+
             # Replace handlers with colored ones
             for handler in logger.handlers[:]:
                 if isinstance(handler, logging.StreamHandler):

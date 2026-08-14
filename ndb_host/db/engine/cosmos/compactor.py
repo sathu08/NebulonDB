@@ -12,11 +12,11 @@ Responsibilities
 """
 
 import threading
+import contextlib
 import zlib
 import struct
 
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
 
 from db.engine.utils import BloomFilter
 from utils.logger import NebulonDBLogger
@@ -36,22 +36,20 @@ logger = NebulonDBLogger().get_logger()
 
 
 def cleanup_segments(
-    fnames: List[str],
+    fnames: list[str],
     seg_dir: Path,
     segment_cache: dict,
-    segment_size_cache: Dict[int, int],
-    bloom_filter_cache: Dict[int, BloomFilter],
-    segment_info: Dict[int, dict],
+    segment_size_cache: dict[int, int],
+    bloom_filter_cache: dict[int, BloomFilter],
+    segment_info: dict[int, dict],
     delete_files: bool = True,
 ) -> None:
     """Remove segments from all caches, manifest, and optionally delete files."""
     for fname in fnames:
         seg_id = int(fname.split('_')[1].split('.')[0])
         if delete_files:
-            try:
+            with contextlib.suppress(FileNotFoundError):
                 (seg_dir / fname).unlink()
-            except FileNotFoundError:
-                pass
         segment_size_cache.pop(seg_id, None)
         bloom_filter_cache.pop(seg_id, None)
         segment_info.pop(seg_id, None)
@@ -66,17 +64,15 @@ def cleanup_segments(
 # ==========================================================
 
 def remove_segments_and_rebuild(
-    fnames, 
+    fnames,
     seg_dir, manifest, segment_cache,
     segment_size_cache, bloom_filter_cache, segment_info,
     save_manifest_and_meta_fn, rebuild_index_fn,
 ) -> None:
     for fname in fnames:
         seg_id = int(fname.split('_')[1].split('.')[0])
-        try:
+        with contextlib.suppress(FileNotFoundError):
             (seg_dir / fname).unlink()
-        except FileNotFoundError:
-            pass
         if fname in manifest:
             manifest.remove(fname)
         segment_size_cache.pop(seg_id, None)
@@ -97,8 +93,8 @@ def remove_segments_and_rebuild(
 # ==========================================================
 
 def compact(
-    segments_to_merge: Optional[List[str]],
-    manifest: List[str],
+    segments_to_merge: list[str] | None,
+    manifest: list[str],
     seg_dir: Path,
     max_segments_before_compact: int,
     # readers
@@ -108,9 +104,9 @@ def compact(
     write_segment_streaming_fn,
     rewrite_index_fn,
     segment_cache: dict,
-    segment_size_cache: Dict[int, int],
-    bloom_filter_cache: Dict[int, BloomFilter],
-    segment_info: Dict[int, dict],
+    segment_size_cache: dict[int, int],
+    bloom_filter_cache: dict[int, BloomFilter],
+    segment_info: dict[int, dict],
     record_header_size: int,
     record_header_format: str,
     save_manifest_and_meta_fn,
@@ -133,9 +129,9 @@ def compact(
         return
 
     # ── Pass 1: find latest non-deleted record locations ─────
-    # Key by (table, rec_id) so records in different tables that happen to
+    # Key by (segment, rec_id) so records in different segments that happen to
     # share a record id are never silently dropped during the merge.
-    latest_source: Dict[Tuple[str, int], Tuple[str, int, int]] = {}
+    latest_source: dict[tuple[str, int], tuple[str, int, int]] = {}
     for fname in sorted(
         segments_to_merge,
         key=lambda x: int(x.split('_')[1].split('.')[0]),
@@ -175,12 +171,11 @@ def compact(
                 rec_id = rec_dict.get("_id")
                 if rec_id is None:
                     continue
-                table = rec_dict.get("_segment") or "_main"
-                tkey = (table, rec_id)
-                if tkey not in latest_source:
-                    if not rec_dict.get("_deleted", False):
-                        version = rec_dict.get("_version", 0)
-                        latest_source[tkey] = (fname, offset, version)
+                segment = rec_dict.get("_segment") or "_main"
+                skey = (segment, rec_id)
+                if skey not in latest_source and not rec_dict.get("_deleted", False):
+                    version = rec_dict.get("_version", 0)
+                    latest_source[skey] = (fname, offset, version)
 
     if not latest_source:
         logger.info("No live records found, cleaning up merged segments")
@@ -231,10 +226,10 @@ def compact(
 def background_compaction_loop(
     stop_event: threading.Event,
     compaction_interval: float,
-    manifest: List[str],
+    manifest: list[str],
     max_segments_before_compact: int,
     compact_fn,     # () -> None (calls compact with no segments_to_merge arg)
-    db_dir: Optional[Path] = None,
+    db_dir: Path | None = None,
 ) -> None:
     """
     Daemon thread body.
