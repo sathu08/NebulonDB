@@ -183,24 +183,49 @@ if [[ "${NEBULONDB_INSTALL_ML:-0}" == "1" ]]; then
 fi
 
 # ------------------------------------------------------------
-# Activate Virtual Environment
+# Install Global NebulonDB CLI
 # ------------------------------------------------------------
 
 VENV_DIR="$PROJECT_DIR/.venv"
+CLI_PATH="$VENV_DIR/bin/nebulondb"
+BIN_DIR="$HOME/.local/bin"
+GLOBAL_CLI="$BIN_DIR/nebulondb"
 
-if [[ ! -f "$VENV_DIR/bin/activate" ]]; then
-    error "Virtual environment was not created: $VENV_DIR"
+if [[ ! -x "$CLI_PATH" ]]; then
+    error "NebulonDB CLI was not created: $CLI_PATH"
 fi
 
-log "Activating virtual environment..."
+log "Installing global NebulonDB CLI..."
 
-source "$VENV_DIR/bin/activate"
+mkdir -p "$BIN_DIR"
 
-# ------------------------------------------------------------
-# Verify Nebulon CLI
-# ------------------------------------------------------------
+cat > "$GLOBAL_CLI" <<EOF
+#!/usr/bin/env bash
 
 export NEBULONDB_HOME="$PROJECT_DIR"
+
+exec "$CLI_PATH" "\$@"
+EOF
+
+chmod +x "$GLOBAL_CLI"
+
+# ------------------------------------------------------------
+# Configure ~/.local/bin in PATH
+# ------------------------------------------------------------
+
+BASHRC="$HOME/.bashrc"
+
+if [[ ":$PATH:" != *":$HOME/.local/bin:"* ]]; then
+    export PATH="$HOME/.local/bin:$PATH"
+fi
+
+if [[ -f "$BASHRC" ]] && ! grep -qF 'export PATH="$HOME/.local/bin:$PATH"' "$BASHRC"; then
+    printf '\n# User local binaries\nexport PATH="$HOME/.local/bin:$PATH"\n' >> "$BASHRC"
+fi
+
+# ------------------------------------------------------------
+# Verify NebulonDB CLI
+# ------------------------------------------------------------
 
 if ! command -v nebulondb >/dev/null 2>&1; then
     error "NebulonDB CLI was not installed correctly."
@@ -214,28 +239,10 @@ log "Testing NebulonDB CLI..."
 nebulondb --help
 
 # ------------------------------------------------------------
-# Configure NEBULONDB_HOME
+# Installation Complete
 # ------------------------------------------------------------
 
 export NEBULONDB_HOME="$PROJECT_DIR"
-
-BASHRC="$HOME/.bashrc"
-
-log "Configuring NEBULONDB_HOME..."
-
-if [[ -f "$BASHRC" ]]; then
-    sed -i \
-        -e '/^[[:space:]]*export NEBULONDB_HOME=/d' \
-        -e '/\.venv\/bin\/activate/d' \
-        "$BASHRC"
-fi
-
-printf '\n# NebulonDB\nexport NEBULONDB_HOME="%s"\nsource "%s/.venv/bin/activate"\n' \
-    "$NEBULONDB_HOME" "$PROJECT_DIR" >> "$BASHRC"
-
-# ------------------------------------------------------------
-# Installation Complete
-# ------------------------------------------------------------
 
 echo ""
 echo "============================================================"
@@ -254,11 +261,7 @@ echo "Open a new terminal or run:"
 echo ""
 echo "    source ~/.bashrc"
 echo ""
-echo "Then activate the virtual environment:"
-echo ""
-echo "    source $PROJECT_DIR/.venv/bin/activate"
-echo ""
-echo "Then start NebulonDB:"
+echo "Then start NebulonDB from anywhere:"
 echo ""
 echo "    nebulondb start"
 echo ""

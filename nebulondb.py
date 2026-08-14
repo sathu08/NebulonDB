@@ -453,6 +453,10 @@ def create_user(cfg: NDBConfig):
     password = getpass("Enter password: ").strip()
     confirm = getpass("Confirm password: ").strip()
 
+    if not password or len(password) < 8:
+        logger.info("Password must be at least 8 characters long. Try again.")
+        return
+    
     if password != confirm:
         logger.info("Passwords do not match. Try again.")
         return

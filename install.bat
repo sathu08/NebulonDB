@@ -160,18 +160,44 @@ if "%NEBULONDB_INSTALL_ML%"=="1" (
 )
 
 rem ------------------------------------------------------------
-rem Verify NebulonDB CLI
+rem Install Global NebulonDB CLI
 rem ------------------------------------------------------------
 
 set "VENV_DIR=%PROJECT_DIR%\.venv"
+set "CLI_PATH=%VENV_DIR%\Scripts\nebulondb.exe"
+set "BIN_DIR=%USERPROFILE%\.local\bin"
+set "GLOBAL_CLI=%BIN_DIR%\nebulondb.cmd"
 
-if not exist "%VENV_DIR%\Scripts\activate.bat" (
-    echo [NebulonDB][ERROR] Virtual environment was not created: %VENV_DIR%
+if not exist "%CLI_PATH%" (
+    echo [NebulonDB][ERROR] NebulonDB CLI was not created: %CLI_PATH%
     exit /b 1
 )
 
-echo [NebulonDB] Activating virtual environment...
-call "%VENV_DIR%\Scripts\activate.bat"
+echo [NebulonDB] Installing global NebulonDB CLI...
+
+if not exist "%BIN_DIR%" mkdir "%BIN_DIR%"
+
+> "%GLOBAL_CLI%" (
+    echo @echo off
+    echo set "NEBULONDB_HOME=%PROJECT_DIR%"
+    echo "%CLI_PATH%" %%*
+)
+
+rem ------------------------------------------------------------
+rem Configure ~/.local/bin in PATH
+rem ------------------------------------------------------------
+
+echo %PATH% | findstr /i /c:"%BIN_DIR%" >nul 2>nul
+if errorlevel 1 (
+    setx PATH "%BIN_DIR%;%PATH%" >nul
+    if errorlevel 1 goto :error
+)
+
+set "PATH=%BIN_DIR%;%PATH%"
+
+rem ------------------------------------------------------------
+rem Verify NebulonDB CLI
+rem ------------------------------------------------------------
 
 where nebulondb >nul 2>nul
 if errorlevel 1 (
@@ -183,16 +209,7 @@ echo [NebulonDB] NebulonDB executable:
 where nebulondb
 
 echo [NebulonDB] Testing NebulonDB CLI...
-set "NEBULONDB_HOME=%PROJECT_DIR%"
 nebulondb --help
-if errorlevel 1 goto :error
-
-rem ------------------------------------------------------------
-rem Configure NEBULONDB_HOME
-rem ------------------------------------------------------------
-
-echo [NebulonDB] Configuring NEBULONDB_HOME...
-setx NEBULONDB_HOME "%PROJECT_DIR%" >nul
 if errorlevel 1 goto :error
 
 rem ------------------------------------------------------------
@@ -209,14 +226,10 @@ echo Branch         : %CURRENT_BRANCH%
 echo Directory      : %PROJECT_DIR%
 echo Python         : %PYTHON_PATH%
 echo Virtual Env    : %VENV_DIR%
-echo NebulonDB CLI  : %PROJECT_DIR%\.venv\Scripts\nebulondb.exe
+echo NebulonDB CLI  : %BIN_DIR%\nebulondb.cmd
 echo NEBULONDB_HOME : %PROJECT_DIR%
 echo.
-echo Open a new terminal, then activate the virtual environment:
-echo.
-echo     %PROJECT_DIR%\.venv\Scripts\activate.bat
-echo.
-echo Then start NebulonDB:
+echo Open a new terminal, then start NebulonDB from anywhere:
 echo.
 echo     nebulondb start
 echo.
