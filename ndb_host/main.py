@@ -9,9 +9,9 @@ It provides endpoints for user registration and authentication.
 
 # === Import routers from API layer ===
 import threading
-from contextlib import asynccontextmanager
 
 from api import create_app
+from contextlib import asynccontextmanager
 
 from fastapi.staticfiles import StaticFiles
 from starlette.middleware.base import BaseHTTPMiddleware
@@ -19,21 +19,29 @@ from starlette.middleware.base import BaseHTTPMiddleware
 from api.routes.auth import router as auth_router
 from api.routes.corpus import router as corpus_router
 from api.routes.segment import router as segment_router
+
 from api.routes.dashboard import router as dashboard_router, WEB_DIR
 
-from utils.bootstrap import _warmup_models
+from ndb_host.tui.bootstrap import warmup_models
+
 from utils.logger import NebulonDBLogger
 
-# Configure colored logging for gunicorn/uvicorn
-NebulonDBLogger.configure_server_logging()
 
+# ==========================================================
+#        Initialize Logger
+# ==========================================================
+
+NebulonDBLogger.configure_server_logging()
 logger = NebulonDBLogger().get_logger()
 
+#=========================================================
+#        Initialize FastAPI Application
+#=========================================================
 app = create_app()
 
 @asynccontextmanager
 async def _lifespan(app):
-    threading.Thread(target=_warmup_models, daemon=True).start()
+    threading.Thread(target=warmup_models, daemon=True).start()
     yield
 
 app.router.lifespan_context = _lifespan
@@ -52,14 +60,9 @@ class NoCacheAssetsMiddleware(BaseHTTPMiddleware):
             response.headers["Expires"] = "0"
         return response
 
-
 app.add_middleware(NoCacheAssetsMiddleware)
 
-app.mount(
-    "/assets",
-    StaticFiles(directory=WEB_DIR / "assets"),
-    name="assets",
-)
+app.mount("/assets", StaticFiles(directory=WEB_DIR / "assets"), name="assets")
 
 # === Include route modules ===
 

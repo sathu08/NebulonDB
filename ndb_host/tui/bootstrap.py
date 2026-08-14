@@ -36,7 +36,7 @@ logger = NebulonDBLogger().get_logger()
 #        Model Warmup
 # ==========================================================
 
-def _warmup_models(cfg: NDBConfig = None) -> None:
+def warmup_models(cfg: NDBConfig = None) -> None:
     """Load the embedding model and encode a tiny dummy text so torch/CUDA
     context is initialized before the first real request.
 
@@ -120,7 +120,7 @@ class NebulonInitializer:
                 batch_size=embed_cfg.batch_size,
                 model_type=ModelType.EMBEDDING
             )
-            _warmup_models(self.config)
+            warmup_models(self.config)
 
             # =====================================================
             # CROSS ENCODER (deferred - loaded lazily on first rerank)
@@ -271,7 +271,7 @@ class NebulonInitializer:
                 user_role=UserRole.SYSTEM,
             )
             service_create_user(username=username, password=password, user_role=user_role)
-            print(
+            logger.info(
                 f"Default users created successfully. System user password: {system_password} "
                 "Please store this password securely."
             )

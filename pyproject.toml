@@ -28,6 +28,9 @@ dependencies = [
     "colorama>=0.4.6,<1.0",
     "platformdirs>=4.2,<5.0",
 
+    # === Interactive TUI ===
+    "textual>=0.86,<3.0",
+
     # === System / Monitoring ===
     "psutil>=5.9,<6.0",
 ]

@@ -3,13 +3,12 @@ setlocal EnableExtensions
 
 rem ============================================================
 rem NebulonDB Installation Script (Windows)
-rem Clones the repository into the current working directory and
-rem sets the current directory to the NebulonDB repo root.
+rem Installs NebulonDB into a fixed location (%USERPROFILE%\.nebulondb)
+rem and creates a global 'nebulondb' launcher in %USERPROFILE%\.local\bin.
 rem ============================================================
 
 set "REPO_URL=https://github.com/sathu08/NebulonDB.git"
 set "BRANCH=master"
-set "PROJECT_DIR_NAME=NebulonDB"
 
 rem ------------------------------------------------------------
 rem Check Git
@@ -30,11 +29,10 @@ echo [NebulonDB] %REPO_URL%
 echo [NebulonDB] Target branch:
 echo [NebulonDB] %BRANCH%
 
-set "TARGET_DIR=%CD%"
-set "PROJECT_DIR=%TARGET_DIR%\%PROJECT_DIR_NAME%"
+set "PROJECT_DIR=%USERPROFILE%\.nebulondb"
 
-echo [NebulonDB] Target directory:
-echo [NebulonDB] %TARGET_DIR%
+echo [NebulonDB] Install directory:
+echo [NebulonDB] %PROJECT_DIR%
 
 if exist "%PROJECT_DIR%\.git" goto :update_repo
 
@@ -65,7 +63,12 @@ git fetch origin %BRANCH%
 if errorlevel 1 goto :error
 
 echo [NebulonDB] Switching to branch '%BRANCH%'...
-git checkout %BRANCH%
+git show-ref --verify --quiet refs/heads/%BRANCH%
+if errorlevel 1 (
+    git checkout -b %BRANCH% --track origin/%BRANCH%
+) else (
+    git checkout %BRANCH%
+)
 if errorlevel 1 goto :error
 
 echo [NebulonDB] Updating branch '%BRANCH%'...

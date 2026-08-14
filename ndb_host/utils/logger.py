@@ -6,24 +6,26 @@ This module handles logging for the NDB API.
 
 """
 
-import logging
 import time
+import logging
 import contextlib
 
-from datetime import datetime
 from pathlib import Path
+from datetime import datetime
 from logging.handlers import TimedRotatingFileHandler
 
 from colorama import Fore, Style, init as colorama_init
+
 from utils.constants import NDBMeta
 
-# Initialize colorama for cross-platform color support
-colorama_init(autoreset=False)
 
+# Initialize colorama for colored console output
+colorama_init(autoreset=False)
 
 # ==========================================================
 #              Single Formatter (TZ + Color)
 # ==========================================================
+
 class TZColoredFormatter(logging.Formatter):
     """Formatter with timezone support and colored log levels."""
 
@@ -63,6 +65,7 @@ class TZColoredFormatter(logging.Formatter):
 # ==========================================================
 #        Date-Stamped Daily File Handler
 # ==========================================================
+
 class DatedTimedRotatingFileHandler(TimedRotatingFileHandler):
     """
     Rotating file handler that names the current file with the date
@@ -126,6 +129,7 @@ class DatedTimedRotatingFileHandler(TimedRotatingFileHandler):
 # ==========================================================
 #                 Logger Manager (Singleton)
 # ==========================================================
+
 class NebulonDBLogger:
     _instance = None
     _logger = None
@@ -159,6 +163,7 @@ class NebulonDBLogger:
     # ======================================================
     #              File Logging Configuration
     # ======================================================
+
     def configure_file_logging(
         self,
         log_dir: str,
@@ -213,6 +218,7 @@ class NebulonDBLogger:
     # ======================================================
     #              Daily File Handler Helper
     # ======================================================
+
     def _get_daily_file_handler(
         self,
         log_dir,
@@ -244,6 +250,7 @@ class NebulonDBLogger:
     # ======================================================
     #              Public Logger Access
     # ======================================================
+
     @classmethod
     def get_logger(cls, name: str = None) -> logging.Logger:
         if cls._instance is None:
@@ -259,6 +266,7 @@ class NebulonDBLogger:
     # ======================================================
     #        Configure Gunicorn/Uvicorn Colored Logs
     # ======================================================
+
     @classmethod
     def configure_server_logging(cls):
         """Apply colored formatter to gunicorn and uvicorn loggers."""

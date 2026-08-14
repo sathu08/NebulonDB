@@ -2,8 +2,8 @@
 
 # ============================================================
 # NebulonDB Installation Script (curl | bash)
-# Clones the repository into the current working directory and
-# sets the current directory to the NebulonDB repo root.
+# Installs NebulonDB into a fixed location (~/.nebulondb) and
+# creates a global 'nebulondb' launcher in ~/.local/bin.
 # ============================================================
 
 set -euo pipefail
@@ -14,7 +14,6 @@ set -euo pipefail
 
 REPO_URL="https://github.com/sathu08/NebulonDB.git"
 BRANCH="master"
-PROJECT_DIR_NAME="NebulonDB"
 
 # ------------------------------------------------------------
 # Helper Functions
@@ -47,13 +46,10 @@ log "$REPO_URL"
 log "Target branch:"
 log "$BRANCH"
 
-TARGET_DIR="$(pwd)"
-PROJECT_DIR="$TARGET_DIR/$PROJECT_DIR_NAME"
+PROJECT_DIR="$HOME/.nebulondb"
 
-log "Target directory:"
-log "$TARGET_DIR"
-
-cd "$TARGET_DIR"
+log "Install directory:"
+log "$PROJECT_DIR"
 
 if [[ -d "$PROJECT_DIR/.git" ]]; then
 
@@ -74,7 +70,11 @@ if [[ -d "$PROJECT_DIR/.git" ]]; then
 
     log "Switching to branch '$BRANCH'..."
 
-    git checkout "$BRANCH"
+    if git show-ref --verify --quiet "refs/heads/$BRANCH"; then
+        git checkout "$BRANCH"
+    else
+        git checkout -b "$BRANCH" --track "origin/$BRANCH"
+    fi
 
     log "Updating branch '$BRANCH'..."
 
