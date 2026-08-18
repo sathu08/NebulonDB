@@ -25,12 +25,20 @@ from db.engine.utils.constants import (
     LAYOUTS,
     RENDER_OPTIONS,
     DEFAULT_TEMPLATE,
-    CYTO_BUNDLE_PATH,
+    CYTO_BUNDLE_PATH
+)
+
+from utils.logger import NebulonDBLogger
+from db.engine.utils.constants import (
     NebulonConfig,
     NebulonColors,
     NebulonRenderOptions,
 )
-from utils.logger import NebulonDBLogger
+
+
+# ==========================================================
+#        Initialize Logger
+# ==========================================================
 
 logger = NebulonDBLogger().get_logger()
 

@@ -20,6 +20,7 @@ from .bootstrap import NebulonInitializer
 from .processes import (
     _is_server_running,
     _is_pid_alive,
+    _pid_file_pid,
     _kill_process_tree,
     _kill_process,
     _find_pid_on_port,
@@ -37,27 +38,28 @@ init(autoreset=True)
 #         Start Server Command
 # ==========================================================
 
-def start_server(cfg: NDBConfig, foreground: bool = False) -> bool:
-    accounthub_corpus_path = cfg.NEBULONDB_ACCOUNTHUB_CORPUS_PATH
-    default_corpus_path = cfg.NEBULONDB_DEFAULT_CORPUS_PATH
+def _cleanup_pid_file() -> None:
+    """Remove the PID file (stale or corrupt) if it exists."""
+    try:
+        NEBULONDB_PID_FILE.unlink(missing_ok=True)
+    except OSError:
+        logger.warning("Could not remove PID file %s.", NEBULONDB_PID_FILE)
 
-    if not (accounthub_corpus_path.exists() and default_corpus_path.exists()):
+
+def start_server(cfg: NDBConfig, foreground: bool = False) -> bool:
+    if not is_initialized(cfg):
         logger.info("Please create user credentials first using:")
         logger.info("nebulondb --create-user")
         return False
 
     # Handle stale PID file
     if NEBULONDB_PID_FILE.exists():
-        try:
-            pid = int(NEBULONDB_PID_FILE.read_text().strip())
-            if _is_pid_alive(pid):
-                logger.info("Server is already running (PID %s).", pid)
-                return False
-            else:
-                logger.warning("Found stale PID file (PID %s). Removing it.", pid)
-                NEBULONDB_PID_FILE.unlink(missing_ok=True)
-        except (ValueError, FileNotFoundError):
-            NEBULONDB_PID_FILE.unlink(missing_ok=True)
+        pid = _pid_file_pid(NEBULONDB_PID_FILE)
+        if pid is not None and _is_pid_alive(pid):
+            logger.info("Server is already running (PID %s).", pid)
+            return False
+        logger.warning("Found stale PID file (PID %s). Removing it.", pid)
+        _cleanup_pid_file()
 
     if _is_server_running(cfg.HOST, cfg.PORT):
         logger.info("Server is already listening on %s:%s.", cfg.HOST, cfg.PORT)
@@ -141,8 +143,7 @@ def start_server(cfg: NDBConfig, foreground: bool = False) -> bool:
             _kill_process(process.pid)
             process.wait()
         finally:
-            if NEBULONDB_PID_FILE.exists():
-                NEBULONDB_PID_FILE.unlink(missing_ok=True)
+            _cleanup_pid_file()
         # else: background mode – we return immediately
 
     return True
@@ -180,16 +181,15 @@ def stop_server(cfg: NDBConfig, force: bool = False) -> bool:
         )
         return False
 
-    try:
-        pid = int(NEBULONDB_PID_FILE.read_text().strip())
-    except (ValueError, FileNotFoundError):
+    pid = _pid_file_pid(NEBULONDB_PID_FILE)
+    if pid is None:
         logger.error("PID file is corrupt. Removing it.")
-        NEBULONDB_PID_FILE.unlink(missing_ok=True)
+        _cleanup_pid_file()
         return False
 
     if not _is_pid_alive(pid):
         logger.info("Process with PID %s is not running. Cleaning up PID file.", pid)
-        NEBULONDB_PID_FILE.unlink(missing_ok=True)
+        _cleanup_pid_file()
         return True
 
     logger.info("Stopping %s (PID %s)...", cfg.APP_NAME, pid)
@@ -200,7 +200,7 @@ def stop_server(cfg: NDBConfig, force: bool = False) -> bool:
     time.sleep(1)
     if not _is_pid_alive(pid):
         logger.info("Server stopped successfully.")
-        NEBULONDB_PID_FILE.unlink(missing_ok=True)
+        _cleanup_pid_file()
         return True
     logger.error("Failed to stop server. PID %s is still alive.", pid)
     return False
@@ -253,9 +253,7 @@ def create_user(
             return False
 
     if user_role is None:
-        user_role = input(
-            "Enter role (super_user/admin_user/user) [default=user]: "
-        ).strip() or "user"
+        user_role = input("Enter role (super_user/admin_user/user) [default=user]: ").strip() or "user"
 
     if not password or len(password) < 8:
         logger.info("Password must be at least 8 characters long. Try again.")

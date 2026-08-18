@@ -66,6 +66,12 @@ class NovaStore:
     def delete(self, record_id: int) -> int:
         return self._store.delete(self.segment_name, record_id)
 
+    def delete_many(self, record_ids: list[int]) -> list[int]:
+        """Bulk-delete several records in a single WAL + memtable pass."""
+        if not record_ids:
+            return []
+        return self._store.delete_many(self.segment_name, list(record_ids))
+
     def read_all(self) -> list[dict[str, Any]]:
         for rec in self._store.read_all(segment=self.segment_name, include_internal=True):
             yield _rename_id(dict(rec))

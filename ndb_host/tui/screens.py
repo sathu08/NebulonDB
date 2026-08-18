@@ -17,6 +17,10 @@ class CreateUserScreen(Screen):
 
     BINDINGS = [
         Binding("escape", "cancel", "Back"),
+        Binding("up", "focus_previous", "Up"),
+        Binding("down", "focus_next", "Down"),
+        Binding("left", "focus_previous", "Left"),
+        Binding("right", "focus_next", "Right"),
     ]
 
     def compose(self) -> ComposeResult:
@@ -75,6 +79,7 @@ class CreateUserScreen(Screen):
             if success:
                 self.app.notify(f"User '{username}' created successfully.", severity="success")
                 self.app.pop_screen()
+                self.app.call_after_refresh(self.app._refresh_sidebar)
             else:
                 self.app.notify("User creation failed.", severity="error")
         except Exception as exc:

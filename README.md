@@ -177,22 +177,38 @@ irm https://raw.githubusercontent.com/sathu08/NebulonDB/master/install.bat -OutF
 
 > **Install with ML / vector extras (optional):** the default install ships the
 > slim core (~240 MB) — enough for document, graph, BM25 and HNSW search.
-> Semantic embeddings (torch/sentence-transformers) need the `ml` extra
-> (~1.4 GB). Set the `NEBULONDB_INSTALL_ML=1` environment variable before the
-> installer runs:
+> Semantic embeddings (torch/sentence-transformers) need the ML extras
+> (~1.4 GB). Set the `NEBULONDB_INSTALL_ML` environment variable before the
+> installer runs. Two flavors are supported:
 >
-> **Linux / macOS:**
+> | Value | Torch build | Use when |
+> |---|---|---|
+> | `1`, `1_CPU`, `CPU` | CPU-only (default) | No NVIDIA GPU, or any machine |
+> | `GPU`, `1_GPU` | CUDA cu124 | NVIDIA GPU for 5–10× faster embeddings |
+>
+> **Linux / macOS — CPU:**
 > ```bash
 > curl -fsSL https://raw.githubusercontent.com/sathu08/NebulonDB/master/install.sh | NEBULONDB_INSTALL_ML=1 bash
 > ```
 >
-> **Windows (PowerShell):**
+> **Linux / macOS — GPU (NVIDIA/CUDA):**
+> ```bash
+> curl -fsSL https://raw.githubusercontent.com/sathu08/NebulonDB/master/install.sh | NEBULONDB_INSTALL_ML=GPU bash
+> ```
+>
+> **Windows (PowerShell) — CPU:**
 > ```powershell
 > $env:NEBULONDB_INSTALL_ML="1"; irm https://raw.githubusercontent.com/sathu08/NebulonDB/master/install.bat -OutFile "$env:TEMP\install.bat"; & "$env:TEMP\install.bat"
 > ```
 >
-> You can also enable it later in an existing install with
-> `uv sync --extra ml` from the NebulonDB directory.
+> **Windows (PowerShell) — GPU (NVIDIA/CUDA):**
+> ```powershell
+> $env:NEBULONDB_INSTALL_ML="GPU"; irm https://raw.githubusercontent.com/sathu08/NebulonDB/master/install.bat -OutFile "$env:TEMP\install.bat"; & "$env:TEMP\install.bat"
+> ```
+>
+> You can also enable it later in an existing install with `uv sync --extra ml`
+> (CPU) from the NebulonDB directory, or re-run the installer with
+> `NEBULONDB_INSTALL_ML=GPU` to upgrade an existing install to the CUDA build.
 
 Alternatively, run the installers from a local clone:
 
@@ -235,10 +251,14 @@ nebulondb start         # restart the server
 
 **Add the ML / vector extras later (torch, sentence-transformers, ~1.4 GB):**
 ```bash
-uv sync --extra ml
+uv sync --extra ml-cpu      # CPU-only torch (default)
+# or for an NVIDIA GPU / CUDA cu124 build:
+uv sync --extra ml-gpu
+uv pip install torch --index-url https://download.pytorch.org/whl/cu124
 ```
-Windows (Command Prompt): use `uv sync --python 3.10 --extra ml`. The running
-server reuses the cached model after a restart.
+Windows (Command Prompt): use `uv sync --python 3.10 --extra ml-cpu` (CPU) or
+the matching GPU commands above. The running server reuses the cached model
+after a restart.
 
 **Remove the ML extras and shrink back to the slim core (~240 MB):**
 ```bash

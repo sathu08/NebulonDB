@@ -82,6 +82,13 @@ class DocumentStore:
     def delete(self, record_id: int) -> int:
         return self._store.delete(self.segment_name, record_id + ID_OFFSET)
 
+    def delete_many(self, record_ids: list[int]) -> list[int]:
+        """Bulk-delete several documents in a single WAL + memtable pass."""
+        if not record_ids:
+            return []
+        ids = [rid + ID_OFFSET for rid in record_ids]
+        return self._store.delete_many(self.segment_name, ids)
+
     def read_all(self) -> list[dict[str, Any]]:
         return [
             _rename_id(dict(rec))

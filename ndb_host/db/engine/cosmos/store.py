@@ -554,6 +554,45 @@ class NebulonCosmos:
                 return 0
             return self._write_record_unsafe(segment, {"id": record_id}, is_delete=True)
 
+    def delete_many(self, segment: str, record_ids: list[Any]) -> list[int]:
+        """
+        Bulk delete: encode all tombstone records, append them to the WAL in a
+        single write, and update the memtable/deleted sets under one lock.
+        Mirrors ``insert_many``.
+        """
+        with self._lock:
+            built = []
+            for record_id in record_ids:
+                rec_bytes, rec_id, _ = self._build_record(
+                    segment, {"id": record_id}, is_delete=True
+                )
+                built.append((rec_bytes, rec_id))
+
+            if not built:
+                return []
+
+            self._write_wal_records_batch([rb for rb, _ in built])
+
+            was_empty = not self.memtable
+            removed = []
+            for rec_bytes, rec_id in built:
+                key = (segment, rec_id)
+                self._deleted.add(key)
+                self._deleted.add(rec_id)
+                old_size = len(self.memtable.get(key, b''))
+                self.memtable[key] = rec_bytes
+                self.memtable_bytes += len(rec_bytes) - old_size
+                removed.append(rec_id)
+            self.wal_count += len(built)
+            if was_empty:
+                self.memtable_oldest_ts = time.time()
+
+            if self.memtable_bytes >= self.max_memtable_bytes:
+                self._flush(force=True)
+
+            logger.debug(f"BULK DELETE {len(built)} records segment={segment}")
+            return removed
+
     # ── reading ───────────────────────────────────────────────
     def get(self, record_id: int, segment: str = "_main", include_internal: bool = False) -> dict[str, Any] | None:
         """

@@ -65,6 +65,20 @@ class CorpusQueryRequest(BaseModel):
     corpus_name: str = Field(..., min_length=1)
     ndb_type: str = NDBMeta.Type.COSMOS
 
+class ParallelRecord(BaseModel):
+    """One vectorisable record flowing through a bulk ingest/update pipeline.
+
+    ``text`` is embedded server-side unless a pre-computed ``vector`` is
+    supplied. ``record_id`` is optional: it is required for update/delete
+    pipelines and ignored for inserts.
+    """
+
+    record_id: int | None = None
+    text: str | None = None
+    vector: list[float] | None = None
+    metadata: dict[str, Any] | None = None
+
+
 class SegmentQueryRequest(BaseModel):
     corpus_name: str = Field(..., min_length=1)
     segment_name: str = Field(..., min_length=1)
@@ -76,6 +90,10 @@ class SegmentQueryRequest(BaseModel):
     query_vector: list[float] | None = None
     doc_type: str | None = None
     lang_type: str | None = None
+
+    # Bulk pipeline records (ParallelRecord) and bulk delete targets
+    records: list["ParallelRecord"] | None = None
+    record_ids: list[int] | None = None
 
     # Nova and Mesh
     top_matches: int | None = None

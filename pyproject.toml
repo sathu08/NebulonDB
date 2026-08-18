@@ -37,8 +37,24 @@ dependencies = [
 
 # Optional heavy ML stack for semantic embedding features.
 # Plain `uv sync` installs only the slim core above (~300MB).
-# `uv sync --extra ml` adds torch/sentence-transformers for vectors.
+# Install the ML extras with:
+#   NEBULONDB_INSTALL_ML=1_CPU  -> `uv sync --extra ml-cpu`  (CPU-only torch)
+#   NEBULONDB_INSTALL_ML=GPU    -> `uv sync --extra ml-gpu`  then torch is
+#                                  swapped for a CUDA wheel (see installers).
 [project.optional-dependencies]
+ml-cpu = [
+    "torch>=2.2,<3.0",
+    "sentence-transformers>=2.7,<5.0",
+    "accelerate>=0.29,<0.31",
+    "bitsandbytes>=0.49.2,<0.50",
+]
+ml-gpu = [
+    "torch>=2.2,<3.0",
+    "sentence-transformers>=2.7,<5.0",
+    "accelerate>=0.29,<0.31",
+    "bitsandbytes>=0.49.2,<0.50",
+]
+# Backwards-compatible alias: plain `--extra ml` == CPU variant.
 ml = [
     "torch>=2.2,<3.0",
     "sentence-transformers>=2.7,<5.0",
@@ -52,14 +68,19 @@ dev = [
 ]
 
 # Pull CPU-only torch so the ~3GB nvidia CUDA bindings are never installed
-# by default. GPU users can override with `uv sync --extra ml --resolution
-# highest --index-strategy unsafe-best-match` and a CUDA wheel index.
+# by default. GPU users switch to a CUDA wheel index for torch instead.
+# Enabled via the installers: NEBULONDB_INSTALL_ML=1_CPU (CPU) or GPU.
 [tool.uv.sources]
 torch = { index = "pytorch-cpu" }
 
 [[tool.uv.index]]
 name = "pytorch-cpu"
 url = "https://download.pytorch.org/whl/cpu"
+explicit = true
+
+[[tool.uv.index]]
+name = "pytorch-gpu"
+url = "https://download.pytorch.org/whl/cu124"
 explicit = true
 
 [project.scripts]

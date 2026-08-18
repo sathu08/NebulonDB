@@ -154,13 +154,42 @@ if errorlevel 1 goto :error
 
 rem ------------------------------------------------------------
 rem Optional ML / Vector Extras (off by default)
+rem
+rem NEBULONDB_INSTALL_ML controls the torch build:
+rem   1     -> CPU-only torch (small, works everywhere)
+rem   1_CPU -> same as 1 (explicit CPU)
+rem   CPU   -> same as 1
+rem   GPU   -> CUDA (cu124) torch for NVIDIA GPUs
 rem ------------------------------------------------------------
 
-if "%NEBULONDB_INSTALL_ML%"=="1" (
-    echo [NebulonDB] Installing optional ML/vector extras (CPU-only torch)...
-    uv sync --python %PYTHON_VERSION% --extra ml
-    if errorlevel 1 goto :error
-)
+set "ML_MODE=0"
+if defined NEBULONDB_INSTALL_ML for /f "tokens=*" %%i in ('echo %NEBULONDB_INSTALL_ML%') do set "ML_MODE=%%i"
+
+if /I "%ML_MODE%"=="1" goto ml_cpu
+if /I "%ML_MODE%"=="1_cpu" goto ml_cpu
+if /I "%ML_MODE%"=="cpu" goto ml_cpu
+if /I "%ML_MODE%"=="gpu" goto ml_gpu
+if /I "%ML_MODE%"=="1_gpu" goto ml_gpu
+if /I "%ML_MODE%"=="0" goto ml_done
+echo [NebulonDB][ERROR] NEBULONDB_INSTALL_ML must be 1, 1_CPU, CPU, GPU or unset.
+exit /b 1
+
+:ml_cpu
+echo [NebulonDB] Installing optional ML/vector extras (CPU-only torch)...
+uv sync --python %PYTHON_VERSION% --extra ml-cpu
+if errorlevel 1 goto :error
+goto ml_done
+
+:ml_gpu
+echo [NebulonDB] Installing optional ML/vector extras (CUDA cu124 torch for GPU)...
+uv sync --python %PYTHON_VERSION% --extra ml-gpu
+if errorlevel 1 goto :error
+echo [NebulonDB] Swapping torch to the CUDA cu124 build...
+uv pip install --python %PYTHON_VERSION% torch --index-url https://download.pytorch.org/whl/cu124
+if errorlevel 1 goto :error
+goto ml_done
+
+:ml_done
 
 rem ------------------------------------------------------------
 rem Install Global NebulonDB CLI

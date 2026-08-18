@@ -14,6 +14,7 @@ import polars as pl
 
 from pathlib import Path
 from typing import Any
+from collections.abc import Sequence
 
 from db.ndb_settings import NDBConfig
 from core.model_hub import SemanticEmbeddingModel
@@ -89,14 +90,54 @@ class ComosDBManager:
         self._db.close()
 
 class OrbitDBManager:
+    _instances: dict[tuple[str, str], "OrbitDBManager"] = {}
+
+    def __new__(cls, db_path: Path, segment_name: str = "default", reset: bool = False,
+                rank_config: RankConfig | None = None,
+                flush_interval: float | None = None,
+                wal_fsync_interval: int | None = None):
+        key = (str(Path(db_path).resolve()), segment_name)
+        if reset:
+            cls._instances.pop(key, None)
+        if key not in cls._instances:
+            cls._instances[key] = super().__new__(cls)
+        return cls._instances[key]
+
     def __init__(self, db_path: Path, segment_name: str = "default", reset: bool = False,
-                rank_config: RankConfig | None = None):
+                rank_config: RankConfig | None = None,
+                flush_interval: float | None = None,
+                wal_fsync_interval: int | None = None):
+        key = (str(Path(db_path).resolve()), segment_name)
+        if getattr(self, "_initialized", False) and not reset:
+            self.set_durability(
+                flush_interval=flush_interval,
+                wal_fsync_interval=wal_fsync_interval,
+            )
+            return
         self._db = NebulonOrbit(
             db_dir=db_path,
             segment_name=segment_name,
             reset=reset,
             rank_config=rank_config,
+            flush_interval=flush_interval,
+            wal_fsync_interval=wal_fsync_interval,
         )
+        self._initialized = True
+
+    def set_durability(self,
+                       flush_interval: float | None = None,
+                       wal_fsync_interval: int | None = None) -> None:
+        self._db.set_durability(
+            flush_interval=flush_interval,
+            wal_fsync_interval=wal_fsync_interval,
+        )
+
+    @classmethod
+    def evict(cls, db_path: Path) -> None:
+        """Drop all cached Orbit managers for a corpus (e.g. on delete)."""
+        resolved = str(Path(db_path).resolve())
+        for key in [k for k in cls._instances if k[0] == resolved]:
+            cls._instances.pop(key, None)
 
     def initialize_or_flush(self):
         self._db.flush()
@@ -112,6 +153,14 @@ class OrbitDBManager:
             metadata["text"] = text
         record_id, err = self._db.insert(vector=vector, metadata=metadata)
         return record_id, err
+
+    def add_items_auto(
+        self,
+        vectors: Sequence[Sequence[float]],
+        metadatas: list[dict[str, Any]] | None = None,
+    ) -> list[int]:
+        """Batch insert with auto-generated, contiguous record IDs."""
+        return self._db.add_items_auto(vectors, metadatas)
 
     def search_vec(self, vector: np.ndarray, filter: dict, top_k: int, mode="auto",
                    query: str | None = None, rank: bool = False,
@@ -206,6 +255,10 @@ class OrbitDBManager:
         if existed:
             self._db.delete(record_id)
         return existed
+
+    def delete_records(self, record_ids: list[int]) -> int:
+        """Bulk-delete multiple records in one WAL group + memtable pass."""
+        return self._db.delete_records(list(record_ids))
 
     def list_ids(self) -> list[int]:
         """Return all record IDs currently stored."""
@@ -477,9 +530,10 @@ class CorpusManager:
         if corpus_path.exists():
             shutil.rmtree(corpus_path)
 
-        # Evict the cached singleton so a recreated corpus re-initialises
+        # Evict the cached singletons so a recreated corpus re-initialises
         # from disk instead of reusing the deleted instance's state.
         ComosDBManager._instances.pop(str(corpus_path.resolve()), None)
+        OrbitDBManager.evict(corpus_path)
 
         for record in self.metadata_db.read_data(segment=self.metadata_segment, include_internal=True):
             if record.get("corpus_name") == corpus_name:
@@ -494,13 +548,17 @@ class SegmentManager:
     SegmentManager handles dynamic creation/loading of segments,
     along with vectors, payloads, and ID mapping."""
 
-    def __init__(self, corpus_name: str, segment_name: str, ndb_type: NDBMeta.Type = NDBMeta.Type.ORBIT):
+    def __init__(self, corpus_name: str, segment_name: str, ndb_type: NDBMeta.Type = NDBMeta.Type.ORBIT,
+                 flush_interval: float | None = None,
+                 wal_fsync_interval: int | None = None):
         """
         Initialize SegmentManager for a specific corpus.
 
         Args:
             corpus_name (str): Name of the corpus to manage.
             segment_name (str): Name of the segment to corpus.
+            flush_interval (float, optional): Seconds between full index saves.
+            wal_fsync_interval (int, optional): Accumulated WAL bytes before fsync.
         """
         self.corpus_name = corpus_name
         self.segment_name = segment_name
@@ -511,11 +569,26 @@ class SegmentManager:
         self._validate_checks()
         self.ndb_type = ndb_type
         if ndb_type == NDBMeta.Type.ORBIT:
-            self.db_manager = OrbitDBManager(self.corpus_path, segment_name=self.segment_name)
+            self.db_manager = OrbitDBManager(
+                self.corpus_path,
+                segment_name=self.segment_name,
+                flush_interval=flush_interval,
+                wal_fsync_interval=wal_fsync_interval,
+            )
         else:
             self.db_manager = ComosDBManager(self.corpus_path)
         self.embedding_model = SemanticEmbeddingModel()
         self._validate_paths()
+
+    def set_durability(self,
+                       flush_interval: float | None = None,
+                       wal_fsync_interval: int | None = None) -> None:
+        """Tune the durability/latency trade-off for this segment at runtime."""
+        if self.ndb_type == NDBMeta.Type.ORBIT:
+            self.db_manager.set_durability(
+                flush_interval=flush_interval,
+                wal_fsync_interval=wal_fsync_interval,
+            )
 
     RELATION_SOURCE_COLS = ("source", "source_id", "src", "from_id", "from")
     RELATION_TARGET_COLS = ("target", "target_id", "dst", "to_id", "to")
@@ -935,7 +1008,10 @@ class SegmentManager:
                         normalize_embeddings=True,
                     ).astype(np.float32)
 
-                for idx, (vec, text) in enumerate(zip(embeddings, texts, strict=True)):
+                # Build per-row metadata once so the whole column can be
+                # inserted in a single WAL group + batch HNSW upsert.
+                metadatas: list[dict[str, Any]] = []
+                for idx, text in enumerate(texts):
                     if not text.strip() and is_precomputed:
                         text = ""
 
@@ -954,16 +1030,32 @@ class SegmentManager:
                         metadata["label"] = name
 
                     metadata = MetadataRetention.apply(metadata)
+                    metadata.setdefault("text", text)
+                    metadatas.append(metadata)
 
-                    _, err = self.db_manager.insert_vec(
-                        vector=vec.tolist(),
-                        text=text,
-                        metadata=metadata,
+                try:
+                    new_ids = self.db_manager.add_items_auto(
+                        vectors=embeddings.tolist(),
+                        metadatas=metadatas,
                     )
-                    if err:
-                        errors.append(f"Row {idx} in {col}: {err}")
-                    else:
-                        total_inserted += 1
+                    total_inserted += len(new_ids)
+                except Exception as batch_err:
+                    errors.append(
+                        f"{col}: batch insert failed ({batch_err}); falling back row-by-row"
+                    )
+                    for idx, (vec, text) in enumerate(zip(embeddings, texts, strict=True)):
+                        if not text.strip() and is_precomputed:
+                            text = ""
+
+                        _, err = self.db_manager.insert_vec(
+                            vector=vec.tolist(),
+                            text=text,
+                            metadata=metadatas[idx],
+                        )
+                        if err:
+                            errors.append(f"Row {idx} in {col}: {err}")
+                        else:
+                            total_inserted += 1
 
             except Exception as e:
                 errors.append(f"{col}: {str(e)}")

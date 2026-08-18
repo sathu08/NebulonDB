@@ -61,7 +61,7 @@ class DatabaseConfig:
     VECTOR_EF_CONSTRUCTION: int = config_settings.DEFAULT_CORPUS_CONFIG_DATA["ef_construction"]
     VECTOR_EF_SEARCH: int = config_settings.DEFAULT_CORPUS_CONFIG_DATA["ef_search"]
     TOP_MATCHES: int = config_settings.DEFAULT_CORPUS_CONFIG_DATA["top_matches"]
-    COMPACTION_DELETED_RATIO: float = 0.4
+    COMPACTION_DELETED_RATIO: float = config_settings.VECTOR_COMPACTION_THRESHOLD
     # ---------- Ranking Settings ----------
     WEIGHT: dict = field(default_factory=lambda: dict(config_settings.RANK_WEIGHTS))
     RANK_TOPK: int = config_settings.RANK_TOPK

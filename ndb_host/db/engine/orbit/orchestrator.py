@@ -16,6 +16,7 @@ import os
 import json
 import re
 import threading
+import time
 
 import contextlib
 import numpy as np
@@ -72,7 +73,9 @@ class NebulonOrbit:
             segment_name: str = "default",
             ef_search: int = 50,
             reset: bool = False,
-            rank_config: RankConfig | None = None
+            rank_config: RankConfig | None = None,
+            flush_interval: float | None = None,
+            wal_fsync_interval: int | None = None,
         ):
         config = DatabaseConfig(db_dir, is_vector=True, is_graph=True)
         self._store = NebulonCosmos(db_dir, reset=reset)
@@ -95,6 +98,7 @@ class NebulonOrbit:
         nova_config_path = nova_dir / config.NOVA_CONFIG_JSON.name
         nova_manifest_dir = nova_dir / config.NOVA_MANIFEST_FILE_JSON.name
         self.nova_wal_path = nova_dir / config.NOVA_WAL.name
+        self._auto_id_watermark_path: Path = nova_dir / "id_watermark.json"
         self.compaction_deleted_ratio = config.COMPACTION_DELETED_RATIO
         self.nova_store = NovaStore(self._store, nova_segment)
         self.doc_store = DocumentStore(self._store, docs_segment)
@@ -134,6 +138,14 @@ class NebulonOrbit:
         self._op_lock = threading.RLock()
         self._dirty_lock = threading.Lock()
         self._wal_lock = threading.Lock()
+        self._wal_bytes_since_fsync = 0
+        self._wal_fsync_interval = config.WAL_FSYNC_INTERVAL
+        if wal_fsync_interval is not None and wal_fsync_interval > 0:
+            self._wal_fsync_interval = int(wal_fsync_interval)
+        self._last_flush_t: float = 0.0
+        self._flush_interval: float = max(0.0, config.FLUSH_INTERVAL)
+        if flush_interval is not None:
+            self._flush_interval = max(0.0, float(flush_interval))
 
         self.rank_topk = config.RANK_TOPK
         self.top_k = config.TOP_MATCHES
@@ -154,6 +166,14 @@ class NebulonOrbit:
             self._load_or_build()
 
         self._check_consistency()
+
+        # Restore the persisted monotonic record-ID watermark so auto-ID
+        # generation is O(1) once loaded. On reset, drop any stale watermark
+        # so the rebuilt segment starts IDs fresh.
+        if reset:
+            with contextlib.suppress(OSError, FileNotFoundError):
+                self._auto_id_watermark_path.unlink(missing_ok=True)
+        self._load_id_watermark()
 
         # Ensure the LSN counter is always ahead of the last LSN already
         # applied to disk. Without this, a fresh per-request NebulonOrbit
@@ -276,12 +296,59 @@ class NebulonOrbit:
             return self._lsn_counter
 
     def _generate_record_id(self) -> int:
-        """Generate the next monotonic record ID, seeded from existing IDs."""
+        """Generate the next monotonic record ID in O(1).
+
+        The watermark (``_auto_id``) is seeded lazily from the in-memory
+        id_map and persisted across saves, so no full-store scan is ever
+        needed to allocate a fresh ID.
+        """
         if self._auto_id is None:
-            ids = [r.get("id") for r in self.nova_store.read_all()]
-            self._auto_id = max((i for i in ids if isinstance(i, int)), default=0)
+            self._seed_auto_id()
         self._auto_id += 1
         return self._auto_id
+
+    def _seed_auto_id(self) -> None:
+        """Seed the ID watermark from the live in-memory graph (once)."""
+        ids = self.nova_engine.id_map.keys()
+        self._auto_id = max((i for i in ids if isinstance(i, int)), default=0)
+
+    def _bump_auto_id(self, record_id: int) -> None:
+        """Keep the ID watermark monotonic over explicit record IDs."""
+        if self._auto_id is None or record_id > self._auto_id:
+            self._auto_id = record_id
+
+    def _load_id_watermark(self) -> None:
+        """Restore the persisted ID watermark (max of watermark, live ids)."""
+        wm: int | None = None
+        with contextlib.suppress(OSError, ValueError):
+            path = self._auto_id_watermark_path
+            if path.exists():
+                with open(path) as f:
+                    wm = int(json.load(f).get("watermark", 0))
+        live_max = max(
+            (i for i in self.nova_engine.id_map if isinstance(i, int)), default=0
+        )
+        if wm is not None and wm > 0:
+            self._auto_id = max(wm, live_max)
+        elif live_max > 0:
+            self._auto_id = live_max
+        else:
+            self._auto_id = None
+
+    def _persist_id_watermark(self) -> None:
+        """Atomically write the monotonic ID watermark after a save."""
+        if self._auto_id is None:
+            return
+        path = self._auto_id_watermark_path
+        tmp = path.with_suffix(".tmp")
+        with contextlib.suppress(OSError):
+            with open(tmp, "w") as f:
+                json.dump({"watermark": self._auto_id}, f)
+                f.flush()
+                os.fsync(f.fileno())
+            os.replace(tmp, path)
+            with contextlib.suppress(FileNotFoundError):
+                tmp.unlink(missing_ok=True)
 
     def _wal_log(self, action: str, record_id: int,
                  vector: list[float] | None = None,
@@ -305,10 +372,27 @@ class NebulonOrbit:
             entry["weight"] = weight
         if created_at is not None:
             entry["created_at"] = created_at
-        with self._wal_lock, open(self.nova_wal_path, "a") as f:
-            f.write(json.dumps(entry) + "\n")
-            f.flush()
-            os.fsync(f.fileno())
+        payload = json.dumps(entry) + "\n"
+        with self._wal_lock:
+            with open(self.nova_wal_path, "a") as f:
+                f.write(payload)
+                f.flush()
+                self._wal_bytes_since_fsync += len(payload)
+                # Group commit: fsync only once per accumulated threshold,
+                # mirroring the Cosmos WAL (config WAL_FSYNC_INTERVAL).
+                if self._wal_bytes_since_fsync >= self._wal_fsync_interval:
+                    os.fsync(f.fileno())
+                    self._wal_bytes_since_fsync = 0
+
+    def _wal_fsync(self) -> None:
+        """Persist any pending group-committed WAL bytes to disk."""
+        with self._wal_lock:
+            if self._wal_bytes_since_fsync <= 0:
+                return
+            with contextlib.suppress(OSError):
+                with open(self.nova_wal_path, "a") as f:
+                    os.fsync(f.fileno())
+            self._wal_bytes_since_fsync = 0
 
     def _wal_clear(self) -> None:
         """Clear the WAL after a successful save."""
@@ -355,6 +439,7 @@ class NebulonOrbit:
                     else:
                         self.nova_engine.add_item(rid, vec)
                     self.mesh_engine.add_node(rid, label, created_at)
+                    self._bump_auto_id(rid)
                 elif action == "delete":
                     self.nova_store.delete(rid)
                     self.doc_store.delete(rid)
@@ -433,6 +518,8 @@ class NebulonOrbit:
                 metadata.setdefault(FIELD_TEXT, text)
             if record_id is None:
                 record_id = self._generate_record_id()
+            else:
+                self._bump_auto_id(record_id)
             created_at = utc_now_iso()
             label = metadata.get(FIELD_LABEL)
             with self._op_lock:
@@ -480,6 +567,8 @@ class NebulonOrbit:
             ids = [rid for rid, _ in items]
             if len(ids) != len(set(ids)):
                 logger.error("Duplicate record IDs in batch")
+            for rid in ids:
+                self._bump_auto_id(rid)
             for _, vec in items:
                 self.nova_engine.validate_vector(vec, self.nova_engine.dim)
             # Log each item with LSN
@@ -534,6 +623,26 @@ class NebulonOrbit:
             self._invalidate_corpus()
             logger.debug("Batch added %d items", len(items))
 
+    def add_items_auto(self, vectors: Sequence[Sequence[float]],
+                       metadatas: list[dict] | None = None) -> list[int]:
+        """Insert vectors with auto-generated contiguous record IDs.
+
+        ID allocation uses the persisted watermark, so it stays O(1)
+        (no store scan) while the batch is written as a single WAL group
+        with one ``batch_upsert`` into the HNSW engine.
+        """
+        n = len(vectors)
+        if n == 0:
+            return []
+        with self._op_lock:
+            if self._auto_id is None:
+                self._seed_auto_id()
+            start = self._auto_id + 1
+            ids = list(range(start, start + n))
+            self._auto_id = start + n - 1
+            self.add_items(list(zip(ids, vectors)), metadatas)
+            return ids
+
     # ------------------------------------------------------------------ #
     # Transaction‑safe Delete #
     # ------------------------------------------------------------------ #
@@ -558,7 +667,49 @@ class NebulonOrbit:
             self._set_dirty(True)
             self._invalidate_corpus()
 
-    def update(self, record_id: int, vector: Sequence[float] | None = None,
+    def delete_records(self, record_ids: list[int]) -> int:
+        """Bulk delete a list of record IDs in one WAL group + memtable pass.
+
+        Existence is checked once up front (mirroring the per-row ``delete``
+        guard). Store tombstones are written via ``delete_many`` (single WAL
+        write + lock acquisition); HNSW and mesh removals still run per row
+        in memory. Returns the number of records actually removed.
+        """
+        if not record_ids:
+            return 0
+        with self._op_lock:
+            old_docs: dict[int, dict[str, Any]] = {}
+            for rid in record_ids:
+                doc = self.nova_store.get(rid)
+                if doc is not None:
+                    old_docs[rid] = doc
+            if not old_docs:
+                return 0
+            surviving = list(old_docs)
+            for rid in surviving:
+                self._wal_log("delete", rid)
+            try:
+                self.nova_store.delete_many(surviving)
+                self.doc_store.delete_many(surviving)
+                for rid in surviving:
+                    self.nova_engine.delete(rid)
+                    self.mesh_engine.remove_node(rid)
+            except Exception:
+                for rid, old in old_docs.items():
+                    self.nova_store.insert(rid, old.get(FIELD_VECTOR))
+                    self.doc_store.insert(
+                        rid,
+                        old.get(FIELD_TEXT, ""),
+                        metadata=old.get(FIELD_METADATA) or {},
+                    )
+                self._rebuild_nova_engine_from_db(force_save=False)
+                raise
+            self._set_dirty(True)
+            self._invalidate_corpus()
+            return len(surviving)
+
+    def update(self, record_id: int,
+               vector: Sequence[float] | None = None,
                metadata: dict | None = None) -> tuple[int, str | None]:
         """
         Update an existing record's vector and/or metadata (upsert semantics).
@@ -1231,6 +1382,11 @@ class NebulonOrbit:
     def stats(self) -> dict[str, Any]:
         """Return a summary snapshot of Nova + Mesh state."""
         with self._op_lock:
+            try:
+                from core.model_hub import resolve_device, ModelType
+                embedding_device = resolve_device(ModelType.EMBEDDING)
+            except Exception:
+                embedding_device = "unknown"
             return {
                 "vector_count": self.nova_engine.get_current_count(),
                 "dimension": self.nova_engine.dim,
@@ -1239,21 +1395,58 @@ class NebulonOrbit:
                 "edge_count": self.mesh_engine.count_edges(),
                 "deleted_ratio": round(self.nova_engine.deleted_ratio(), 6),
                 "lsn": self._lsn_counter,
+                "embedding_device": embedding_device,
+                "flush_interval_s": self._flush_interval,
+                "wal_fsync_interval_b": self._wal_fsync_interval,
             }
 
     def flush(self) -> None:
-        self.save()
+        self.save(force=False)
+
+    def set_durability(self,
+                       flush_interval: float | None = None,
+                       wal_fsync_interval: int | None = None) -> None:
+        """Tune the durability/latency trade-off for this segment at runtime.
+
+        ``flush_interval`` : seconds between full index saves (0 = save on
+                             every flush). Higher = fewer index rewrites, wider
+                             crash-recovery window.
+        ``wal_fsync_interval`` : accumulated WAL bytes before an ``fsync``
+                                 (0 = fsync every write). Higher = faster
+                                 writes, weaker durability on power loss.
+        Either value may be None to leave it unchanged.
+        """
+        if flush_interval is not None:
+            self._flush_interval = max(0.0, float(flush_interval))
+        if wal_fsync_interval is not None and wal_fsync_interval >= 0:
+            self._wal_fsync_interval = int(wal_fsync_interval)
+
+    def _maybe_debounce(self) -> bool:
+        """Return True when a full save should be skipped (debounced).
+
+        Durability is preserved between saves by the group-committed WAL and
+        the live in-memory engine, so a burst of single writes only forces
+        one full index save once per ``FLUSH_INTERVAL`` seconds.
+        """
+        if self._flush_interval <= 0 or self._last_flush_t <= 0:
+            return False
+        return (time.monotonic() - self._last_flush_t) < self._flush_interval
 
     # ------------------------------------------------------------------ #
     # Save with LSN persistence                                          #
     # ------------------------------------------------------------------ #
-    def save(self) -> None:
+    def save(self, force: bool = False) -> None:
         """
         Save the current state, including the last applied LSN.
         After a successful save, the WAL is cleared.
+
+        Repeated saves are debounced to ``FLUSH_INTERVAL`` seconds unless
+        ``force`` is True (used on close).
         """
         with self._op_lock, self._save_lock:
             if not self._is_dirty():
+                return
+            if not force and self._maybe_debounce():
                 return
             self._maybe_compact()
 
@@ -1262,15 +1455,18 @@ class NebulonOrbit:
             self.nova_engine.set_last_applied_lsn(current_lsn)
             self.mesh_engine.save()
             self.nova_engine.save()
+            self._persist_id_watermark()
             self._set_dirty(False)
+            self._wal_fsync()
             self._wal_clear()
             # Rewrite the Cosmos WAL from the live memtable so a fresh
             # engine init never replays stale entries. No segment file
             # is written below the flush threshold.
             self._store.checkpoint_wal()
+            self._last_flush_t = time.monotonic()
 
     def close(self) -> None:
         try:
-            self.save()
+            self.save(force=True)
         finally:
             self._store.close()

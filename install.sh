@@ -175,12 +175,35 @@ uv sync --python "$PYTHON_VERSION"
 
 # ------------------------------------------------------------
 # Optional ML / Vector Extras (off by default)
+#
+# NEBULONDB_INSTALL_ML controls the torch build:
+#   1       -> CPU-only torch (small, works everywhere)
+#   1_CPU   -> same as 1 (explicit CPU)
+#   CPU     -> same as 1
+#   GPU     -> CUDA (cu124) torch for NVIDIA GPUs
 # ------------------------------------------------------------
 
-if [[ "${NEBULONDB_INSTALL_ML:-0}" == "1" ]]; then
-    log "Installing optional ML/vector extras (CPU-only torch)..."
-    uv sync --python "$PYTHON_VERSION" --extra ml
-fi
+ML_MODE="$(echo "${NEBULONDB_INSTALL_ML:-0}" | tr '[:upper:]' '[:lower:]')"
+
+case "$ML_MODE" in
+    1|1_cpu|cpu)
+        log "Installing optional ML/vector extras (CPU-only torch)..."
+        uv sync --python "$PYTHON_VERSION" --extra ml-cpu
+        ;;
+    gpu|1_gpu)
+        log "Installing optional ML/vector extras (CUDA cu124 torch for GPU)..."
+        uv sync --python "$PYTHON_VERSION" --extra ml-gpu
+        log "Swapping torch to the CUDA cu124 build..."
+        uv pip install --python "$PYTHON_VERSION" \
+            torch --index-url https://download.pytorch.org/whl/cu124
+        ;;
+    0)
+        log "Skipping optional ML/vector extras."
+        ;;
+    *)
+        error "NEBULONDB_INSTALL_ML must be 1, 1_CPU, CPU, GPU or unset (got '$NEBULONDB_INSTALL_ML')."
+        ;;
+esac
 
 # ------------------------------------------------------------
 # Install Global NebulonDB CLI
