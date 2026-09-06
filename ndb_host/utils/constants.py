@@ -77,6 +77,9 @@ class MetadataRetention:
 
         metadata = metadata.copy()
 
+        # Preserve lang field before processing
+        lang = metadata.get("lang")
+
         doc_type = DocumentType(
             metadata.get("type", DocumentType.OTHER)
         )
@@ -92,6 +95,8 @@ class MetadataRetention:
 
         # User already supplied expires_at
         if "expires_at" in metadata:
+            if lang:
+                metadata["lang"] = lang
             return metadata
 
         if policy == RetentionPolicy.PERMANENT:
@@ -113,6 +118,10 @@ class MetadataRetention:
             raise ValueError(
                 "expires_at must be supplied when using retention='custom'"
             )
+
+        # Restore lang field after processing
+        if lang:
+            metadata["lang"] = lang
 
         return metadata
 

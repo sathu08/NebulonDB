@@ -399,16 +399,21 @@ async function loadData() {
       return;
     }
     body.innerHTML = records
-      .map((r) => `
+      .map((r) => {
+        const meta = r.metadata || {};
+        const lang = meta.lang || "—";
+        const type = meta.type || "—";
+        return `
         <tr>
           <td>${escapeHtml(fmt(r.id))}</td>
           <td>${escapeHtml(String(r.text || r.metadata?.text || "")).slice(0, 300) || "—"}</td>
           <td>
-            <div class="meta-row"><span class="meta-key">lang</span><span class="meta-value">${escapeHtml(r.lang || "—")}</span></div>
-            <div class="meta-row"><span class="meta-key">type</span><span class="meta-value">${escapeHtml(r.type || "—")}</span></div>
+            <div class="meta-row"><span class="meta-key">lang</span><span class="meta-value">${escapeHtml(lang)}</span></div>
+            <div class="meta-row"><span class="meta-key">type</span><span class="meta-value">${escapeHtml(type)}</span></div>
             ${renderSearchMeta(r.metadata)}
           </td>
-        </tr>`)
+        </tr>`;
+      })
       .join("");
     wrap.style.display = "block";
     msg.textContent = `Showing ${records.length} of ${resp.data.total_count ?? records.length} records (${escapeHtml(type)}).`;
