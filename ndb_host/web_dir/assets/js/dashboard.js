@@ -403,7 +403,11 @@ async function loadData() {
         <tr>
           <td>${escapeHtml(fmt(r.id))}</td>
           <td>${escapeHtml(String(r.text || r.metadata?.text || "")).slice(0, 300) || "—"}</td>
-          <td>${renderSearchMeta(r.metadata)}</td>
+          <td>
+            <div class="meta-row"><span class="meta-key">lang</span><span class="meta-value">${escapeHtml(r.lang || "—")}</span></div>
+            <div class="meta-row"><span class="meta-key">type</span><span class="meta-value">${escapeHtml(r.type || "—")}</span></div>
+            ${renderSearchMeta(r.metadata)}
+          </td>
         </tr>`)
       .join("");
     wrap.style.display = "block";
