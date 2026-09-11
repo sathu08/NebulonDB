@@ -730,7 +730,7 @@ a {
 .cell-text {
   word-break: break-word;
   white-space: pre-wrap;
-  max-width: 520px;
+  max-width: 700px;
 }
 
 .link-btn {
@@ -1197,9 +1197,18 @@ tbody tr:last-child td {
   display: flex;
   flex-direction: column;
   gap: 6px;
-  max-height: 40px;
+  max-height: 200px;
   overflow-y: auto;
-  max-width: 420px;
+  max-width: 460px;
+}
+
+.meta-compact {
+  align-items: center;
+}
+
+.meta-sep {
+  color: var(--text-muted);
+  padding: 0 2px;
 }
 
 .meta-row {

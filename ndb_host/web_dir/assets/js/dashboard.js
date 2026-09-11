@@ -5,6 +5,10 @@ const state = {
   selectedSegment: null,
   statusMap: {},
   segmentCounts: {},
+  segmentsCache: [],
+  segmentFilter: { q: "", date: "" },
+  dataRecords: [],
+  showVectors: false,
 };
 
 const els = {
@@ -177,6 +181,15 @@ function renderCorpusList() {
 function selectCorpus(name) {
   state.selectedCorpus = name;
   state.selectedSegment = null;
+  state.segmentFilter = { q: "", date: "" };
+  state.showVectors = false;
+  const searchInput = document.getElementById("segmentSearch");
+  const dateInput = document.getElementById("segmentDate");
+  if (searchInput) searchInput.value = "";
+  if (dateInput) dateInput.value = "";
+  const showVectorsBox = document.getElementById("showVectors");
+  if (showVectorsBox) showVectorsBox.checked = false;
+  updateVectorsToggle();
   renderCorpusList();
   loadSegments(name);
   els.emptyState.style.display = "none";
@@ -293,58 +306,98 @@ async function loadSegments(corpusName) {
     const segments = (resp.data || {}).segment_list || [];
     state.segmentCounts[corpusName] = segments.length;
     renderCorpusList();
-
-    if (!segments.length) {
-      els.segmentTableBody.innerHTML = '<tr><td colspan="4" class="muted">No segments in this corpus.</td></tr>';
-    } else {
-      const corpus = state.corpora.find((c) => c.name === corpusName) || {};
-      const isOrbit = (corpus.type || "").toLowerCase() === "orbit";
-      const meshAttr = isOrbit
-        ? 'title="View mesh graph visualization"'
-        : 'disabled title="Mesh visualization is only available for Orbit corpora"';
-      els.segmentTableBody.innerHTML = segments
-        .map(
-          (s) => `
-          <tr class="row-click" data-segment="${escapeHtml(s.name || "")}">
-            <td>
-              <div class="segment-cell-name">
-                <span class="segment-icon">📄</span>
-                <span>${escapeHtml(s.name || "—")}</span>
-              </div>
-            </td>
-            <td>${fmt(s.inserted)}</td>
-            <td class="muted">${fmtDate(s.created_at)}</td>
-            <td>
-              <div class="flex" style="gap:8px;">
-                <button class="btn btn-ghost btn-sm view-btn" data-segment="${escapeHtml(s.name || "")}">View data</button>
-                <button class="btn btn-ghost btn-sm mesh-btn" data-segment="${escapeHtml(s.name || "")}" ${meshAttr}>Mesh visual</button>
-                <button class="btn btn-ghost btn-sm rel-btn" data-segment="${escapeHtml(s.name || "")}" ${meshAttr}>Relationships</button>
-              </div>
-            </td>
-          </tr>`
-        )
-        .join("");
-      els.segmentTableBody.querySelectorAll("[data-segment]").forEach((el) => {
-        el.addEventListener("click", (e) => {
-          if (e.target.closest(".mesh-btn")) {
-            const btn = e.target.closest(".mesh-btn");
-            openMeshVisual(btn.dataset.segment, btn);
-          } else if (e.target.closest(".rel-btn")) {
-            const btn = e.target.closest(".rel-btn");
-            openRelationships(btn.dataset.segment, btn);
-          } else if (e.target.closest(".view-btn")) {
-            selectSegment(e.target.dataset.segment);
-          } else {
-            const seg = el.dataset.segment;
-            if (seg) selectSegment(seg);
-          }
-        });
-      });
-    }
+    state.segmentsCache = segments;
+    renderSegmentRows();
   } catch (err) {
     els.segmentTableBody.innerHTML = `<tr><td colspan="4" class="alert alert-error show">${escapeHtml(err.message || "Error")}</td></tr>`;
   }
 }
+
+function segmentMatchesFilters(s) {
+  const q = (state.segmentFilter.q || "").trim().toLowerCase();
+  if (q && !(s.name || "").toLowerCase().includes(q)) return false;
+  const day = state.segmentFilter.date || "";
+  if (day) {
+    const d = s.created_at ? new Date(s.created_at) : null;
+    if (!d || isNaN(d.getTime())) return false;
+    const ymd = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+    if (ymd !== day) return false;
+  }
+  return true;
+}
+
+function renderSegmentRows() {
+  const segments = state.segmentsCache || [];
+  const countEl = document.getElementById("segmentCount");
+  if (!segments.length) {
+    if (countEl) countEl.textContent = "";
+    els.segmentTableBody.innerHTML = '<tr><td colspan="4" class="muted">No segments in this corpus.</td></tr>';
+    return;
+  }
+  const filtered = segments.filter(segmentMatchesFilters);
+  if (countEl) {
+    countEl.textContent = filtered.length === segments.length
+      ? `(${segments.length})`
+      : `(${filtered.length} of ${segments.length})`;
+  }
+  if (!filtered.length) {
+    els.segmentTableBody.innerHTML = '<tr><td colspan="4" class="muted">No segments match the current search / date filter.</td></tr>';
+    return;
+  }
+  const corpus = state.corpora.find((c) => c.name === state.selectedCorpus) || {};
+  const isOrbit = (corpus.type || "").toLowerCase() === "orbit";
+  const meshAttr = isOrbit
+    ? 'title="View mesh graph visualization"'
+    : 'disabled title="Mesh visualization is only available for Orbit corpora"';
+  els.segmentTableBody.innerHTML = filtered
+    .map(
+      (s) => `
+      <tr class="row-click" data-segment="${escapeHtml(s.name || "")}">
+        <td>
+          <div class="segment-cell-name">
+            <span class="segment-icon">📄</span>
+            <span>${escapeHtml(s.name || "—")}</span>
+          </div>
+        </td>
+        <td>${fmt(s.inserted)}</td>
+        <td class="muted">${fmtDate(s.created_at)}</td>
+        <td>
+          <div class="flex" style="gap:8px;">
+            <button class="btn btn-ghost btn-sm view-btn" data-segment="${escapeHtml(s.name || "")}">View data</button>
+            <button class="btn btn-ghost btn-sm mesh-btn" data-segment="${escapeHtml(s.name || "")}" ${meshAttr}>Mesh visual</button>
+            <button class="btn btn-ghost btn-sm rel-btn" data-segment="${escapeHtml(s.name || "")}" ${meshAttr}>Relationships</button>
+          </div>
+        </td>
+      </tr>`
+    )
+    .join("");
+  els.segmentTableBody.querySelectorAll("[data-segment]").forEach((el) => {
+    el.addEventListener("click", (e) => {
+      if (e.target.closest(".mesh-btn")) {
+        const btn = e.target.closest(".mesh-btn");
+        openMeshVisual(btn.dataset.segment, btn);
+      } else if (e.target.closest(".rel-btn")) {
+        const btn = e.target.closest(".rel-btn");
+        openRelationships(btn.dataset.segment, btn);
+      } else if (e.target.closest(".view-btn")) {
+        selectSegment(e.target.dataset.segment);
+      } else {
+        const seg = el.dataset.segment;
+        if (seg) selectSegment(seg);
+      }
+    });
+  });
+}
+
+document.getElementById("segmentSearch").addEventListener("input", (e) => {
+  state.segmentFilter.q = e.target.value;
+  renderSegmentRows();
+});
+
+document.getElementById("segmentDate").addEventListener("change", (e) => {
+  state.segmentFilter.date = e.target.value;
+  renderSegmentRows();
+});
 
 async function selectSegment(segmentName) {
   state.selectedSegment = segmentName;
@@ -425,8 +478,30 @@ async function loadData() {
       return;
     }
     state.dataRecords = records;
-    body.innerHTML = records
-      .map((r, idx) => {
+    renderDataRows(records, type);
+    wrap.style.display = "block";
+    msg.textContent = `Showing ${records.length} of ${resp.data.total_count ?? records.length} records (${escapeHtml(type)}).`;
+  } catch (err) {
+    wrap.style.display = "none";
+    msg.textContent = err.message;
+  }
+}
+
+const VECTOR_PREVIEW_DIMS = 6;
+
+function formatVector(vec) {
+  if (!Array.isArray(vec) || !vec.length) return "—";
+  const head = vec.slice(0, VECTOR_PREVIEW_DIMS).map((v) => Number(v).toFixed(4)).join(", ");
+  return vec.length > VECTOR_PREVIEW_DIMS
+    ? `[${head}, …] (${vec.length} dims, first ${VECTOR_PREVIEW_DIMS} shown)`
+    : `[${head}] (${vec.length} dims)`;
+}
+
+function renderDataRows(records, type) {
+  const body = document.getElementById("dataTableBody");
+  const showVectors = state.showVectors === true;
+  body.innerHTML = records
+    .map((r, idx) => {
         // ORBIT rows nest fields under `metadata`; COSMOS rows are flat
         // ({_id, text, lang, type, ...extras} at top level).
         const flat = !r.metadata || typeof r.metadata !== "object";
@@ -441,28 +516,42 @@ async function loadData() {
         Object.keys(meta).forEach((k) => {
           if (!skip.has(k)) extra[k] = meta[k];
         });
+        if (showVectors && Array.isArray(r.vector) && r.vector.length) {
+          extra.vector = formatVector(r.vector);
+        }
         return `
         <tr>
           <td>${escapeHtml(fmt(rid))}</td>
           <td>${textCell(fullText, idx)}</td>
           <td>
-            <div class="meta-row"><span class="meta-key">lang</span><span class="meta-value">${escapeHtml(lang)}</span></div>
-            <div class="meta-row"><span class="meta-key">type</span><span class="meta-value">${escapeHtml(type)}</span></div>
+            <div class="meta-row meta-compact"><span class="meta-key">lang</span><span class="meta-value">${escapeHtml(lang)}</span><span class="meta-sep">·</span><span class="meta-key">type</span><span class="meta-value">${escapeHtml(type)}</span></div>
             ${renderSearchMeta(extra)}
           </td>
         </tr>`;
       })
       .join("");
-    wrap.style.display = "block";
-    msg.textContent = `Showing ${records.length} of ${resp.data.total_count ?? records.length} records (${escapeHtml(type)}).`;
-  } catch (err) {
-    wrap.style.display = "none";
-    msg.textContent = err.message;
-  }
 }
 
 document.getElementById("getDataBtn").addEventListener("click", loadData);
 document.getElementById("corpusSearch").addEventListener("input", renderCorpusList);
+document.getElementById("showVectors").addEventListener("change", (e) => {
+  state.showVectors = e.target.checked === true;
+  if ((state.dataRecords || []).length) {
+    const corpus = state.corpora.find((c) => c.name === state.selectedCorpus) || {};
+    renderDataRows(state.dataRecords, corpus.type || "orbit");
+  } else if (state.showVectors && state.selectedSegment) {
+    loadData();
+  }
+});
+
+// Vectors exist only on ORBIT rows — the toggle is hidden for cosmos corpora.
+function updateVectorsToggle() {
+  const wrap = document.getElementById("vectorsToggleWrap");
+  if (!wrap) return;
+  const corpus = state.corpora.find((c) => c.name === state.selectedCorpus) || {};
+  const isOrbit = (corpus.type || "").toLowerCase() === "orbit";
+  wrap.style.display = isOrbit ? "flex" : "none";
+}
 
 const TEXT_PREVIEW_LEN = 300;
 

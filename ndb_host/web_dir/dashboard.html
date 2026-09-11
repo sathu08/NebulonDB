@@ -72,8 +72,12 @@
 
         <div class="panel">
           <div class="panel-head">
-            <span class="panel-title">Segments</span>
-            <button class="btn btn-ghost btn-sm" id="loadSegmentBtn" style="display:none;" disabled>Load segment</button>
+            <span class="panel-title">Segments <span class="muted small" id="segmentCount"></span></span>
+            <div class="flex" style="gap:8px; flex-wrap:wrap;">
+              <button class="btn btn-ghost btn-sm" id="loadSegmentBtn" style="display:none;" disabled>Load segment</button>
+              <input id="segmentSearch" class="input" type="text" placeholder="Search segments…" title="Filter segments by name" style="max-width:170px;">
+              <input id="segmentDate" class="input" type="date" title="Filter segments by created date" style="max-width:150px;">
+            </div>
           </div>
           <div class="table-wrap" id="segmentTableWrap">
             <table>
@@ -103,7 +107,12 @@
           <div class="panel">
             <div class="panel-head">
               <span class="panel-title">Data preview</span>
-              <button class="btn btn-primary btn-sm" id="getDataBtn">Get 10 records</button>
+              <div class="flex" style="gap:8px; align-items:center;">
+                <button class="btn btn-primary btn-sm" id="getDataBtn">Get 10 records</button>
+                <label id="vectorsToggleWrap" class="muted small" style="display:none; gap:6px; align-items:center; cursor:pointer;" title="Show embedding vectors (first 6 dims) in Metadata. Orbit only.">
+                  <input type="checkbox" id="showVectors"> vectors
+                </label>
+              </div>
             </div>
             <div class="panel-body">
               <div id="dataMessage" class="muted small"></div>
