@@ -8,122 +8,29 @@ This module handles constants and configuration for the NDB API.
 
 from enum import Enum
 from pydantic import BaseModel
-from datetime import timedelta
 
 from typing import Any, Literal
 
 from dataclasses import dataclass
 
-from .time_utils import utc_now
 
-class DocumentType(str, Enum):
-    PDF = "pdf"
-    DOCX = "docx"
-    TXT = "txt"
-    MARKDOWN = "markdown"
-    CHAT = "chat"
-    CHAT_SUMMARY = "chat_summary"
-    IMPORTANT_CHAT = "important_chat"
-    WEB_CACHE = "web_cache"
-    SESSION = "session"
-    OTHER = "other"
+def normalize_doc_type(doc_type: object) -> str:
+    """Normalize a free-form doc_type to a safe non-empty string.
 
-class RetentionPolicy(str, Enum):
-    PERMANENT = "permanent"
-    TEMPORARY = "temporary"
-    SESSION = "session"
-    CUSTOM = "custom"
+    The value is passed through as-is (lowercased/stripped) so whatever
+    the caller sends — ``chat_history``, ``chat_mind``, ``pdf``, ... —
+    is exactly what lands in record metadata. Empty/missing values fall
+    back to ``"other"``.
+    """
+    text = str(doc_type or "other").strip().lower()
+    return text or "other"
 
-class MetadataRetention:
-    """Handles automatic expiration of records."""
 
-    DEFAULT_POLICY = {
-        DocumentType.PDF: RetentionPolicy.PERMANENT,
-        DocumentType.DOCX: RetentionPolicy.PERMANENT,
-        DocumentType.TXT: RetentionPolicy.PERMANENT,
-        DocumentType.MARKDOWN: RetentionPolicy.PERMANENT,
+def normalize_lang(lang: object) -> str:
+    """Normalize a language tag; empty/missing values fall back to ``"en"``."""
+    text = str(lang or "en").strip().lower()
+    return text or "en"
 
-        DocumentType.CHAT: RetentionPolicy.TEMPORARY,
-        DocumentType.CHAT_SUMMARY: RetentionPolicy.TEMPORARY,
-
-        DocumentType.IMPORTANT_CHAT: RetentionPolicy.PERMANENT,
-
-        DocumentType.WEB_CACHE: RetentionPolicy.TEMPORARY,
-        DocumentType.SESSION: RetentionPolicy.SESSION,
-
-        DocumentType.OTHER: RetentionPolicy.PERMANENT,
-    }
-
-    TTL = {
-        RetentionPolicy.TEMPORARY: timedelta(days=10),
-        RetentionPolicy.SESSION: timedelta(hours=1),
-    }
-
-    @staticmethod
-    def _utc_now():
-        return utc_now()
-
-    @classmethod
-    def apply(cls, metadata: dict[str, Any]) -> dict[str, Any]:
-        """
-        Automatically applies retention policy.
-
-        Rules:
-        - PDF -> Never expires
-        - Chat -> 10 days
-        - Session -> 1 hour
-        - Custom -> Uses supplied expires_at
-        """
-
-        metadata = metadata.copy()
-
-        # Preserve lang field before processing
-        lang = metadata.get("lang")
-
-        doc_type = DocumentType(
-            metadata.get("type", DocumentType.OTHER)
-        )
-
-        policy = RetentionPolicy(
-            metadata.get(
-                "retention",
-                cls.DEFAULT_POLICY[doc_type]
-            )
-        )
-
-        metadata["retention"] = policy.value
-
-        # User already supplied expires_at
-        if "expires_at" in metadata:
-            if lang:
-                metadata["lang"] = lang
-            return metadata
-
-        if policy == RetentionPolicy.PERMANENT:
-            metadata["expires_at"] = None
-
-        elif policy == RetentionPolicy.TEMPORARY:
-            metadata["expires_at"] = (
-                cls._utc_now() +
-                cls.TTL[RetentionPolicy.TEMPORARY]
-            ).timestamp()
-
-        elif policy == RetentionPolicy.SESSION:
-            metadata["expires_at"] = (
-                cls._utc_now() +
-                cls.TTL[RetentionPolicy.SESSION]
-            ).timestamp()
-
-        elif policy == RetentionPolicy.CUSTOM:
-            raise ValueError(
-                "expires_at must be supplied when using retention='custom'"
-            )
-
-        # Restore lang field after processing
-        if lang:
-            metadata["lang"] = lang
-
-        return metadata
 
 class NDBMeta:
     APP_NAME = "NebulonDB"

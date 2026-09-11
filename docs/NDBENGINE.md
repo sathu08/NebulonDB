@@ -449,11 +449,10 @@ links a document to its vector and Mesh node.
 │ _id (PK)                                                    │
 │ text                                                        │
 │ metadata                                                    │
-│    ├── lang                                                 │
-│    ├── type                                                 │
+│    ├── lang  (default "en")                                  │
+│    ├── type  (default "other", free-form)                    │
 │    ├── created_at                                           │
-│    ├── retention                                            │
-│    └── expires_at                                           │
+│    └── ...caller extras (stored as-sent, never auto-expired) │
 └──────────────────────────────────────────────────────────────┘
 
 

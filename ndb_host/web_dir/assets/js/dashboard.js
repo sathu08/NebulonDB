@@ -260,7 +260,29 @@ function renderCorpusActions() {
     delBtn.disabled = true;
     delBtn.title = "Admin access required";
   }
-  els.corpusActions.append(actBtn, delBtn);
+
+  const refreshBtn = document.createElement("button");
+  refreshBtn.className = "btn btn-sm btn-ghost";
+  refreshBtn.textContent = "⟳ Refresh";
+  refreshBtn.title = "Reload corpora and segments from the server";
+  refreshBtn.addEventListener("click", async () => {
+    refreshBtn.classList.add("disabled");
+    refreshBtn.disabled = true;
+    try {
+      await loadCorpora();
+      if (state.selectedCorpus) {
+        renderCorpusActions();
+        await loadSegments(state.selectedCorpus);
+      }
+      showToast("Refreshed from server.", "success");
+    } catch (err) {
+      showToast(err.message || "Refresh failed", "error");
+    } finally {
+      refreshBtn.classList.remove("disabled");
+      refreshBtn.disabled = false;
+    }
+  });
+  els.corpusActions.append(refreshBtn, actBtn, delBtn);
 }
 
 async function loadSegments(corpusName) {
@@ -295,7 +317,8 @@ async function loadSegments(corpusName) {
             <td>
               <div class="flex" style="gap:8px;">
                 <button class="btn btn-ghost btn-sm view-btn" data-segment="${escapeHtml(s.name || "")}">View data</button>
-                <button class="btn btn-ghost btn-sm mesh-btn" data-segment="${escapeHtml(s.name || "")}" ${meshAttr}>View mesh visual</button>
+                <button class="btn btn-ghost btn-sm mesh-btn" data-segment="${escapeHtml(s.name || "")}" ${meshAttr}>Mesh visual</button>
+                <button class="btn btn-ghost btn-sm rel-btn" data-segment="${escapeHtml(s.name || "")}" ${meshAttr}>Relationships</button>
               </div>
             </td>
           </tr>`
@@ -306,6 +329,9 @@ async function loadSegments(corpusName) {
           if (e.target.closest(".mesh-btn")) {
             const btn = e.target.closest(".mesh-btn");
             openMeshVisual(btn.dataset.segment, btn);
+          } else if (e.target.closest(".rel-btn")) {
+            const btn = e.target.closest(".rel-btn");
+            openRelationships(btn.dataset.segment, btn);
           } else if (e.target.closest(".view-btn")) {
             selectSegment(e.target.dataset.segment);
           } else {
@@ -398,19 +424,31 @@ async function loadData() {
       msg.textContent = "No records found in this segment.";
       return;
     }
+    state.dataRecords = records;
     body.innerHTML = records
-      .map((r) => {
-        const meta = r.metadata || {};
-        const lang = meta.lang || "—";
-        const type = meta.type || "—";
+      .map((r, idx) => {
+        // ORBIT rows nest fields under `metadata`; COSMOS rows are flat
+        // ({_id, text, lang, type, ...extras} at top level).
+        const flat = !r.metadata || typeof r.metadata !== "object";
+        const meta = flat ? r : r.metadata;
+        const lang = meta.lang ?? r.lang ?? "—";
+        const type = meta.type ?? r.type ?? "—";
+        const rid = r.id ?? r._id ?? "—";
+        const fullText = String(r.text || r.metadata?.text || "");
+        // Extra fields beyond the already-displayed core columns.
+        const skip = new Set(["text", "lang", "type", "id", "_id", "created_at"]);
+        const extra = {};
+        Object.keys(meta).forEach((k) => {
+          if (!skip.has(k)) extra[k] = meta[k];
+        });
         return `
         <tr>
-          <td>${escapeHtml(fmt(r.id))}</td>
-          <td>${escapeHtml(String(r.text || r.metadata?.text || "")).slice(0, 300) || "—"}</td>
+          <td>${escapeHtml(fmt(rid))}</td>
+          <td>${textCell(fullText, idx)}</td>
           <td>
             <div class="meta-row"><span class="meta-key">lang</span><span class="meta-value">${escapeHtml(lang)}</span></div>
             <div class="meta-row"><span class="meta-key">type</span><span class="meta-value">${escapeHtml(type)}</span></div>
-            ${renderSearchMeta(r.metadata)}
+            ${renderSearchMeta(extra)}
           </td>
         </tr>`;
       })
@@ -425,6 +463,33 @@ async function loadData() {
 
 document.getElementById("getDataBtn").addEventListener("click", loadData);
 document.getElementById("corpusSearch").addEventListener("input", renderCorpusList);
+
+const TEXT_PREVIEW_LEN = 300;
+
+function textCell(fullText, idx) {
+  if (!fullText) return "—";
+  if (fullText.length <= TEXT_PREVIEW_LEN) {
+    return `<div class="cell-text">${escapeHtml(fullText)}</div>`;
+  }
+  return `<div class="cell-text" id="cell-text-${idx}">${escapeHtml(fullText.slice(0, TEXT_PREVIEW_LEN))}…</div>`
+    + `<button class="link-btn text-toggle" data-idx="${idx}" data-expanded="0">Show full</button>`;
+}
+
+// Delegated toggle (tbody persists across re-renders): swaps the truncated
+// preview for the full record text held in state.dataRecords and back.
+document.getElementById("dataTableBody").addEventListener("click", (e) => {
+  const btn = e.target.closest(".text-toggle");
+  if (!btn) return;
+  const idx = Number(btn.dataset.idx);
+  const rec = (state.dataRecords || [])[idx];
+  const cell = document.getElementById(`cell-text-${idx}`);
+  if (!rec || !cell) return;
+  const fullText = String(rec.text || rec.metadata?.text || "");
+  const expanded = btn.dataset.expanded === "1";
+  cell.textContent = expanded ? fullText.slice(0, TEXT_PREVIEW_LEN) + "…" : fullText;
+  btn.dataset.expanded = expanded ? "0" : "1";
+  btn.textContent = expanded ? "Show full" : "Show less";
+});
 
 async function openMeshVisual(segmentName, btn) {
   const corpusName = state.selectedCorpus;
@@ -460,6 +525,50 @@ function showMeshModal(segmentName, html) {
   doc.open();
   doc.write(html);
   doc.close();
+}
+
+async function openRelationships(segmentName, btn) {
+  const corpusName = state.selectedCorpus;
+  const corpus = state.corpora.find((c) => c.name === corpusName) || {};
+  const type = corpus.type || "orbit";
+  els.modalTitle.textContent = "Relationships — " + segmentName;
+  els.modalOverlay.querySelector(".modal").classList.add("modal-wide");
+  els.modalBody.innerHTML = '<div class="muted">Loading relationships...</div>';
+  els.modalFoot.innerHTML = `
+    <button class="btn btn-ghost" id="mCancel">Close</button>`;
+  els.modalOverlay.classList.add("show");
+  document.getElementById("mCancel").addEventListener("click", closeModal);
+  try {
+    const resp = await SegmentAPI.meshGraph(corpusName, segmentName, type);
+    if (!resp.success) throw new Error(resp.message || "Failed to load relationships");
+    const data = resp.data || {};
+    const edges = data.edges || [];
+    const nodeCount = data.node_count ?? (data.nodes || []).length;
+    if (!edges.length) {
+      els.modalBody.innerHTML = '<div class="muted">No relationships in this segment yet. Load edges via Mesh graph load to see them here.</div>';
+      return;
+    }
+    els.modalBody.innerHTML = `
+      <div class="muted small" style="margin-bottom:8px;">${escapeHtml(String(nodeCount))} nodes • ${escapeHtml(String(edges.length))} relationships</div>
+      <div class="table-wrap"><table>
+        <thead><tr><th>From</th><th>Relation</th><th>To</th></tr></thead>
+        <tbody>
+          ${edges.map((e) => `
+          <tr>
+            <td>${escapeHtml(fmt(e.from))}</td>
+            <td><code>${escapeHtml(fmt(e.relation))}</code></td>
+            <td>${escapeHtml(fmt(e.to))}</td>
+          </tr>`).join("")}
+        </tbody>
+      </table></div>`;
+  } catch (err) {
+    els.modalBody.innerHTML = `<div class="alert alert-error show">${escapeHtml(err.message || "Error")}</div>`;
+    if (btn) {
+      btn.classList.add("disabled");
+      btn.disabled = true;
+      btn.title = "Relationships are not available";
+    }
+  }
 }
 
 document.getElementById("loadSegmentBtn").addEventListener("click", () => {

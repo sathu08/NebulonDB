@@ -18,7 +18,7 @@ from collections.abc import Sequence
 
 from db.ndb_settings import NDBConfig
 from core.model_hub import SemanticEmbeddingModel
-from utils.constants import ColumnPick, MetadataRetention, NDBMeta
+from utils.constants import ColumnPick, NDBMeta, normalize_doc_type, normalize_lang
 
 from db.engine import NebulonCosmos, NebulonOrbit, RankConfig
 
@@ -41,6 +41,38 @@ ML_INSTALL_HINT = (
 def _ml_available() -> bool:
     """True when the ML/embedding stack (sentence-transformers) is installed."""
     return importlib.util.find_spec("sentence_transformers") is not None
+
+
+# Core keys owned by the engine — caller extras may never override these.
+_RESERVED_EXTRA_KEYS = frozenset(
+    {"text", "lang", "type", "created_at", "label", "id", "_id"}
+)
+
+
+def _sanitize_extras(raw: dict[str, Any] | None) -> dict[str, Any]:
+    """Keep only safe caller-supplied metadata entries.
+
+    Drops reserved core keys and non-JSON-scalar values so a bad extra
+    can never corrupt the record shape or break storage serialization.
+    """
+    if not isinstance(raw, dict):
+        return {}
+    clean: dict[str, Any] = {}
+    for key, value in raw.items():
+        name = str(key).strip()
+        if not name or name in _RESERVED_EXTRA_KEYS:
+            continue
+        if value is None or isinstance(value, (str, int, float, bool)):
+            clean[name] = value
+        elif isinstance(value, (list, dict)):
+            try:
+                import json as _json
+
+                _json.dumps(value)
+            except (TypeError, ValueError):
+                continue
+            clean[name] = value
+    return clean
 
 class ComosDBManager:
     _instances: dict[str, "ComosDBManager"] = {}
@@ -896,6 +928,8 @@ class SegmentManager:
         target_column: str | None = None,
         relation_column: str | None = None,
         lang: str | None = None,
+        extra_metadata: dict[str, Any] | None = None,
+        row_metadata: list[dict[str, Any] | None] | None = None,
     ) -> dict:
         """
         Load vectors from one or more columns into OrbitDB, and optionally
@@ -916,6 +950,13 @@ class SegmentManager:
                            Auto-detected from common names when omitted.
             relation_column: Optional column name containing the relation label.
                              Defaults to "related" when omitted.
+            extra_metadata: Optional caller-supplied key/values merged into
+                            every record (COSMOS: top-level document fields;
+                            ORBIT: metadata dict). Reserved core keys
+                            (``text``/``lang``/``type``/``created_at``/
+                            ``label``/``id``) are ignored.
+            row_metadata: Optional per-row dicts (aligned by row index);
+                          a row's own keys win over ``extra_metadata``.
 
         Returns:
             dict containing success status and statistics.
@@ -929,6 +970,19 @@ class SegmentManager:
 
         if lang is not None and lang_type is None:
             lang_type = lang
+
+        base_extras = _sanitize_extras(extra_metadata)
+        row_extras = (
+            [(_sanitize_extras(r) if isinstance(r, dict) else {}) for r in row_metadata]
+            if row_metadata is not None
+            else []
+        )
+
+        def _extras_for(row_idx: int) -> dict[str, Any]:
+            merged: dict[str, Any] = dict(base_extras)
+            if 0 <= row_idx < len(row_extras):
+                merged.update(row_extras[row_idx])
+            return merged
 
         is_orbit = self.ndb_type == NDBMeta.Type.ORBIT
 
@@ -946,17 +1000,17 @@ class SegmentManager:
                     # row-by-row inserts to isolate failing rows.
                     texts = segment_dataset[col].fill_null("").to_list()
                     batch = []
-                    for text in texts:
+                    for row_idx, text in enumerate(texts):
                         if not text.strip():
                             total_skipped += 1
                             continue
                         document = {
                             "text": text,
-                            "lang": lang_type,
-                            "type": doc_type or "other",
+                            "lang": normalize_lang(lang_type),
+                            "type": normalize_doc_type(doc_type),
                             "created_at": created_at,
+                            **_extras_for(row_idx),
                         }
-                        document = MetadataRetention.apply(document)
                         batch.append(document)
                     if batch:
                         try:
@@ -1016,9 +1070,10 @@ class SegmentManager:
                         text = ""
 
                     metadata = {
-                        "lang": lang_type,
-                        "type": doc_type or "other",
+                        "lang": normalize_lang(lang_type),
+                        "type": normalize_doc_type(doc_type),
                         "created_at": created_at,
+                        **_extras_for(idx),
                     }
 
                     name = None
@@ -1029,7 +1084,6 @@ class SegmentManager:
                     if name:
                         metadata["label"] = name
 
-                    metadata = MetadataRetention.apply(metadata)
                     metadata.setdefault("text", text)
                     metadatas.append(metadata)
 

@@ -168,6 +168,11 @@ async def load_segment(
         segment_dataset = segment_query.segment_dataset
         set_columns = segment_query.set_columns or ColumnPick.FIRST_COLUMN
         is_precomputed = segment_query.is_precomputed
+        extra_metadata = (
+            dict(segment_query.metadata)
+            if isinstance(segment_query.metadata, dict)
+            else None
+        )
         relations = segment_query.relations
         source_column = segment_query.source_column
         target_column = segment_query.target_column
@@ -199,8 +204,32 @@ async def load_segment(
         if segment_dataset is None:
             return StandardResponse(success=False, message="Dataset cannot be None")
 
-        elif isinstance(segment_dataset, pl.DataFrame):
+        # Per-row caller metadata: a "metadata" entry on any row is popped
+        # out before DataFrame conversion (so it is never embedded as a
+        # text column) and carried alongside as sidecar extras.
+        row_metadata: list[dict | None] | None = None
+        if isinstance(segment_dataset, list):
+            row_metadata = []
+            for row in segment_dataset:
+                if isinstance(row, dict) and isinstance(row.get("metadata"), dict):
+                    row_metadata.append(row.pop("metadata"))
+                else:
+                    if isinstance(row, dict):
+                        row.pop("metadata", None)
+                    row_metadata.append(None)
+            if not any(isinstance(r, dict) for r in row_metadata):
+                row_metadata = None
+        elif isinstance(segment_dataset, dict):
+            raw_meta = segment_dataset.pop("metadata", None)
+            if isinstance(raw_meta, list):
+                row_metadata = [r if isinstance(r, dict) else None for r in raw_meta]
+                if not any(isinstance(r, dict) for r in row_metadata):
+                    row_metadata = None
+
+        if isinstance(segment_dataset, pl.DataFrame):
             segment_dataset = segment_dataset
+            if "metadata" in segment_dataset.columns:
+                segment_dataset = segment_dataset.drop("metadata")
 
         elif isinstance(segment_dataset, dict):
             try:
@@ -244,6 +273,8 @@ async def load_segment(
         source_column=source_column,
         target_column=target_column,
         relation_column=relation_column,
+        extra_metadata=extra_metadata,
+        row_metadata=row_metadata,
         )
 
         if not result["success"]:
@@ -1117,6 +1148,59 @@ async def mesh_load_graph(
         )
     except Exception as e:
         logger.exception(f"Failed to load graph: {str(e)}")
+        return StandardResponse(success=False, message=f"Internal server error: {str(e)}")
+
+
+@router.post(
+    "/mesh_graph",
+    response_model=StandardResponse,
+    summary="Mesh graph data",
+    description="Return mesh nodes and relationships (edges with resolved node labels) for a segment"
+)
+async def mesh_graph(
+    segment_query: SegmentQueryRequest,
+    current_user: AuthenticationResult = Depends(get_current_user)
+) -> StandardResponse:
+    """Return graph nodes + labeled relationships for table/cytoscape rendering."""
+    try:
+        if not current_user.is_authenticated:
+            return _unauth_response(segment_query)
+
+        if _resolve_corpus_ndb_type(segment_query.corpus_name, segment_query.ndb_type) == NDBMeta.Type.COSMOS:
+            return StandardResponse(
+                success=False,
+                corpus_name=segment_query.corpus_name,
+                segment_name=segment_query.segment_name,
+                message="mesh graph is not supported for Cosmos segments")
+
+        graph = SegmentManager(
+            corpus_name=segment_query.corpus_name,
+            segment_name=segment_query.segment_name,
+            ndb_type=_resolve_corpus_ndb_type(segment_query.corpus_name, segment_query.ndb_type),
+        ).get_graph()
+        nodes = [n for n in (graph.get("nodes") or []) if isinstance(n, dict)]
+        label_by_id = {n.get("id"): (n.get("label") if n.get("label") is not None else n.get("id")) for n in nodes}
+        edges = []
+        for e in (graph.get("edges") or []):
+            if not isinstance(e, dict):
+                continue
+            src = e.get("from_id", e.get("source"))
+            tgt = e.get("to_id", e.get("target"))
+            edges.append({
+                "from": label_by_id.get(src, src),
+                "relation": e.get("relation") or "related",
+                "to": label_by_id.get(tgt, tgt),
+            })
+        return StandardResponse(
+            success=True,
+            corpus_name=segment_query.corpus_name,
+            segment_name=segment_query.segment_name,
+            data={"nodes": nodes, "node_count": len(nodes),
+                  "edges": edges, "edge_count": len(edges)},
+            message=f"Mesh graph: {len(nodes)} nodes, {len(edges)} relationships"
+        )
+    except Exception as e:
+        logger.exception(f"Failed to get mesh graph for segment {segment_query.segment_name}: {str(e)}")
         return StandardResponse(success=False, message=f"Internal server error: {str(e)}")
 
 

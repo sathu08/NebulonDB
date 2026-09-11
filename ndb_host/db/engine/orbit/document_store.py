@@ -7,7 +7,11 @@ document material (text + metadata) separate from the Nova vector rows and
 the Mesh node/edge rows.
 
 Each row on disk:
-    {id, text, metadata{label, lang, type, retention, expires_at}, created_at}
+    {id, text, metadata{label, lang, type}, created_at}
+
+``lang`` defaults to ``"en"`` and ``type`` to ``"other"`` when the caller
+omits them. Lifecycle (retention/expiry) is owned by the caller —
+NebulonDB stores metadata as-sent and never auto-expires records.
 """
 
 

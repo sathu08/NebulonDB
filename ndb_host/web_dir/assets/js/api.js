@@ -223,6 +223,12 @@ const SegmentAPI = {
       body: { corpus_name, segment_name, ndb_type },
     });
   },
+  meshGraph(corpus_name, segment_name, ndb_type) {
+    return api("/api/NebulonDB/segment/mesh_graph", {
+      method: "POST",
+      body: { corpus_name, segment_name, ndb_type },
+    });
+  },
 };
 
 const ConfigAPI = {
