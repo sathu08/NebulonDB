@@ -14,10 +14,11 @@ import polars as pl
 
 from pathlib import Path
 from typing import Any
+from collections.abc import Sequence
 
 from db.ndb_settings import NDBConfig
 from core.model_hub import SemanticEmbeddingModel
-from utils.constants import ColumnPick, MetadataRetention, NDBMeta
+from utils.constants import ColumnPick, NDBMeta, normalize_doc_type, normalize_lang
 
 from db.engine import NebulonCosmos, NebulonOrbit, RankConfig
 
@@ -40,6 +41,38 @@ ML_INSTALL_HINT = (
 def _ml_available() -> bool:
     """True when the ML/embedding stack (sentence-transformers) is installed."""
     return importlib.util.find_spec("sentence_transformers") is not None
+
+
+# Core keys owned by the engine — caller extras may never override these.
+_RESERVED_EXTRA_KEYS = frozenset(
+    {"text", "lang", "type", "created_at", "label", "id", "_id"}
+)
+
+
+def _sanitize_extras(raw: dict[str, Any] | None) -> dict[str, Any]:
+    """Keep only safe caller-supplied metadata entries.
+
+    Drops reserved core keys and non-JSON-scalar values so a bad extra
+    can never corrupt the record shape or break storage serialization.
+    """
+    if not isinstance(raw, dict):
+        return {}
+    clean: dict[str, Any] = {}
+    for key, value in raw.items():
+        name = str(key).strip()
+        if not name or name in _RESERVED_EXTRA_KEYS:
+            continue
+        if value is None or isinstance(value, (str, int, float, bool)):
+            clean[name] = value
+        elif isinstance(value, (list, dict)):
+            try:
+                import json as _json
+
+                _json.dumps(value)
+            except (TypeError, ValueError):
+                continue
+            clean[name] = value
+    return clean
 
 class ComosDBManager:
     _instances: dict[str, "ComosDBManager"] = {}
@@ -89,14 +122,54 @@ class ComosDBManager:
         self._db.close()
 
 class OrbitDBManager:
+    _instances: dict[tuple[str, str], "OrbitDBManager"] = {}
+
+    def __new__(cls, db_path: Path, segment_name: str = "default", reset: bool = False,
+                rank_config: RankConfig | None = None,
+                flush_interval: float | None = None,
+                wal_fsync_interval: int | None = None):
+        key = (str(Path(db_path).resolve()), segment_name)
+        if reset:
+            cls._instances.pop(key, None)
+        if key not in cls._instances:
+            cls._instances[key] = super().__new__(cls)
+        return cls._instances[key]
+
     def __init__(self, db_path: Path, segment_name: str = "default", reset: bool = False,
-                rank_config: RankConfig | None = None):
+                rank_config: RankConfig | None = None,
+                flush_interval: float | None = None,
+                wal_fsync_interval: int | None = None):
+        key = (str(Path(db_path).resolve()), segment_name)
+        if getattr(self, "_initialized", False) and not reset:
+            self.set_durability(
+                flush_interval=flush_interval,
+                wal_fsync_interval=wal_fsync_interval,
+            )
+            return
         self._db = NebulonOrbit(
             db_dir=db_path,
             segment_name=segment_name,
             reset=reset,
             rank_config=rank_config,
+            flush_interval=flush_interval,
+            wal_fsync_interval=wal_fsync_interval,
         )
+        self._initialized = True
+
+    def set_durability(self,
+                       flush_interval: float | None = None,
+                       wal_fsync_interval: int | None = None) -> None:
+        self._db.set_durability(
+            flush_interval=flush_interval,
+            wal_fsync_interval=wal_fsync_interval,
+        )
+
+    @classmethod
+    def evict(cls, db_path: Path) -> None:
+        """Drop all cached Orbit managers for a corpus (e.g. on delete)."""
+        resolved = str(Path(db_path).resolve())
+        for key in [k for k in cls._instances if k[0] == resolved]:
+            cls._instances.pop(key, None)
 
     def initialize_or_flush(self):
         self._db.flush()
@@ -112,6 +185,14 @@ class OrbitDBManager:
             metadata["text"] = text
         record_id, err = self._db.insert(vector=vector, metadata=metadata)
         return record_id, err
+
+    def add_items_auto(
+        self,
+        vectors: Sequence[Sequence[float]],
+        metadatas: list[dict[str, Any]] | None = None,
+    ) -> list[int]:
+        """Batch insert with auto-generated, contiguous record IDs."""
+        return self._db.add_items_auto(vectors, metadatas)
 
     def search_vec(self, vector: np.ndarray, filter: dict, top_k: int, mode="auto",
                    query: str | None = None, rank: bool = False,
@@ -206,6 +287,10 @@ class OrbitDBManager:
         if existed:
             self._db.delete(record_id)
         return existed
+
+    def delete_records(self, record_ids: list[int]) -> int:
+        """Bulk-delete multiple records in one WAL group + memtable pass."""
+        return self._db.delete_records(list(record_ids))
 
     def list_ids(self) -> list[int]:
         """Return all record IDs currently stored."""
@@ -477,9 +562,10 @@ class CorpusManager:
         if corpus_path.exists():
             shutil.rmtree(corpus_path)
 
-        # Evict the cached singleton so a recreated corpus re-initialises
+        # Evict the cached singletons so a recreated corpus re-initialises
         # from disk instead of reusing the deleted instance's state.
         ComosDBManager._instances.pop(str(corpus_path.resolve()), None)
+        OrbitDBManager.evict(corpus_path)
 
         for record in self.metadata_db.read_data(segment=self.metadata_segment, include_internal=True):
             if record.get("corpus_name") == corpus_name:
@@ -494,13 +580,17 @@ class SegmentManager:
     SegmentManager handles dynamic creation/loading of segments,
     along with vectors, payloads, and ID mapping."""
 
-    def __init__(self, corpus_name: str, segment_name: str, ndb_type: NDBMeta.Type = NDBMeta.Type.ORBIT):
+    def __init__(self, corpus_name: str, segment_name: str, ndb_type: NDBMeta.Type = NDBMeta.Type.ORBIT,
+                 flush_interval: float | None = None,
+                 wal_fsync_interval: int | None = None):
         """
         Initialize SegmentManager for a specific corpus.
 
         Args:
             corpus_name (str): Name of the corpus to manage.
             segment_name (str): Name of the segment to corpus.
+            flush_interval (float, optional): Seconds between full index saves.
+            wal_fsync_interval (int, optional): Accumulated WAL bytes before fsync.
         """
         self.corpus_name = corpus_name
         self.segment_name = segment_name
@@ -511,11 +601,26 @@ class SegmentManager:
         self._validate_checks()
         self.ndb_type = ndb_type
         if ndb_type == NDBMeta.Type.ORBIT:
-            self.db_manager = OrbitDBManager(self.corpus_path, segment_name=self.segment_name)
+            self.db_manager = OrbitDBManager(
+                self.corpus_path,
+                segment_name=self.segment_name,
+                flush_interval=flush_interval,
+                wal_fsync_interval=wal_fsync_interval,
+            )
         else:
             self.db_manager = ComosDBManager(self.corpus_path)
         self.embedding_model = SemanticEmbeddingModel()
         self._validate_paths()
+
+    def set_durability(self,
+                       flush_interval: float | None = None,
+                       wal_fsync_interval: int | None = None) -> None:
+        """Tune the durability/latency trade-off for this segment at runtime."""
+        if self.ndb_type == NDBMeta.Type.ORBIT:
+            self.db_manager.set_durability(
+                flush_interval=flush_interval,
+                wal_fsync_interval=wal_fsync_interval,
+            )
 
     RELATION_SOURCE_COLS = ("source", "source_id", "src", "from_id", "from")
     RELATION_TARGET_COLS = ("target", "target_id", "dst", "to_id", "to")
@@ -823,6 +928,8 @@ class SegmentManager:
         target_column: str | None = None,
         relation_column: str | None = None,
         lang: str | None = None,
+        extra_metadata: dict[str, Any] | None = None,
+        row_metadata: list[dict[str, Any] | None] | None = None,
     ) -> dict:
         """
         Load vectors from one or more columns into OrbitDB, and optionally
@@ -843,6 +950,13 @@ class SegmentManager:
                            Auto-detected from common names when omitted.
             relation_column: Optional column name containing the relation label.
                              Defaults to "related" when omitted.
+            extra_metadata: Optional caller-supplied key/values merged into
+                            every record (COSMOS: top-level document fields;
+                            ORBIT: metadata dict). Reserved core keys
+                            (``text``/``lang``/``type``/``created_at``/
+                            ``label``/``id``) are ignored.
+            row_metadata: Optional per-row dicts (aligned by row index);
+                          a row's own keys win over ``extra_metadata``.
 
         Returns:
             dict containing success status and statistics.
@@ -856,6 +970,19 @@ class SegmentManager:
 
         if lang is not None and lang_type is None:
             lang_type = lang
+
+        base_extras = _sanitize_extras(extra_metadata)
+        row_extras = (
+            [(_sanitize_extras(r) if isinstance(r, dict) else {}) for r in row_metadata]
+            if row_metadata is not None
+            else []
+        )
+
+        def _extras_for(row_idx: int) -> dict[str, Any]:
+            merged: dict[str, Any] = dict(base_extras)
+            if 0 <= row_idx < len(row_extras):
+                merged.update(row_extras[row_idx])
+            return merged
 
         is_orbit = self.ndb_type == NDBMeta.Type.ORBIT
 
@@ -873,17 +1000,17 @@ class SegmentManager:
                     # row-by-row inserts to isolate failing rows.
                     texts = segment_dataset[col].fill_null("").to_list()
                     batch = []
-                    for text in texts:
+                    for row_idx, text in enumerate(texts):
                         if not text.strip():
                             total_skipped += 1
                             continue
                         document = {
                             "text": text,
-                            "lang": lang_type,
-                            "type": doc_type or "other",
+                            "lang": normalize_lang(lang_type),
+                            "type": normalize_doc_type(doc_type),
                             "created_at": created_at,
+                            **_extras_for(row_idx),
                         }
-                        document = MetadataRetention.apply(document)
                         batch.append(document)
                     if batch:
                         try:
@@ -935,14 +1062,18 @@ class SegmentManager:
                         normalize_embeddings=True,
                     ).astype(np.float32)
 
-                for idx, (vec, text) in enumerate(zip(embeddings, texts, strict=True)):
+                # Build per-row metadata once so the whole column can be
+                # inserted in a single WAL group + batch HNSW upsert.
+                metadatas: list[dict[str, Any]] = []
+                for idx, text in enumerate(texts):
                     if not text.strip() and is_precomputed:
                         text = ""
 
                     metadata = {
-                        "lang": lang_type,
-                        "type": doc_type or "other",
+                        "lang": normalize_lang(lang_type),
+                        "type": normalize_doc_type(doc_type),
                         "created_at": created_at,
+                        **_extras_for(idx),
                     }
 
                     name = None
@@ -953,17 +1084,32 @@ class SegmentManager:
                     if name:
                         metadata["label"] = name
 
-                    metadata = MetadataRetention.apply(metadata)
+                    metadata.setdefault("text", text)
+                    metadatas.append(metadata)
 
-                    _, err = self.db_manager.insert_vec(
-                        vector=vec.tolist(),
-                        text=text,
-                        metadata=metadata,
+                try:
+                    new_ids = self.db_manager.add_items_auto(
+                        vectors=embeddings.tolist(),
+                        metadatas=metadatas,
                     )
-                    if err:
-                        errors.append(f"Row {idx} in {col}: {err}")
-                    else:
-                        total_inserted += 1
+                    total_inserted += len(new_ids)
+                except Exception as batch_err:
+                    errors.append(
+                        f"{col}: batch insert failed ({batch_err}); falling back row-by-row"
+                    )
+                    for idx, (vec, text) in enumerate(zip(embeddings, texts, strict=True)):
+                        if not text.strip() and is_precomputed:
+                            text = ""
+
+                        _, err = self.db_manager.insert_vec(
+                            vector=vec.tolist(),
+                            text=text,
+                            metadata=metadatas[idx],
+                        )
+                        if err:
+                            errors.append(f"Row {idx} in {col}: {err}")
+                        else:
+                            total_inserted += 1
 
             except Exception as e:
                 errors.append(f"{col}: {str(e)}")

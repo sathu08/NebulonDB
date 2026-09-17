@@ -1,5 +1,6 @@
 # ndb_host/tui/app.py
 import sys
+import time
 
 import pyfiglet
 
@@ -12,7 +13,7 @@ from textual.widgets import Header, Footer, Button, Static
 
 from textual import work
 
-from .processes import _is_server_running
+from .processes import _is_server_running, is_server_starting_up, _probe_host
 from .context import cfg, logger, NEBULONDB_PID_FILE, enable_tui_mode, setup_nebulondb_paths
 from .server_ops import start_server, stop_server, restart_server, create_user, is_initialized
 
@@ -37,14 +38,14 @@ class NebulonDBApp(App):
     }
 
     #sidebar {
-        width: 28%;
+        width: 38%;
         height: 100%;
         border: solid #00bcd4;
         padding: 2;
     }
 
     #content {
-        width: 72%;
+        width: 62%;
         height: 100%;
         border: solid #263238;
         padding: 3;
@@ -69,7 +70,7 @@ class NebulonDBApp(App):
     }
 
     #status {
-        height: 10;
+        height: 14;
         border: solid #263238;
         padding: 2;
     }
@@ -114,9 +115,29 @@ class NebulonDBApp(App):
     BINDINGS = [
         Binding("q", "quit", "Quit"),
         Binding("escape", "quit", "Quit"),
+        Binding("up", "focus_previous", "Up"),
+        Binding("down", "focus_next", "Down"),
+        Binding("left", "focus_previous", "Left"),
+        Binding("right", "focus_next", "Right"),
     ]
 
     server_status = reactive(False)
+
+    def action_focus_next(self):
+        self.screen.focus_next()
+
+    def action_focus_previous(self):
+        self.screen.focus_previous()
+
+    def on_mount(self):
+        self._refresh_sidebar()
+        self.update_status()
+        self._start_status_timer()
+
+    def _start_status_timer(self):
+        """Poll the server status every few seconds so the dashboard
+        auto-updates without pressing the refresh button."""
+        self.set_interval(3, self.update_status)
 
     def compose(self) -> ComposeResult:
         yield Header(show_clock=True)
@@ -131,7 +152,8 @@ class NebulonDBApp(App):
                 yield Static("Server", id="menu-title")
                 yield Button("▶  Start Server", id="start", classes="menu-button")
                 yield Button("■  Stop Server", id="stop", classes="menu-button")
-                yield Button("♙  Create User", id="create-user", classes="menu-button", disabled=is_initialized(cfg))
+                yield Button("↻  Restart Server", id="restart", classes="menu-button")
+                yield Button("♙  Create User", id="create-user", classes="menu-button")
                 yield Button("●  Refresh Status", id="status-button", classes="menu-button")
                 yield Button("×  Exit", id="exit", classes="menu-button", variant="error")
 
@@ -145,10 +167,25 @@ class NebulonDBApp(App):
 
         yield Footer()
 
-    def on_mount(self):
-        self.update_status()
-        # First button receives focus
-        self.query_one("#start", Button).focus()
+    # ======================================================
+    # Sidebar visibility
+    # ======================================================
+
+    def _refresh_sidebar(self):
+        """Show Start/Stop only once the system is initialized (corpora
+        present); show Create User only on a fresh, uninitialized install."""
+        initialized = is_initialized(cfg)
+        for button in self.query(Button):
+            if button.id in ("start", "stop", "restart", "create-user"):
+                button.display = (button.id == "create-user") == (not initialized)
+        for button_id in ("start", "stop", "restart", "create-user"):
+            try:
+                button = self.query_one(f"#{button_id}", Button)
+            except Exception:
+                continue
+            if button.display:
+                button.focus()
+                break
 
     # ======================================================
     # Button Events
@@ -160,6 +197,8 @@ class NebulonDBApp(App):
             self.start_server_action()
         elif button_id == "stop":
             self.stop_server_action()
+        elif button_id == "restart":
+            self.restart_server_action()
         elif button_id == "create-user":
             if is_initialized(cfg):
                 self.notify(
@@ -174,42 +213,60 @@ class NebulonDBApp(App):
             self.exit()
 
     # ======================================================
-    # Start
+    # Server Actions (Start / Stop)
     # ======================================================
+
+    def _server_action(self, label, run, success_msg, failure_msg, wait_running):
+        """Shared worker body for start/stop: notify, run, then poll the
+        port until it reflects the desired state."""
+        self.notify(f"{label}ing NebulonDB...", severity="information")
+        try:
+            ok = run()
+            if ok:
+                self.notify(success_msg, severity="success")
+            else:
+                self.notify(failure_msg, severity="warning")
+        except Exception as exc:
+            logger.exception(f"Failed to {label.lower()} NebulonDB")
+            self.notify(f"{label} failed: {exc}", severity="error")
+            return
+
+        max_attempts = 12 if wait_running else 6
+        for _ in range(max_attempts):
+            time.sleep(1)
+            self.call_from_thread(self.update_status)
+            if _is_server_running(cfg.HOST, cfg.PORT) == wait_running:
+                break
 
     @work(thread=True)
     def start_server_action(self):
-        self.notify("Starting NebulonDB...", severity="information")
-        try:
-            success = start_server(cfg, foreground=False)
-            if success:
-                self.notify("NebulonDB started successfully.", severity="success")
-            else:
-                self.notify("NebulonDB was not started.", severity="warning")
-        except Exception as exc:
-            logger.exception("Failed to start NebulonDB")
-            self.notify(f"Start failed: {exc}", severity="error")
+        self._server_action(
+            "Start",
+            lambda: start_server(cfg, foreground=False),
+            "NebulonDB started successfully.",
+            "NebulonDB was not started.",
+            wait_running=True,
+        )
 
-        self.call_after_refresh(self.update_status)
-
-    # ======================================================
-    # Stop
-    # ======================================================
+    @work(thread=True)
+    def restart_server_action(self):
+        self._server_action(
+            "Restart",
+            lambda: restart_server(cfg, foreground=False, force=False),
+            "NebulonDB restarted successfully.",
+            "NebulonDB was not restarted.",
+            wait_running=True,
+        )
 
     @work(thread=True)
     def stop_server_action(self):
-        self.notify("Stopping NebulonDB...", severity="information")
-        try:
-            success = stop_server(cfg, force=False)
-            if success:
-                self.notify("NebulonDB stopped successfully.", severity="success")
-            else:
-                self.notify("NebulonDB could not be stopped.", severity="warning")
-        except Exception as exc:
-            logger.exception("Failed to stop NebulonDB")
-            self.notify(f"Stop failed: {exc}", severity="error")
-
-        self.call_after_refresh(self.update_status)
+        self._server_action(
+            "Stop",
+            lambda: stop_server(cfg, force=False),
+            "NebulonDB stopped successfully.",
+            "NebulonDB could not be stopped.",
+            wait_running=False,
+        )
 
     # ======================================================
     # Status
@@ -220,38 +277,48 @@ class NebulonDBApp(App):
             running = _is_server_running(cfg.HOST, cfg.PORT)
         except Exception:
             running = False
+        starting_up = not running and is_server_starting_up(NEBULONDB_PID_FILE)
         self.server_status = running
         status_widget = self.query_one("#status", Static)
+        web_host = _probe_host(cfg.HOST)
+        pid_label = "Present" if NEBULONDB_PID_FILE.exists() else "Not Found"
         if running:
             status_widget.update(
                 f"""
-                    [bold green]● SERVER RUNNING[/bold green]
-                    Host       : {cfg.HOST}
-                    Port       : {cfg.PORT}
-                    Workers    : {cfg.WORKERS}
+                [bold green]● SERVER RUNNING[/bold green]
 
-                    PID File   : {
-                        "Present"
-                        if NEBULONDB_PID_FILE.exists()
-                        else "Not Found"
-                    }
-                    Dashboard  : http://{cfg.HOST}:{cfg.PORT}/api/NebulonDB/dashboard/
-                    """
-                                )
+                Host       : {cfg.HOST}
+                Port       : {cfg.PORT}
+                Workers    : {cfg.WORKERS}
+
+                Web UI     : [bold cyan]http://{web_host}:{cfg.PORT}/api/NebulonDB/dashboard/[/bold cyan]
+                PID File   : {pid_label}
+                """
+                            )
+        elif starting_up:
+            status_widget.update(
+                f"""
+                [bold yellow]● SERVER STARTING...[/bold yellow]
+
+                NebulonDB is booting up. Please wait.
+
+                Host       : {cfg.HOST}
+                Port       : {cfg.PORT}
+                Workers    : {cfg.WORKERS}
+
+                PID File   : Present
+                """
+                            )
         else:
             status_widget.update(
                 f"""
-[bold red]● SERVER STOPPED[/bold red]
+                [bold red]● SERVER STOPPED[/bold red]
 
-Host       : {cfg.HOST}
-Port       : {cfg.PORT}
+                Host       : {cfg.HOST}
+                Port       : {cfg.PORT}
 
-PID File   : {
-    "Present"
-    if NEBULONDB_PID_FILE.exists()
-    else "Not Found"
-}
-"""
+                PID File   : {pid_label}
+                """
             )
 
 

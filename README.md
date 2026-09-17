@@ -85,8 +85,8 @@ graph neighbors.
     **precomputed vectors** (`is_precomputed`)
   * Optional **Mesh relation loading** from explicit tuples **or** auto-detected
     `source`/`target`/`relation` DataFrame columns
-  * Per-record metadata (`lang`, `doc_type`, `created_at`) with automatic
-    **retention policies** (permanent / temporary TTL / session TTL)
+  * Per-record metadata (`lang`, `doc_type`, `created_at`) stored exactly
+    as sent (`lang` defaults to `en`, `doc_type` to `other`)
 * **Nova & Hybrid Search** — semantic text search with:
   * Search modes: `auto`, `nova` (Nova vector similarity), `mesh` (Mesh graph
     BFS), `hybrid` (Nova + Mesh expansion)
@@ -143,7 +143,7 @@ ndb_host/
 │   └── user_service.py     # user manager + authentication (HTTP Basic)
 └── utils/
     ├── models.py           # Pydantic request/response models
-    ├── constants.py        # roles, doc types, retention policies, column picks
+    ├── constants.py        # roles, metadata defaults, column picks
     ├── bootstrap.py        # NebulonInitializer
     └── logger.py           # NebulonDBLogger
 ```
@@ -177,22 +177,38 @@ irm https://raw.githubusercontent.com/sathu08/NebulonDB/master/install.bat -OutF
 
 > **Install with ML / vector extras (optional):** the default install ships the
 > slim core (~240 MB) — enough for document, graph, BM25 and HNSW search.
-> Semantic embeddings (torch/sentence-transformers) need the `ml` extra
-> (~1.4 GB). Set the `NEBULONDB_INSTALL_ML=1` environment variable before the
-> installer runs:
+> Semantic embeddings (torch/sentence-transformers) need the ML extras
+> (~1.4 GB). Set the `NEBULONDB_INSTALL_ML` environment variable before the
+> installer runs. Two flavors are supported:
 >
-> **Linux / macOS:**
+> | Value | Torch build | Use when |
+> |---|---|---|
+> | `1`, `1_CPU`, `CPU` | CPU-only (default) | No NVIDIA GPU, or any machine |
+> | `GPU`, `1_GPU` | CUDA cu124 | NVIDIA GPU for 5–10× faster embeddings |
+>
+> **Linux / macOS — CPU:**
 > ```bash
 > curl -fsSL https://raw.githubusercontent.com/sathu08/NebulonDB/master/install.sh | NEBULONDB_INSTALL_ML=1 bash
 > ```
 >
-> **Windows (PowerShell):**
+> **Linux / macOS — GPU (NVIDIA/CUDA):**
+> ```bash
+> curl -fsSL https://raw.githubusercontent.com/sathu08/NebulonDB/master/install.sh | NEBULONDB_INSTALL_ML=GPU bash
+> ```
+>
+> **Windows (PowerShell) — CPU:**
 > ```powershell
 > $env:NEBULONDB_INSTALL_ML="1"; irm https://raw.githubusercontent.com/sathu08/NebulonDB/master/install.bat -OutFile "$env:TEMP\install.bat"; & "$env:TEMP\install.bat"
 > ```
 >
-> You can also enable it later in an existing install with
-> `uv sync --extra ml` from the NebulonDB directory.
+> **Windows (PowerShell) — GPU (NVIDIA/CUDA):**
+> ```powershell
+> $env:NEBULONDB_INSTALL_ML="GPU"; irm https://raw.githubusercontent.com/sathu08/NebulonDB/master/install.bat -OutFile "$env:TEMP\install.bat"; & "$env:TEMP\install.bat"
+> ```
+>
+> You can also enable it later in an existing install with `uv sync --extra ml`
+> (CPU) from the NebulonDB directory, or re-run the installer with
+> `NEBULONDB_INSTALL_ML=GPU` to upgrade an existing install to the CUDA build.
 
 Alternatively, run the installers from a local clone:
 
@@ -235,10 +251,14 @@ nebulondb start         # restart the server
 
 **Add the ML / vector extras later (torch, sentence-transformers, ~1.4 GB):**
 ```bash
-uv sync --extra ml
+uv sync --extra ml-cpu      # CPU-only torch (default)
+# or for an NVIDIA GPU / CUDA cu124 build:
+uv sync --extra ml-gpu
+uv pip install torch --index-url https://download.pytorch.org/whl/cu124
 ```
-Windows (Command Prompt): use `uv sync --python 3.10 --extra ml`. The running
-server reuses the cached model after a restart.
+Windows (Command Prompt): use `uv sync --python 3.10 --extra ml-cpu` (CPU) or
+the matching GPU commands above. The running server reuses the cached model
+after a restart.
 
 **Remove the ML extras and shrink back to the slim core (~240 MB):**
 ```bash
@@ -480,12 +500,13 @@ segment in the corpus metadata.
 | `segment_dataset` | dict/list | Column data or rows; converted to a Polars DataFrame |
 | `set_columns` | str/list | `"First Column"`, `"All"`, or an explicit column list to embed |
 | `is_precomputed` | bool | When true, columns already contain embeddings (no encoding) |
-| `doc_type` | str | Document type tag stored in metadata (e.g. `txt`, `markdown`) |
+| `doc_type` | str | Free-form document type tag stored in metadata as-is (e.g. `txt`, `chat_history`); defaults to `other` |
 | `lang_type` | str | Language tag stored in metadata (e.g. `en`) |
 | `relations` | list | Explicit `[source, target, relation]` tuples to add as **Mesh** graph edges |
 | `source_column` | str | Column name holding relation source IDs (auto-detected if omitted) |
 | `target_column` | str | Column name holding relation target IDs (auto-detected if omitted) |
 | `relation_column` | str | Column name holding the relation label (defaults to `"related"`) |
+| `metadata` | dict | Extra key/values merged into every record (COSMOS: top-level fields; ORBIT: `metadata`). A per-row `metadata` dict inside `segment_dataset` rows overrides these keys for that row. Reserved core keys (`text`, `lang`, `type`, `created_at`, `label`, `id`) are ignored |
 
 > **Node labels** — a `name` column (or a `label` key inside `metadata`) is
 > stored as the **Mesh node label** for each record. When `source`/`target`
@@ -815,6 +836,19 @@ curl -X POST "http://localhost:6969/api/NebulonDB/segment/mesh_visualization" \
   -d '{ "corpus_name": "sample", "segment_name": "seg1", "ndb_type": "orbit" }'
 ```
 
+#### 3.16 `POST /segment/mesh_graph` — Mesh nodes + relationships
+Returns the segment's Mesh graph as data: `nodes` (`{id, label}`),
+`node_count`, `edges` (`{from, relation, to}` with node IDs resolved to
+labels), `edge_count`. Orbit only — rejected for cosmos segments. Backs the
+dashboard's **Relationships** table.
+
+```bash
+curl -X POST "http://localhost:6969/api/NebulonDB/segment/mesh_graph" \
+  -u ndbadmin:ndbadmin \
+  -H "Content-Type: application/json" \
+  -d '{ "corpus_name": "sample", "segment_name": "seg1", "ndb_type": "orbit" }'
+```
+
 ---
 
 ## 🗂️ Storage Layout
@@ -850,10 +884,10 @@ Within each **ORBIT** corpus, the Cosmos engine stores four normalized segments
 * **Score normalization** — raw similarity scores are min-max normalized across
   the result set, so `min_score` is a relative threshold (e.g. `0.5` means
   "top half by relevance").
-* **Retention policies** — metadata is auto-tagged on ingestion: permanent
-  document types (pdf, docx, txt, markdown, important_chat, other) never expire;
-  `chat`/`chat_summary`/`web_cache` expire after 10 days; `session` records
-  expire after 1 hour; custom retention requires an explicit `expires_at`.
+* **Record lifecycle** — NebulonDB stores `lang` (default `en`) and `type`
+  (default `other`, free-form) exactly as sent and never auto-expires
+  records; retention/expiry is owned by the caller (e.g. NebulonMind's
+  lifecycle manager).
 * **Ranking signals** — when `rank: true`, candidates are scored by a weighted
   fusion of **Nova** vector similarity, BM25 text match, metadata rules,
   importance, and freshness (exponential half-life decay), optionally fused

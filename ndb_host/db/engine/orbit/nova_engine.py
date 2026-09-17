@@ -64,6 +64,8 @@ class NovaEngine:
         self.manifest = Manifest(nova_manifest_dir)
 
         self.nova_config_path = nova_config_path
+        self._config_mtime: float | None = None
+        self._config_cache_valid: bool | None = None
         self._load_config()
 
         # In‑memory state
@@ -90,18 +92,33 @@ class NovaEngine:
 
     # ---------- Config persistence (dim, space, M) ----------
     def _load_config(self) -> bool:
-        """Load index parameters (dim, space, M) from the persisted config JSON (if present)."""
+        """Load index parameters (dim, space, M) from the persisted config JSON (if present).
+
+        The file is only re-read when its mtime changes; otherwise a cached
+        parse is reused so per-operation calls cost a single ``stat`` instead
+        of a full disk read + JSON parse.
+        """
+        try:
+            mtime = self.nova_config_path.stat().st_mtime
+        except OSError:
+            mtime = None
+        if mtime is not None and mtime == self._config_mtime:
+            return bool(self._config_cache_valid)
+        self._config_mtime = mtime
         cfg = load_data(self.nova_config_path, default={}) or {}
         if not cfg:
+            self._config_cache_valid = False
             return False
         try:
             self.dim = int(cfg["dim"])
             self.space = str(cfg["space"]).lower()
             self.M = int(cfg["M"])
             self.ef_construction = int(cfg["ef_construction"])
+            self._config_cache_valid = True
             return True
         except (KeyError, ValueError, TypeError):
             logger.warning("Could not read index config from %s", self.nova_config_path)
+            self._config_cache_valid = False
             return False
 
     def _write_config(self) -> None:

@@ -98,6 +98,30 @@ def get_auto_batch_size(model_type: str = ModelType.EMBEDDING) -> BatchConfig:
         )
 
 # ==========================================================
+# Device resolution (auto-detect when cfg is empty/"auto")
+# ==========================================================
+
+def resolve_device(kind: str = ModelType.EMBEDDING) -> str:
+    """Return the device string for a model kind.
+
+    ``kind`` is ModelType.EMBEDDING or ModelType.CROSS_ENCODER. If the
+    configured ``NEBULONDB_*_MODEL_DEVICE`` value is empty or the literal
+    ``auto``, we detect a CUDA device at runtime and fall back to CPU.
+    """
+    import torch
+
+    configured = ""
+    if kind == ModelType.EMBEDDING:
+        configured = (cfg.NEBULONDB_EMBEDDING_MODEL_DEVICE or "").strip().lower()
+    else:
+        configured = (cfg.NEBULONDB_CROSS_ENCODER_MODEL_DEVICE or "").strip().lower()
+
+    if configured in ("", "auto"):
+        return "cuda" if torch.cuda.is_available() else "cpu"
+    return configured
+
+
+# ==========================================================
 # NebulonModelHub – Singleton with class‑level cache
 # ==========================================================
 
@@ -179,13 +203,13 @@ class NebulonModelHub:
                 model = SentenceTransformer(
                     str(model_repo_id),
                     cache_folder=str(cfg.NEBULONDB_MODEL_CACHE_DIR),
-                    device=cfg.NEBULONDB_EMBEDDING_MODEL_DEVICE,
+                    device=resolve_device(ModelType.EMBEDDING),
                 )
             elif model_type == ModelType.CROSS_ENCODER:
                 from sentence_transformers import CrossEncoder
                 model = CrossEncoder(
                     str(model_repo_id),
-                    device=cfg.NEBULONDB_CROSS_ENCODER_MODEL_DEVICE,
+                    device=resolve_device(ModelType.CROSS_ENCODER),
                 )
             else:
                 raise ValueError(f"Unknown model type: {model_type}")

@@ -33,7 +33,12 @@ from db.engine import NebulonCosmos
 from .mesh_viz import NebulonCytoscapeGraph
 from utils.logger import NebulonDBLogger
 
+# ==========================================================
+#        Initialize Logger
+# ==========================================================
+
 logger = NebulonDBLogger().get_logger()
+
 
 # The persisted Cosmos index is keyed by bare record_id while the id space is
 # global across all tables. Mesh rows must live in disjoint id ranges so they

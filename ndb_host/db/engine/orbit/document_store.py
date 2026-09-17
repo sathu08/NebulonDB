@@ -7,7 +7,11 @@ document material (text + metadata) separate from the Nova vector rows and
 the Mesh node/edge rows.
 
 Each row on disk:
-    {id, text, metadata{label, lang, type, retention, expires_at}, created_at}
+    {id, text, metadata{label, lang, type}, created_at}
+
+``lang`` defaults to ``"en"`` and ``type`` to ``"other"`` when the caller
+omits them. Lifecycle (retention/expiry) is owned by the caller —
+NebulonDB stores metadata as-sent and never auto-expires records.
 """
 
 
@@ -81,6 +85,13 @@ class DocumentStore:
 
     def delete(self, record_id: int) -> int:
         return self._store.delete(self.segment_name, record_id + ID_OFFSET)
+
+    def delete_many(self, record_ids: list[int]) -> list[int]:
+        """Bulk-delete several documents in a single WAL + memtable pass."""
+        if not record_ids:
+            return []
+        ids = [rid + ID_OFFSET for rid in record_ids]
+        return self._store.delete_many(self.segment_name, ids)
 
     def read_all(self) -> list[dict[str, Any]]:
         return [
