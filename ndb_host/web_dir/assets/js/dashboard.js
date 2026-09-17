@@ -9,6 +9,8 @@ const state = {
   segmentFilter: { q: "", date: "" },
   dataRecords: [],
   showVectors: false,
+  dataPage: 1,
+  dataPageSize: 10,
 };
 
 const els = {
@@ -401,6 +403,14 @@ document.getElementById("segmentDate").addEventListener("change", (e) => {
 
 async function selectSegment(segmentName) {
   state.selectedSegment = segmentName;
+  state.dataRecords = [];
+  state.dataPage = 1;
+  const dataWrap = document.getElementById("dataTableWrap");
+  const dataPagination = document.getElementById("dataPagination");
+  const dataMsg = document.getElementById("dataMessage");
+  if (dataWrap) dataWrap.style.display = "none";
+  if (dataPagination) dataPagination.style.display = "none";
+  if (dataMsg) dataMsg.textContent = "";
   els.segmentView.style.display = "block";
   els.segmentName.textContent = segmentName;
   els.loadSegmentBtn.style.display = "block";
@@ -466,23 +476,34 @@ async function loadData() {
   const type = corpus.type || "orbit";
   const msg = document.getElementById("dataMessage");
   const wrap = document.getElementById("dataTableWrap");
-  const body = document.getElementById("dataTableBody");
+  const limitInput = document.getElementById("dataLimit");
+  let limit = parseInt(limitInput ? limitInput.value : "10", 10);
+  if (!Number.isFinite(limit) || limit < 1) limit = 10;
+  if (limit > 1000) limit = 1000;
+  if (limitInput) limitInput.value = String(limit);
   msg.textContent = "Loading records...";
   wrap.style.display = "none";
+  const pagination = document.getElementById("dataPagination");
+  if (pagination) pagination.style.display = "none";
   try {
-    const resp = await SegmentAPI.getData(corpusName, segmentName, type, 10);
+    const resp = await SegmentAPI.getData(corpusName, segmentName, type, limit);
     if (!resp.success) throw new Error(resp.message || "Failed to load data");
     const records = (resp.data || {}).records || [];
     if (!records.length) {
       msg.textContent = "No records found in this segment.";
+      state.dataRecords = [];
+      state.dataPage = 1;
+      updateDataPagination();
       return;
     }
     state.dataRecords = records;
+    state.dataPage = 1;
     renderDataRows(records, type);
     wrap.style.display = "block";
-    msg.textContent = `Showing ${records.length} of ${resp.data.total_count ?? records.length} records (${escapeHtml(type)}).`;
+    msg.textContent = `Showing ${records.length} of ${resp.data.total_count ?? records.length} records (${escapeHtml(type)}). Fetched limit: ${limit}.`;
   } catch (err) {
     wrap.style.display = "none";
+    if (pagination) pagination.style.display = "none";
     msg.textContent = err.message;
   }
 }
@@ -500,8 +521,15 @@ function formatVector(vec) {
 function renderDataRows(records, type) {
   const body = document.getElementById("dataTableBody");
   const showVectors = state.showVectors === true;
-  body.innerHTML = records
-    .map((r, idx) => {
+  const pageSize = state.dataPageSize || 10;
+  const totalPages = Math.max(1, Math.ceil((records || []).length / pageSize));
+  if (state.dataPage > totalPages) state.dataPage = totalPages;
+  if (state.dataPage < 1) state.dataPage = 1;
+  const start = (state.dataPage - 1) * pageSize;
+  const pageRecords = (records || []).slice(start, start + pageSize);
+  body.innerHTML = pageRecords
+    .map((r, i) => {
+        const idx = start + i;
         // ORBIT rows nest fields under `metadata`; COSMOS rows are flat
         // ({_id, text, lang, type, ...extras} at top level).
         const flat = !r.metadata || typeof r.metadata !== "object";
@@ -530,9 +558,70 @@ function renderDataRows(records, type) {
         </tr>`;
       })
       .join("");
+  updateDataPagination();
+}
+
+function updateDataPagination() {
+  const pagination = document.getElementById("dataPagination");
+  const info = document.getElementById("dataPageInfo");
+  const prevBtn = document.getElementById("dataPrevBtn");
+  const nextBtn = document.getElementById("dataNextBtn");
+  if (!pagination) return;
+  const total = (state.dataRecords || []).length;
+  const pageSize = state.dataPageSize || 10;
+  const totalPages = Math.max(1, Math.ceil(total / pageSize));
+  if (!total) {
+    pagination.style.display = "none";
+    return;
+  }
+  pagination.style.display = "flex";
+  if (info) {
+    const start = (state.dataPage - 1) * pageSize + 1;
+    const end = Math.min(state.dataPage * pageSize, total);
+    info.textContent = `Page ${state.dataPage} of ${totalPages} (${start}-${end} of ${total})`;
+  }
+  if (prevBtn) prevBtn.disabled = state.dataPage <= 1;
+  if (nextBtn) nextBtn.disabled = state.dataPage >= totalPages;
 }
 
 document.getElementById("getDataBtn").addEventListener("click", loadData);
+document.getElementById("dataPrevBtn").addEventListener("click", () => {
+  if (state.dataPage > 1) {
+    state.dataPage -= 1;
+    const corpus = state.corpora.find((c) => c.name === state.selectedCorpus) || {};
+    renderDataRows(state.dataRecords, corpus.type || "orbit");
+  }
+});
+document.getElementById("dataNextBtn").addEventListener("click", () => {
+  const totalPages = Math.max(1, Math.ceil((state.dataRecords || []).length / (state.dataPageSize || 10)));
+  if (state.dataPage < totalPages) {
+    state.dataPage += 1;
+    const corpus = state.corpora.find((c) => c.name === state.selectedCorpus) || {};
+    renderDataRows(state.dataRecords, corpus.type || "orbit");
+  }
+});
+document.getElementById("dataLimit").addEventListener("keydown", (e) => {
+  if (e.key === "Enter") {
+    e.preventDefault();
+    loadData();
+  }
+});
+document.getElementById("corpusRefreshBtn").addEventListener("click", async (e) => {
+  const btn = e.currentTarget;
+  btn.disabled = true;
+  try {
+    await loadCorpora();
+    if (state.selectedCorpus) {
+      renderCorpusActions();
+      await loadSegments(state.selectedCorpus);
+    }
+    showToast("Corpora refreshed from server.", "success");
+  } catch (err) {
+    showToast(err.message || "Refresh failed", "error");
+  } finally {
+    btn.disabled = false;
+  }
+});
 document.getElementById("corpusSearch").addEventListener("input", renderCorpusList);
 document.getElementById("showVectors").addEventListener("change", (e) => {
   state.showVectors = e.target.checked === true;
