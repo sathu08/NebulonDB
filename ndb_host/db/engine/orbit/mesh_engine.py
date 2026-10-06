@@ -100,6 +100,15 @@ class MeshEngine:
     def has_edges(self) -> bool:
         return len(self._store.get_all_edges()) > 0
 
+    def refresh_visualization(self) -> bool:
+        """Rebuild the HTML viz when stale (missing or graph changed)."""
+        try:
+            if not self._store.is_visualization_stale():
+                return False
+            return bool(self._store.write_visualization())
+        except Exception:
+            return False
+
     # ---------- Traversal ----------
     def bfs(self, start: int, max_depth: int = 3) -> list[int]:
         """Return all nodes reachable within max_depth (undirected)."""

@@ -15,7 +15,10 @@ MeshStore
 """
 
 
+import json
 import threading
+
+from pathlib import Path
 
 
 from db.engine.utils import (
@@ -244,11 +247,49 @@ class MeshStore:
                     self._store.delete(self.edge_segment, raw_id)
 
             if self.mesh_graph_viz_html:
-                try:
-                    viz = NebulonCytoscapeGraph.from_mesh(self.to_dict())
-                    viz.to_html(self.mesh_graph_viz_html)
-                except Exception as exc:
-                    logger.warning(f"MeshStore: skipping HTML viz ({exc})")
+                self.write_visualization()
+
+    def viz_fingerprint_path(self) -> Path | None:
+        """Sidecar recording which graph the HTML was built from."""
+        if not self.mesh_graph_viz_html:
+            return None
+        return Path(str(self.mesh_graph_viz_html) + ".counts.json")
+
+    def viz_fingerprint(self) -> dict:
+        """Live {nodes, edges} counts for staleness checks."""
+        with self._lock:
+            return {"nodes": len(self._nodes), "edges": len(self._edges)}
+
+    def is_visualization_stale(self) -> bool:
+        """True when the HTML is missing or was built from an older graph."""
+        if not self.mesh_graph_viz_html:
+            return True
+        if not Path(self.mesh_graph_viz_html).exists():
+            return True
+        sidecar = self.viz_fingerprint_path()
+        if sidecar is None or not sidecar.exists():
+            return True
+        try:
+            saved = json.loads(sidecar.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return True
+        live = self.viz_fingerprint()
+        return saved.get("nodes") != live["nodes"] or saved.get("edges") != live["edges"]
+
+    def write_visualization(self) -> bool:
+        """Rebuild the cytoscape HTML + fingerprint sidecar. Never raises."""
+        if not self.mesh_graph_viz_html:
+            return False
+        try:
+            viz = NebulonCytoscapeGraph.from_mesh(self.to_dict())
+            viz.to_html(self.mesh_graph_viz_html)
+            sidecar = self.viz_fingerprint_path()
+            if sidecar is not None:
+                sidecar.write_text(json.dumps(self.viz_fingerprint()), encoding="utf-8")
+            return True
+        except Exception as exc:
+            logger.warning(f"MeshStore: skipping HTML viz ({exc})")
+            return False
 
     def load(self) -> bool:
         """Read node/edge rows back into memory."""

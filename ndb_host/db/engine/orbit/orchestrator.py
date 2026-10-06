@@ -1340,7 +1340,16 @@ class NebulonOrbit:
         return self.mesh_engine.connected_components()
 
     def get_visualization_html(self) ->  tuple[str | None, Path | None]:
-        """Return an HTML string for visualizing the graph."""
+        """Return an HTML string for visualizing the graph.
+
+        Regenerates the file first when it is missing or stale (graph
+        changed since the last build), so the visual never lags the
+        table — previously the first-ever render was served forever.
+        """
+        try:
+            self.mesh_engine.refresh_visualization()
+        except Exception as exc:
+            logger.warning(f"Mesh visualization refresh skipped ({exc})")
         if not self.mesh_graph_viz_html.exists():
             return "Mesh graph visualization HTML template not configured.", None
         return None, self.mesh_graph_viz_html
