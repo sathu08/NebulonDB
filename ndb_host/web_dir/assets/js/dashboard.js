@@ -477,8 +477,8 @@ async function loadData() {
   const msg = document.getElementById("dataMessage");
   const wrap = document.getElementById("dataTableWrap");
   const limitInput = document.getElementById("dataLimit");
-  let limit = parseInt(limitInput ? limitInput.value : "10", 10);
-  if (!Number.isFinite(limit) || limit < 1) limit = 10;
+  let limit = parseInt(limitInput ? limitInput.value : "50", 10);
+  if (!Number.isFinite(limit) || limit < 1) limit = 50;
   if (limit > 1000) limit = 1000;
   if (limitInput) limitInput.value = String(limit);
   msg.textContent = "Loading records...";

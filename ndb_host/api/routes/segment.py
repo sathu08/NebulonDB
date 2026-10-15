@@ -344,6 +344,13 @@ async def get_data(
             ndb_type=ndb_type,
         )
         records = segment_manager.get_data(limit=limit)
+        # True total (pre-limit) so the console can page honestly.
+        # get_data(limit=None) returns every live row; len(records) alone
+        # would echo the truncated count back as the total.
+        try:
+            total_count = len(segment_manager.get_data(limit=None)) if limit is not None else len(records)
+        except Exception:
+            total_count = len(records)
 
         return StandardResponse(
             success=True,
@@ -351,10 +358,10 @@ async def get_data(
             segment_name=segment_name,
             data={
                 "records": records,
-                "total_count": len(records),
+                "total_count": total_count,
                 "limit": limit,
             },
-            message=f"Retrieved {len(records)} records from segment '{segment_name}'"
+            message=f"Retrieved {len(records)} of {total_count} records from segment '{segment_name}'"
         )
     except Exception as e:
         logger.exception(f"Failed to get data for segment '{segment_query.segment_name}': {str(e)}")

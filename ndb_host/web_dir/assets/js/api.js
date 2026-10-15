@@ -214,7 +214,7 @@ const SegmentAPI = {
   getData(corpus_name, segment_name, ndb_type, limit) {
     return api("/api/NebulonDB/segment/get_data", {
       method: "POST",
-      body: { corpus_name, segment_name, ndb_type, limit: limit || 10 },
+      body: { corpus_name, segment_name, ndb_type, limit: limit || 50 },
     });
   },
   meshVisualization(corpus_name, segment_name, ndb_type) {
