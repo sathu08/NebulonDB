@@ -8,7 +8,7 @@ Endpoint: GET /dashboard/config
 import pytest
 from conftest import BASE_URL
 
-pytestmark = pytest.mark.system
+pytestmark = [pytest.mark.system, pytest.mark.live]
 
 
 @pytest.fixture(scope="module")

@@ -21,7 +21,7 @@ from db.index_manager import ComosDBManager
 from utils.models import AuthenticationResult, UserRole, StandardErrorResponse
 
 from utils.time_utils import utc_now_iso
-from core.security import verify_password, hash_password
+from core.security import verify_password, verify_password_cached, hash_password, invalidate_auth_cache
 
 
 # ==========================================================
@@ -188,6 +188,7 @@ class UserManager:
 
             # Remove from cache
             del self._users_cache[username]
+            invalidate_auth_cache(username)
             return True
 
     def update_password(self, username: str, new_hashed_password: str) -> bool:
@@ -217,6 +218,7 @@ class UserManager:
 
             user_record["password"] = new_hashed_password
             user_record["password_changed_at"] = doc["password_changed_at"]
+            invalidate_auth_cache(username)
             return True
 
 # Global Instance
@@ -239,7 +241,9 @@ def get_current_user(credentials: HTTPBasicCredentials = Depends(http_basic_secu
         user_record = user_manager.get_user(credentials.username)
 
         hashed_password = user_record.get("password") if user_record else None
-        if not hashed_password or not verify_password(credentials.password, hashed_password):
+        if not hashed_password or not verify_password_cached(
+            credentials.username, credentials.password, hashed_password
+        ):
             logger.warning(f"Authentication failed for user: {credentials.username}")
             return AuthenticationResult(
                 username=credentials.username,

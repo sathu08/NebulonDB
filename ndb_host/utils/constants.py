@@ -55,6 +55,25 @@ class NDBMeta:
         DEFAULT_RETENTION_DAYS = 7
         DEFAULT_AUTO_DELETE = True
 
+    class PowerLoss:
+        SENTINEL_SEQ = 0
+        DISABLE_BACKGROUND = 10**9
+
+        class Harness:
+            DM_REAL = "ndbpw_real"
+            DM_ORIGIN = "ndbpw_origin"
+            DM_SNAP = "ndbpw_snap"
+            DM_PREFIX = "ndbpw_"
+            FS_LABEL = "ndbpw"
+            KILL_DELAY_SEED_SALT = 0x5A5A5A5A
+            SEED_MODE_STRIDE = 1_000_003
+            SEED_WORKLOAD_STRIDE = 10_007
+            SEED_TRIAL_STRIDE = 7_919
+            SEED_MASK = 0x7FFFFFFF
+
+        class Worker:
+            IDLE_SLEEP = 3600
+
     class Type(str, Enum):
         COSMOS = "cosmos"
         ORBIT = "orbit"

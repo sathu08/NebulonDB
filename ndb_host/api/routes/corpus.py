@@ -9,11 +9,13 @@ It provides endpoints for corpus creation, listing, and deletion.
 
 from fastapi import Depends
 from fastapi import APIRouter
+from fastapi import HTTPException
 
 from core.permissions import check_user_permission
 from services.user_service import get_current_user
 
 from db.index_manager import CorpusManager
+from db.engine import WalDurabilityError
 from ndb_host.db.ndb_settings import NDBConfig
 from utils.models import StandardResponse, CorpusQueryRequest, AuthenticationResult, UserRole
 
@@ -25,6 +27,14 @@ from utils.logger import NebulonDBLogger
 # ==========================================================
 
 logger = NebulonDBLogger().get_logger("audit")
+
+
+def _raise_durability(exc: Exception) -> None:
+    if isinstance(exc, WalDurabilityError):
+        raise HTTPException(
+            status_code=503,
+            detail=f"Storage unavailable (WAL durability failure): {exc}",
+        ) from exc
 
 # ==========================================================
 #        API Router for Corpus Management
@@ -115,6 +125,7 @@ async def create_corpus(
             message=f"Corpus '{corpus_name}' created successfully"
         )
     except Exception as e:
+        _raise_durability(e)
         logger.exception(f"[CREATE] Failed to create corpus: {e}")
         return StandardResponse(
                 success=False,
@@ -168,6 +179,7 @@ async def list_available_corpus(
             }
         )
     except Exception as e:
+        _raise_durability(e)
         logger.exception(f"[LIST] Error listing corpus: {e}")
         return StandardResponse(
             success=False,
@@ -260,6 +272,7 @@ async def delete_corpus(
         )
 
     except Exception as e:
+        _raise_durability(e)
         logger.exception(f"[DELETE] Error deleting corpus: {e}")
         return StandardResponse(
             success=False,
@@ -349,6 +362,7 @@ async def deactivate_corpus(
         )
 
     except Exception as e:
+        _raise_durability(e)
         logger.exception(f"[DELETE] Error deactivate corpus: {e}")
         return StandardResponse(
             success=False,
@@ -439,6 +453,7 @@ async def activate_corpus(
         )
 
     except Exception as e:
+        _raise_durability(e)
         logger.exception(f"[DELETE] Error activate corpus: {e}")
         return StandardResponse(
             success=False,

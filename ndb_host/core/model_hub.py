@@ -1,6 +1,7 @@
 
 import threading
 
+from functools import lru_cache
 from pathlib import Path
 from typing import Any
 
@@ -108,15 +109,20 @@ def resolve_device(kind: str = ModelType.EMBEDDING) -> str:
     configured ``NEBULONDB_*_MODEL_DEVICE`` value is empty or the literal
     ``auto``, we detect a CUDA device at runtime and fall back to CPU.
     """
-    import torch
-
     configured = ""
     if kind == ModelType.EMBEDDING:
         configured = (cfg.NEBULONDB_EMBEDDING_MODEL_DEVICE or "").strip().lower()
     else:
         configured = (cfg.NEBULONDB_CROSS_ENCODER_MODEL_DEVICE or "").strip().lower()
+    return _device_for(configured)
 
+
+@lru_cache(maxsize=4)
+def _device_for(configured: str) -> str:
+    # Cache the (relatively costly) CUDA probe: hardware does not change at
+    # runtime, and stats/search calls this on every request.
     if configured in ("", "auto"):
+        import torch
         return "cuda" if torch.cuda.is_available() else "cpu"
     return configured
 

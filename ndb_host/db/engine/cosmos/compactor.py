@@ -192,7 +192,9 @@ def compact(
     new_seg_name = f"seg_{new_seg_id}.ndb"
     new_seg_path = seg_dir / new_seg_name
 
-    write_segment_streaming_fn(new_seg_path, latest_source, new_seg_id, append_index=False)
+    # Append index entries for the new segment *before* the manifest/cleanup so
+    # a crash can never leave the new segment registered but unindexed.
+    write_segment_streaming_fn(new_seg_path, latest_source, new_seg_id, append_index=True)
 
     # ── Atomic manifest update ────────────────────────────────
     untouched = [f for f in manifest if f not in segments_to_merge]
@@ -203,15 +205,18 @@ def compact(
     manifest.extend(new_manifest_list)
     save_manifest_and_meta_fn()
 
+    # ── Rewrite index while old files still exist ─────────────
+    # The manifest no longer references the merged segments, so the rebuild
+    # yields exactly the live post-merge entries. Doing this before deleting
+    # the old files keeps a crash window where the index is already valid.
+    rewrite_index_fn()
+
     # ── Delete old segment files ──────────────────────────────
     cleanup_segments(
         segments_to_merge, seg_dir,
         segment_cache, segment_size_cache, bloom_filter_cache, segment_info,
         delete_files=True,
     )
-
-    # ── Rewrite index ─────────────────────────────────────────
-    rewrite_index_fn()
 
     logger.info(
         f"Compaction merged {len(segments_to_merge)} segments, "

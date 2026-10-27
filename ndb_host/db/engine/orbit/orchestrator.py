@@ -910,9 +910,12 @@ class NebulonOrbit:
                     if neighbor not in visited:
                         queue.append((neighbor, depth + 1))
 
-            # Convert to results
+            # Convert to results. Only materialise the top_k nodes: BFS may
+            # visit the whole component, but payload assembly is the expensive
+            # part (doc + vector + node lookups per record).
+            ranked = sorted(visited.items(), key=lambda kv: (kv[1], kv[0]))[:top_k]
             results = []
-            for node_id, depth in visited.items():
+            for node_id, depth in ranked:
                 # Score: closer nodes get higher scores (1 / (1+depth))
                 score = 1.0 / (1.0 + depth)
                 payload = self._record_payload(node_id)
@@ -930,9 +933,7 @@ class NebulonOrbit:
                         "label": node.get(FIELD_LABEL),
                     })
 
-            # Sort by score descending, trim to top_k
-            results.sort(key=lambda x: x["score"], reverse=True)
-            return results[:top_k]
+            return results
 
     def _hybrid_search(self, vector: Sequence[float] | None, top_k: int, expand_depth: int,
                        graph_boost: float, graph_start_node: int | None = None) -> list[dict[str, Any]]:
@@ -965,8 +966,12 @@ class NebulonOrbit:
                             score_map[neighbor] = graph_boost
                             queue.append((neighbor, depth + 1))
 
+            # Materialise only the top_k scored ids. score_map can contain
+            # every node reached by BFS, and building a payload for each one
+            # dominates hybrid latency.
+            ranked = sorted(score_map.items(), key=lambda kv: (-kv[1], kv[0]))[:top_k]
             results = []
-            for rid, score in score_map.items():
+            for rid, score in ranked:
                 payload = self._record_payload(rid)
                 if payload.get("vector") is not None:
                     results.append({"id": rid, "score": score, **payload})
@@ -980,8 +985,7 @@ class NebulonOrbit:
                         "metadata": {},
                         "label": node.get(FIELD_LABEL),
                     })
-            results.sort(key=lambda x: x["score"], reverse=True)
-            return results[:top_k]
+            return results
 
     def search(self,
         mode: str = "auto",

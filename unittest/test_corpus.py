@@ -9,7 +9,7 @@ import pytest
 from conftest import (BASE_URL, AUTH, unique_suffix, create_corpus,
                       delete_corpus)
 
-pytestmark = pytest.mark.corpus
+pytestmark = [pytest.mark.corpus, pytest.mark.live]
 
 
 @pytest.fixture(scope="module")

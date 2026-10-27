@@ -28,16 +28,6 @@ logger = NebulonDBLogger().get_logger()
 #        Pydantic Models
 # ==========================================================
 
-class UserProfile(BaseModel):
-    username: str
-    role: UserRole
-
-class UserRecord(BaseModel):
-    password: str
-    role: UserRole
-    created_at: str | None = None
-    last_login: str | None = None
-
 class AuthenticationResult(BaseModel):
     username: str
     role: UserRole | None = None

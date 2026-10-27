@@ -9,7 +9,7 @@ import random
 import pytest
 from conftest import BASE_URL, AUTH, unique_suffix, make_dataset
 
-pytestmark = pytest.mark.segment
+pytestmark = [pytest.mark.segment, pytest.mark.live]
 
 
 @pytest.fixture(scope="module")
@@ -155,6 +155,46 @@ def test_medium_search_mesh_mode(client, fresh_corpus):
                     json={"corpus_name": fresh_corpus, "segment_name": sname,
                           "search_item": "space", "mode": "mesh", "graph_start_node": 1}).json()
     assert r["success"] is True
+
+
+def test_medium_search_mesh_mode_without_query(client, fresh_corpus):
+    sname = seg_name()
+    load_segment(client, fresh_corpus, sname, make_dataset(20))
+    client.post(f"{BASE_URL}/segment/add_relation", auth=AUTH, timeout=60,
+                json={"corpus_name": fresh_corpus, "segment_name": sname,
+                      "source": 1, "target": 2, "relation": "links"})
+    r = client.post(f"{BASE_URL}/segment/search_segment", auth=AUTH, timeout=60,
+                    json={"corpus_name": fresh_corpus, "segment_name": sname,
+                          "mode": "mesh", "graph_start_node": 1}).json()
+    assert r["success"] is True
+    assert len(r["data"]) >= 1
+
+
+def test_medium_search_mesh_mode_requires_start_node(client, fresh_corpus):
+    sname = seg_name()
+    load_segment(client, fresh_corpus, sname, make_dataset(3))
+    r = client.post(f"{BASE_URL}/segment/search_segment", auth=AUTH, timeout=60,
+                    json={"corpus_name": fresh_corpus, "segment_name": sname,
+                          "mode": "mesh"}).json()
+    assert r["success"] is False
+    assert "graph_start_node" in r["message"]
+
+
+def test_medium_get_data_limit_total(client, fresh_corpus):
+    sname = seg_name()
+    load_segment(client, fresh_corpus, sname, make_dataset(20))
+    r = client.post(f"{BASE_URL}/segment/get_data", auth=AUTH, timeout=60,
+                    json={"corpus_name": fresh_corpus, "segment_name": sname,
+                          "limit": 5}).json()
+    assert r["success"] is True
+    assert len(r["data"]["records"]) == 5
+    assert r["data"]["total_count"] == 20
+
+    all_rows = client.post(f"{BASE_URL}/segment/get_data", auth=AUTH, timeout=60,
+                           json={"corpus_name": fresh_corpus, "segment_name": sname,
+                                 "limit": 100}).json()
+    assert len(all_rows["data"]["records"]) == 20
+    assert all_rows["data"]["total_count"] == 20
 
 
 def test_medium_search_hybrid_mode(client, fresh_corpus):

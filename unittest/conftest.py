@@ -5,13 +5,14 @@ Tests hit the live API (server must be running on 127.0.0.1:6969).
 Authentication is HTTP Basic with user 'sathya'.
 """
 
+import os
 import uuid
 import requests
 import pytest
 
-BASE_URL = "http://127.0.0.1:6969/api/NebulonDB"
-USERNAME = "sathya"
-PASSWORD = "sathya"
+BASE_URL = os.environ.get("NEBULONDB_URL", "http://127.0.0.1:6969/api/NebulonDB")
+USERNAME = os.environ.get("NEBULONDB_USERNAME", "sathya")
+PASSWORD = os.environ.get("NEBULONDB_PASSWORD", "sathya")
 AUTH = (USERNAME, PASSWORD)
 TIMEOUT = 300
 
@@ -55,3 +56,23 @@ def fresh_corpus(client):
     create_corpus(client, name, "orbit")
     yield name
     delete_corpus(client, name)
+
+
+def pytest_collection_modifyitems(config, items):
+    """Refuse to mix live-API and isolated-storage tests in one process.
+
+    Isolated tests swap ``NEBULONDB_HOME`` and import config-touching modules
+    at import time, so they must run in a dedicated pytest process:
+
+        pytest unittest/test_segment.py ...            # live API
+        pytest unittest/test_cosmos_durability.py ...  # isolated
+    """
+    live = [item for item in items if "live" in item.keywords]
+    isolated = [item for item in items if "isolated" in item.keywords]
+    if live and isolated:
+        raise pytest.UsageError(
+            "Live-API tests and isolated storage tests were collected in the "
+            "same pytest process. Run them separately, e.g. "
+            "'pytest unittest/test_segment.py ...' and "
+            "'pytest unittest/test_cosmos_durability.py ...'."
+        )

@@ -219,6 +219,12 @@ def checkpoint_wal(
         os.fsync(f.fileno())
 
     os.replace(tmp_path, wal_file)
+    # Durably commit the rename so a crash can't resurrect the old WAL.
+    fd = os.open(str(wal_file.parent), os.O_RDONLY)
+    try:
+        os.fsync(fd)
+    finally:
+        os.close(fd)
     if wal_handle:
         with contextlib.suppress(Exception):
             wal_handle.close()

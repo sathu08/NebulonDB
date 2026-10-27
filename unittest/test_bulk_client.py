@@ -23,6 +23,10 @@ import tempfile
 import unittest
 from pathlib import Path
 
+import pytest
+
+pytestmark = pytest.mark.isolated
+
 # NEBULONDB_HOME must be set before any config-touching module is imported.
 _PROJECT = Path(__file__).resolve().parent.parent
 _TMP_HOME = Path(tempfile.mkdtemp(prefix="ndb_bulk_"))

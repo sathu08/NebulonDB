@@ -9,6 +9,7 @@ It provides endpoints for segment creation, listing, and deletion.
 
 from fastapi import  Depends
 from fastapi import APIRouter
+from fastapi import HTTPException
 
 import polars as pl
 
@@ -24,6 +25,7 @@ from utils.constants import ColumnPick ,NDBMeta
 from utils.models import SegmentQueryRequest, AuthenticationResult, StandardResponse, UserRole
 
 from db.engine.utils import FIELD_NOVA
+from db.engine import WalDurabilityError
 from utils.time_utils import utc_now_iso
 
 # ==========================================================
@@ -31,6 +33,15 @@ from utils.time_utils import utc_now_iso
 # ==========================================================
 
 logger = NebulonDBLogger().get_logger("audit")
+
+
+def _raise_durability(exc: Exception) -> None:
+    """Surface WAL durability failures as 503 instead of a 200 success=False."""
+    if isinstance(exc, WalDurabilityError):
+        raise HTTPException(
+            status_code=503,
+            detail=f"Storage unavailable (WAL durability failure): {exc}",
+        ) from exc
 
 # ==========================================================
 #        API Router for Segment Management
@@ -131,6 +142,7 @@ async def list_segment(
             message=f"Found {len(segments)} segments in corpus '{corpus_name}'"
         )
     except Exception as e:
+        _raise_durability(e)
         logger.exception(f"Failed to list segments for corpus '{corpus_name}': {str(e)}")
         return StandardResponse(
             success=False,
@@ -300,6 +312,7 @@ async def load_segment(
         )
 
     except Exception as e:
+        _raise_durability(e)
         logger.exception(f"Failed to load segment into corpus '{segment_query.corpus_name}': {str(e)}")
         return StandardResponse(
             success=False,
@@ -343,14 +356,13 @@ async def get_data(
             segment_name=segment_name,
             ndb_type=ndb_type,
         )
-        records = segment_manager.get_data(limit=limit)
-        # True total (pre-limit) so the console can page honestly.
-        # get_data(limit=None) returns every live row; len(records) alone
-        # would echo the truncated count back as the total.
-        try:
-            total_count = len(segment_manager.get_data(limit=None)) if limit is not None else len(records)
-        except Exception:
-            total_count = len(records)
+        # Fetch once: both backends materialise the whole segment before
+        # slicing, so requesting a page and then fetching everything again for
+        # the total used to scan the segment twice. Slice the page here instead.
+        records = segment_manager.get_data(limit=None)
+        total_count = len(records)
+        if limit is not None and limit >= 0:
+            records = records[:limit]
 
         return StandardResponse(
             success=True,
@@ -364,6 +376,7 @@ async def get_data(
             message=f"Retrieved {len(records)} of {total_count} records from segment '{segment_name}'"
         )
     except Exception as e:
+        _raise_durability(e)
         logger.exception(f"Failed to get data for segment '{segment_query.segment_name}': {str(e)}")
         return StandardResponse(
             success=False,
@@ -404,7 +417,7 @@ async def search_segment(
         top_matches = segment_query.top_matches
         min_score = segment_query.min_score
         rank = segment_query.rank
-        mode = segment_query.mode or "auto"
+        mode = (segment_query.mode or "auto").strip().lower()
         graph_start_node = segment_query.graph_start_node
         expand_depth = segment_query.expand_depth or 1
         graph_boost = segment_query.graph_boost or 0.1
@@ -424,7 +437,17 @@ async def search_segment(
         if not current_user.is_authenticated:
             return _unauth_response(segment_query)
 
-        if (not search_item or not search_item.strip()) and not query_vector:
+        if mode == "mesh":
+            # Pure graph traversal only needs a seed node; text/vector queries
+            # are irrelevant to Mesh and must not be required.
+            if graph_start_node is None:
+                return StandardResponse(
+                    success=False,
+                    corpus_name=corpus_name,
+                    segment_name=segment_name,
+                    message="graph_start_node must be provided for mode='mesh'"
+                )
+        elif (not search_item or not search_item.strip()) and not query_vector:
             return StandardResponse(
                 success=False,
                 corpus_name=corpus_name,
@@ -475,6 +498,7 @@ async def search_segment(
         )
 
     except Exception as e:
+        _raise_durability(e)
         logger.exception(f"Failed to load segment into corpus '{segment_query.corpus_name}': {str(e)}")
         return StandardResponse(
             success=False,
@@ -535,6 +559,7 @@ async def delete_record(
             message=f"Record {segment_query.record_id} deleted"
         )
     except Exception as e:
+        _raise_durability(e)
         logger.exception(f"Failed to delete record {segment_query.record_id}: {str(e)}")
         return StandardResponse(success=False, message=f"Internal server error: {str(e)}")
 
@@ -630,6 +655,7 @@ async def add_records(
             message=f"Inserted {len(new_ids)} records, skipped {skipped}"
         )
     except Exception as e:
+        _raise_durability(e)
         logger.exception(f"Failed to bulk-add records: {str(e)}")
         return StandardResponse(success=False, message=f"Internal server error: {str(e)}")
 
@@ -689,6 +715,7 @@ async def update_records(
             message=f"Updated {len(updated)} records" + (f", {len(errors)} errors" if errors else "")
         )
     except Exception as e:
+        _raise_durability(e)
         logger.exception(f"Failed to bulk-update records: {str(e)}")
         return StandardResponse(success=False, message=f"Internal server error: {str(e)}")
 
@@ -741,6 +768,7 @@ async def delete_records_bulk(
             message=f"Deleted {deleted} records"
         )
     except Exception as e:
+        _raise_durability(e)
         logger.exception(f"Failed to bulk-delete records: {str(e)}")
         return StandardResponse(success=False, message=f"Internal server error: {str(e)}")
 
@@ -782,6 +810,7 @@ async def segment_stats(
             message=f"Retrieved stats for segment '{segment_query.segment_name}'"
         )
     except Exception as e:
+        _raise_durability(e)
         logger.exception(f"Failed to get stats for segment '{segment_query.segment_name}': {str(e)}")
         return StandardResponse(
             success=False,
@@ -835,6 +864,7 @@ async def get_record(
             message=f"Record {segment_query.record_id} found"
         )
     except Exception as e:
+        _raise_durability(e)
         logger.exception(f"Failed to get record {segment_query.record_id}: {str(e)}")
         return StandardResponse(success=False, message=f"Internal server error: {str(e)}")
 
@@ -874,6 +904,7 @@ async def get_neighbors(
             message=f"Found {len(neighbors)} neighbors for node {segment_query.node_id}"
         )
     except Exception as e:
+        _raise_durability(e)
         logger.exception(f"Failed to get neighbors for node {segment_query.node_id}: {str(e)}")
         return StandardResponse(success=False, message=f"Internal server error: {str(e)}")
 
@@ -914,6 +945,7 @@ async def bfs(
         )
 
     except Exception as e:
+        _raise_durability(e)
         logger.exception(f"Failed to run BFS from {segment_query.start_node}: {str(e)}")
         return StandardResponse(success=False, message=f"Internal server error: {str(e)}")
 
@@ -962,6 +994,7 @@ async def shortest_path(
             message=f"Path between {segment_query.source} and {segment_query.target} found"
         )
     except Exception as e:
+        _raise_durability(e)
         logger.exception(f"Failed to find path {segment_query.source}->{segment_query.target}: {str(e)}")
         return StandardResponse(success=False, message=f"Internal server error: {str(e)}")
 
@@ -1011,6 +1044,7 @@ async def add_node(
             message=f"Node {segment_query.node_id} created"
         )
     except Exception as e:
+        _raise_durability(e)
         logger.exception(f"Failed to add node {segment_query.node_id}: {str(e)}")
         return StandardResponse(success=False, message=f"Internal server error: {str(e)}")
 
@@ -1061,6 +1095,7 @@ async def add_relation(
             message=f"Relation {segment_query.source} -> {segment_query.target} added"
         )
     except Exception as e:
+        _raise_durability(e)
         logger.exception(f"Failed to add relation {segment_query.source}->{segment_query.target}: {str(e)}")
         return StandardResponse(success=False, message=f"Internal server error: {str(e)}")
 
@@ -1109,6 +1144,7 @@ async def remove_relation(
             message=f"Relation {segment_query.source} -> {segment_query.target} removed"
         )
     except Exception as e:
+        _raise_durability(e)
         logger.exception(f"Failed to remove relation {segment_query.source}->{segment_query.target}: {str(e)}")
         return StandardResponse(success=False, message=f"Internal server error: {str(e)}")
 
@@ -1154,6 +1190,7 @@ async def mesh_load_graph(
             message=f"Graph loaded: {result.get('nodes_added', 0)} nodes, {result.get('edges_added', 0)} edges"
         )
     except Exception as e:
+        _raise_durability(e)
         logger.exception(f"Failed to load graph: {str(e)}")
         return StandardResponse(success=False, message=f"Internal server error: {str(e)}")
 
@@ -1207,6 +1244,7 @@ async def mesh_graph(
             message=f"Mesh graph: {len(nodes)} nodes, {len(edges)} relationships"
         )
     except Exception as e:
+        _raise_durability(e)
         logger.exception(f"Failed to get mesh graph for segment {segment_query.segment_name}: {str(e)}")
         return StandardResponse(success=False, message=f"Internal server error: {str(e)}")
 
@@ -1258,5 +1296,6 @@ async def mesh_visualization(
             message="Mesh visualization HTML generated"
         )
     except Exception as e:
+        _raise_durability(e)
         logger.exception(f"Failed to generate mesh visualization: {str(e)}")
         return StandardResponse(success=False, message=f"Internal server error: {str(e)}")

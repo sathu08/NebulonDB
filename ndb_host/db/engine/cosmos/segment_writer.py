@@ -264,21 +264,33 @@ def flush(
     write_segment_fn,
     save_manifest_and_meta_fn,
     force: bool = False,
-) -> None:
-    """
-    If the memtable is large enough (or *force* is True), flush it to a new segment.
+) -> bool:
+    """Flush the memtable to a new segment and reset the WAL.
 
-    Clears the memtable and resets the WAL on success.
+    Crash-safe ordering (the WAL is the recovery safety net):
+
+    1. Write and fsync the new segment.
+    2. Persist the manifest + metadata so the segment is *registered* on disk.
+    3. Only then truncate/fsync the WAL.
+    4. Clear the in-memory memtable last.
+
+    A crash between (2) and (3) leaves the records in both the segment and the
+    WAL. Recovery replays the WAL and prunes the duplicate versions, which is
+    safe. A crash between (1) and (2) leaves an orphan segment and an intact
+    WAL, which startup reconciliation adopts/recovers.
+
+    Returns ``True`` when the memtable was fully flushed and the WAL reset,
+    ``False`` when nothing happened or persistence failed (memtable/WAL kept).
     """
     if not force and wal_count_ref[0] < flush_threshold:
-        return
+        return False
     if not memtable:
         if force and wal_handle:
             wal_handle.seek(0)
             wal_handle.truncate(0)
             wal_handle.flush()
             os.fsync(wal_handle.fileno())
-        return
+        return True
 
     records = list(memtable.values())
     seg_id = get_next_segment_id_fn()
@@ -289,18 +301,33 @@ def flush(
         write_segment_fn(seg_path, records, seg_id)
     except Exception as e:
         logger.error(f"Flush failed writing segment {seg_name}: {e}")
-        return  # keep memtable and WAL intact
+        return False  # keep memtable and WAL intact
 
-    # ── Success: clear memory and truncate WAL ────────────────
+    # ── Register the segment BEFORE dropping the WAL ──────────
+    try:
+        save_manifest_and_meta_fn()
+    except Exception as e:
+        logger.error(
+            f"Flush failed persisting manifest/meta for {seg_name}: {e}; "
+            "keeping memtable and WAL intact"
+        )
+        return False
+
+    # ── Manifest is durable: clearing the WAL is now safe ─────
+    if wal_handle:
+        try:
+            wal_handle.seek(0)
+            wal_handle.truncate(0)
+            wal_handle.flush()
+            os.fsync(wal_handle.fileno())
+        except Exception as e:
+            # The segment + manifest are durable, so the data is safe. The WAL
+            # may still hold the same rows; recovery prunes those duplicates.
+            logger.error(f"Flush could not reset WAL for {seg_name}: {e}")
+
     memtable.clear()
     deleted.clear()
     wal_count_ref[0] = 0
 
-    if wal_handle:
-        wal_handle.seek(0)
-        wal_handle.truncate(0)
-        wal_handle.flush()
-        os.fsync(wal_handle.fileno())
-
-    save_manifest_and_meta_fn()
     logger.info(f"Flushed {len(records)} records to {seg_name}")
+    return True

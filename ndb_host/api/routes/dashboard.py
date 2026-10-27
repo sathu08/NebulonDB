@@ -78,6 +78,8 @@ async def get_config():
     return {
         "segments": {
             "wal_auto_flush": config_settings.WAL_AUTO_FLUSH,
+            "wal_fsync_interval": config_settings.WAL_FSYNC_INTERVAL,
+            "durability_mode": config_settings.DURABILITY_MODE,
             "compress_segments": config_settings.COMPRESS_SEGMENTS,
             "bloom_filter_enabled": config_settings.BLOOM_FILTER_ENABLED,
             "max_open_segments": config_settings.MAX_OPEN_SEGMENTS,
@@ -117,6 +119,8 @@ async def get_config():
             "host": config_settings.HOST,
             "port": config_settings.PORT,
             "workers": config_settings.WORKERS,
+            "single_worker_only": True,
+            "engine_state": "in-memory (not shared across processes)",
             "timeout": config_settings.TIMEOUT,
             "keep_alive": config_settings.KEEP_ALIVE,
             "graceful_timeout": config_settings.GRACEFUL_TIMEOUT,

@@ -8,6 +8,7 @@ It provides endpoints for index creation, listing, and deletion.
 """
 
 import shutil
+import time
 import importlib.util
 import numpy as np
 import polars as pl
@@ -20,7 +21,7 @@ from db.ndb_settings import NDBConfig
 from core.model_hub import SemanticEmbeddingModel
 from utils.constants import ColumnPick, NDBMeta, normalize_doc_type, normalize_lang
 
-from db.engine import NebulonCosmos, NebulonOrbit, RankConfig
+from db.engine import NebulonCosmos, NebulonOrbit, RankConfig, WalDurabilityError
 
 from utils.time_utils import utc_now_iso
 
@@ -194,7 +195,7 @@ class OrbitDBManager:
         """Batch insert with auto-generated, contiguous record IDs."""
         return self._db.add_items_auto(vectors, metadatas)
 
-    def search_vec(self, vector: np.ndarray, filter: dict, top_k: int, mode="auto",
+    def search_vec(self, vector: np.ndarray | None, filter: dict, top_k: int, mode="auto",
                    query: str | None = None, rank: bool = False,
                    graph_start_node: int | None = None,
                    expand_depth: int = 1, graph_boost: float = 0.1) -> list[dict]:
@@ -387,6 +388,18 @@ class CorpusManager:
 
     _shared_metadata_db = None
 
+    # Corpus metadata is read on nearly every request (to resolve a corpus'
+    # backend type and to validate it). A short TTL cache removes the repeated
+    # full segment scans; every writer below invalidates it immediately.
+    _info_cache: dict | None = None
+    _info_cache_at: float = 0.0
+    _INFO_CACHE_TTL: float = 5.0
+
+    @classmethod
+    def invalidate_info_cache(cls) -> None:
+        cls._info_cache = None
+        cls._info_cache_at = 0.0
+
     def __init__(self):
         """Initialize CorpusManager."""
         self.storage_path = config_settings.NEBULONDB_STORAGE_PATH
@@ -467,6 +480,10 @@ class CorpusManager:
             Dict[str, Dict[str, Any]]: Corpus metadata keyed by corpus name.
         """
         info: dict[str, dict[str, Any]] = {}
+        now = time.monotonic()
+        cached = CorpusManager._info_cache
+        if cached is not None and (now - CorpusManager._info_cache_at) < CorpusManager._INFO_CACHE_TTL:
+            return cached
         try:
             for record in self.metadata_db.read_data(segment=self.metadata_segment):
                 name = record.get("corpus_name")
@@ -479,7 +496,11 @@ class CorpusManager:
                         "created_at": record.get("created_at"),
                     }
         except Exception:
-            pass
+            # Do not cache a transient failure: callers would then see a
+            # missing corpus until the TTL expires.
+            return info
+        CorpusManager._info_cache = info
+        CorpusManager._info_cache_at = now
         return info
 
     def get_corpus_status(self, corpus_name: str) -> str:
@@ -513,6 +534,7 @@ class CorpusManager:
                 if record.get("corpus_name") == corpus_name:
                     record["status"] = status
                     self.metadata_db.update_data(segment=self.metadata_segment, document=record)
+            CorpusManager.invalidate_info_cache()
         except Exception as _:
             return False
 
@@ -550,6 +572,8 @@ class CorpusManager:
             ndb_type=ndb_type,
         )
         self.metadata_db.insert_data(segment=self.metadata_segment, document=metadata)
+        CorpusManager.invalidate_info_cache()
+        CorpusManager.invalidate_info_cache()
 
     def delete_corpus(self, corpus_name: str):
         """
@@ -570,6 +594,7 @@ class CorpusManager:
         for record in self.metadata_db.read_data(segment=self.metadata_segment, include_internal=True):
             if record.get("corpus_name") == corpus_name:
                 self.metadata_db.delete_data(segment=self.metadata_segment, record_id=record["_id"])
+        CorpusManager.invalidate_info_cache()
 
 # ==========================================================
 #        SegmentManager
@@ -639,12 +664,9 @@ class SegmentManager:
     def _corpus_exists(self) -> bool:
         """Return True if this corpus has a metadata record."""
         try:
-            for record in self.metadata_db.read_data(segment=self.metadata_segment, include_internal=True):
-                if record.get("corpus_name") == self.corpus_name:
-                    return True
-        except Exception as _:
+            return bool(CorpusManager().get_corpus_info().get(self.corpus_name))
+        except Exception:
             return False
-        return False
 
     def _validate_paths(self) -> None:
         """Check that essential paths exist."""
@@ -682,6 +704,8 @@ class SegmentManager:
                     try:
                         self.db_manager.add_relation(int(source), int(target), str(relation))
                         total_added += 1
+                    except WalDurabilityError:
+                        raise
                     except Exception as e:
                         errors.append(f"Relation {source}->{target}: {e}")
 
@@ -717,6 +741,8 @@ class SegmentManager:
                                 weight = segment_dataset["weight"][idx]
                             self.db_manager.add_relation(source, target, str(label or default_label), weight=weight)
                             total_added += 1
+                        except WalDurabilityError:
+                            raise
                         except Exception as e:
                             errors.append(f"Relation row {idx}: {e}")
 
@@ -834,6 +860,7 @@ class SegmentManager:
                                     break
                         record["segments"] = segments
                         self.metadata_db.update_data(segment=self.metadata_segment, document=record)
+                        CorpusManager.invalidate_info_cache()
                         return True
             except Exception as _:
                 return False
@@ -1019,6 +1046,8 @@ class SegmentManager:
                                 docs=batch,
                             )
                             total_inserted += len(batch)
+                        except WalDurabilityError:
+                            raise
                         except Exception as e:
                             errors.append(f"Cosmos batch in {col}: {e}")
                             for idx, document in enumerate(batch):
@@ -1028,6 +1057,8 @@ class SegmentManager:
                                         document=document,
                                     )
                                     total_inserted += 1
+                                except WalDurabilityError:
+                                    raise
                                 except Exception as err:
                                     errors.append(f"Cosmos Row {idx} in {col}: {err}")
                     continue
@@ -1111,6 +1142,8 @@ class SegmentManager:
                         else:
                             total_inserted += 1
 
+            except WalDurabilityError:
+                raise
             except Exception as e:
                 errors.append(f"{col}: {str(e)}")
 
@@ -1235,7 +1268,10 @@ class SegmentManager:
         if query_vec is not None and query_vec.size == 0:
             raise ValueError("query_vector must contain at least one element")
 
-        if query_vec is None:
+        # Pure graph traversal (mode='mesh') does not use a query vector, so do
+        # not pay for an embedding pass (or require the ml stack) for it.
+        is_mesh = (mode or "").strip().lower() == "mesh"
+        if query_vec is None and not is_mesh:
             # No pre-computed vector supplied: embedding the query text on the
             # fly requires the optional ml stack (sentence-transformers).
             if not _ml_available():
@@ -1246,12 +1282,12 @@ class SegmentManager:
                 normalize_embeddings=True,
             ).astype("float32")
 
-        if hasattr(query_vec, "flatten"):
+        if query_vec is not None and hasattr(query_vec, "flatten"):
             query_vec = query_vec.flatten()
 
         # Perform search using Orbit
         results = self.db_manager.search_vec(
-            vector=query_vec.tolist(),
+            vector=query_vec,
             filter=filter_,
             top_k=top_k or 10,
             mode=mode,

@@ -590,6 +590,9 @@ curl -X POST "http://localhost:6969/api/NebulonDB/segment/get_data" \
   }'
 ```
 
+> The segment is read **once** per request: `total_count` is derived from that
+> same read and `limit` is applied afterwards (no second full scan).
+
 #### 3.4 `POST /segment/search_segment` — Search a segment
 Semantic search over a segment's **Nova** vectors with optional **Mesh**
 expansion and ranking.
@@ -598,7 +601,7 @@ expansion and ranking.
 
 | Field | Type | Description |
 |-------|------|-------------|
-| `search_item` | str | Raw text query (required) |
+| `search_item` | str | Raw text query. Required for `auto`/`nova`/`hybrid`; **not** needed for `mesh` |
 | `top_matches` | int | Number of results to return (default 10) |
 | `min_score` | float | Minimum score threshold; scores are **min-max normalized** to [0,1] |
 | `set_columns` | str/list | When a list, restricts returned `metadata` to those keys |
@@ -618,6 +621,11 @@ expansion and ranking.
 | `nova` | Pure **Nova** HNSW vector similarity |
 | `mesh` | Pure **Mesh** BFS from `graph_start_node`, scored by `1/(1+depth)` |
 | `hybrid` | **Nova** vector search + **Mesh** BFS expansion from the top hits (and `graph_start_node`) |
+
+> `mesh` requires `graph_start_node` and does **not** embed text or a query
+> vector — only a seed node is needed. Every mode materialises result payloads
+> for at most `top_matches` records, so graph expansion never pays for
+> discarded hits.
 
 ```bash
 curl -X POST "http://localhost:6969/api/NebulonDB/segment/search_segment" \
@@ -902,22 +910,129 @@ Within each **ORBIT** corpus, the Cosmos engine stores four normalized segments
   lock acquisition and a single WAL write), instead of one WAL write per row.
   If the batch fails, the engine falls back to row-by-row inserts to isolate
   the offending records.
-* **Group-commit WAL** — WAL `fsync` is deferred and batched. Bytes are buffered
-  and forced to disk only after `wal_fsync_interval` bytes accumulate
-  (or on a flush/close). Configure it in `[segments]`:
+* **WAL durability contract** — with the default `wal_auto_flush = true`, an
+  acknowledged write is `flush()`ed to the OS, but `fsync()` is group-committed.
+  The default `durability_mode = process` therefore survives a process crash
+  (SIGKILL) yet may lose the un-fsynced WAL tail on power loss. Pick the
+  contract you need in `[segments]`:
   ```ini
   [segments]
-  wal_fsync_interval = 65536   ; bytes written before an fsync is forced
+  durability_mode = process   ; process | batch | per_ack
+  wal_fsync_interval = 65536  ; bytes before an implicit fsync (process mode)
+  ```
+
+  | `durability_mode` | Ack after | Survives SIGKILL | Survives power loss |
+  |---|---|---|---|
+  | `process` (default) | `flush()`, fsync every `wal_fsync_interval` bytes | Yes (with `wal_auto_flush = true`) | Only the fsynced prefix |
+  | `batch` | one `fsync()` per engine write call (`insert_many`/`delete_many` = one per batch) | Yes | Yes |
+  | `per_ack` | `fsync()` per acknowledged record (bulk calls fsync once per batch) | Yes | Yes |
+
+  `batch`/`per_ack` always flush **and** fsync before the acknowledgement and
+  before the memtable update; an fsync failure surfaces as a 5xx and the record
+  is not acknowledged. `wal_auto_flush = false` removes the process-crash
+  guarantee in `process` mode; the other two modes ignore it because they force
+  a flush before fsync. An fsync failure can still leave the record in the WAL,
+  so recovery may replay it (at-least-once); treat a 5xx as an unknown outcome.
+  After a WAL write/fsync failure the engine refuses further writes (reads keep
+  working) until the service is restarted. `durability_mode` is applied at
+  engine startup, so changing it requires a restart. The dashboard
+  `/dashboard/config` endpoint reports the active mode, and
+  `NebulonCosmos.wal_stats()` exposes per-store fsync counters and the failure
+  flag.
+* **Power-loss validation (WSL)** — `ndb_host/tools/powerloss/` runs the real
+  engine on ext4 over a loop/device-mapper snapshot, SIGKILLs it mid-write,
+  snapshots the block device, recovers the snapshot, and checks that the
+  recovered state is a prefix of the fsynced WAL records. `batch`/`per_ack`
+  must lose **zero** acknowledged records; `process` may lose only the
+  un-fsynced tail. See
+  [`docs/POWER_LOSS_VALIDATION_WSL.md`](docs/POWER_LOSS_VALIDATION_WSL.md).
+  ```bash
+  sudo ndb_host/tools/powerloss/run.sh --trials 20   # full matrix
+  ```
+  The optional scheduler reads `[powerloss]` from `nebulondb.cfg` and runs the
+  harness when `interval_seconds` has elapsed:
+  ```bash
+  sudo .venv/bin/python -m ndb_host.tools.powerloss.scheduler --once
   ```
 * **Whole-segment scan for batch reads** — `read_all` walks a segment once via
   a single `mmap` pass (`segment_reader.scan_segment_payloads`), bypassing the
   per-record LRU-cache / bloom / index lookups that `get` uses.
 * **Engine-level bulk API** — `NebulonCosmos.insert_many(segment, docs)` is
   available directly to embedders for offline bulk loads.
+* **Auth credential cache** — successful HTTP Basic verifications are cached so
+  bcrypt (~240 ms on CPU) is paid once per credential instead of on every API
+  call. Tune with `NDB_AUTH_CACHE_TTL` (seconds, default `60`; `0` disables)
+  and `NDB_AUTH_CACHE_MAX` (entries, default `1024`). Changing a password or
+  deleting a user invalidates the entry immediately.
+* **Corpus metadata cache** — corpus name → backend type is cached for 5 s and
+  invalidated on corpus create/delete/status change and segment registration,
+  removing two full metadata-segment scans per request.
+* **Search payload thinning** — `mesh` and `hybrid` score/BFS first and build
+  payloads only for the returned `top_k`; `mesh` skips query embedding
+  entirely.
+* **Single worker by design** — Nova/Mesh indexes live in-process, so run the
+  API with `--workers 1` (the installer and the `nebulondb` launcher do).
+  `WORKERS` is forced to 1 at config load, and `create_app()` raises if
+  `WEB_CONCURRENCY`, `GUNICORN_CMD_ARGS`, or the command line requests more than
+  one worker. The dashboard config exposes `single_worker_only` and
+  `engine_state`. If you need
+  more concurrent throughput, offload embedding to a thread/process pool
+  instead of adding worker processes.
 
 ---
 
 ## 📝 Changelog — recent changes
+
+### Durability modes + single-worker enforcement
+
+* **`durability_mode`** — new `[segments]` setting (`process` | `batch` |
+  `per_ack`). `batch` fsyncs once per engine write call (bulk insert/delete =
+  one fsync) before ack; `per_ack` fsyncs per acknowledged record (bulk calls
+  once per batch). Default remains `process` (fsync every
+  `wal_fsync_interval` bytes / on flush), preserving existing throughput while
+  making the power-loss contract explicit.
+* **WAL stats** — `NebulonCosmos.wal_stats()` exposes the active mode,
+  bytes-since-fsync, explicit fsync count/time, and the failed flag;
+  `/dashboard/config` reports the active mode.
+  WAL write/fsync failures raise `WalDurabilityError`, surface as HTTP 503 on
+  the record/corpus write endpoints, and put the engine in a read-only failed
+  state until restart.
+* **Single worker enforced** — `WORKERS` is forced to 1 and `create_app()`
+  rejects `WEB_CONCURRENCY`, `GUNICORN_CMD_ARGS`, or a CLI `--workers` value
+  above one instead of silently corrupting in-memory Nova/Mesh state.
+* **Test isolation** — live-API and isolated storage tests now carry `live` /
+  `isolated` markers; collecting both in one pytest process fails fast. Isolated
+  modules always create their own `NEBULONDB_HOME`.
+* **Power-loss harness** — `ndb_host/tools/powerloss/` adds a root/WSL crash harness
+  (loop + `snapshot-origin` + live dm snapshot, ext4, SIGKILL, snapshot recovery)
+  plus a pure prefix oracle. `unittest/test_powerloss_oracle.py` covers the oracle
+  in the isolated suite; `unittest/test_powerloss_wsl.py` is opt-in
+  (`NDB_POWERLOSS=1`, root).
+
+### Chat-save latency, Mesh-mode correctness + hot-path caching
+
+* **Auth credential cache** — `core/security.py` gained
+  `verify_password_cached` / `invalidate_auth_cache`: successful bcrypt checks
+  are memoized (`NDB_AUTH_CACHE_TTL`/`NDB_AUTH_CACHE_MAX`) and invalidated on
+  password change or user deletion, removing ~240 ms from every authenticated
+  backend call.
+* **Single-read chat saves** — `ChatHistoryStore.save()` reuses one segment
+  read for the no-op check and normalization instead of scanning twice
+  (isolated save: ~1072 ms → ~20 ms; live Mind save: ~57 ms → ~25 ms).
+* **Mesh-only search** — `POST /segment/search_segment` with
+  `mode: "mesh"` now requires only `graph_start_node`; `search_item` /
+  `query_vector` and the query embedding pass are skipped.
+* **`get_data` single scan** — one read per request; `total_count` comes from
+  that same result instead of a second full read.
+* **Corpus metadata cache** — 5 s TTL with immediate invalidation on corpus /
+  segment mutations; `SegmentManager._corpus_exists` reuses it.
+* **Cached device probe** — `resolve_device` memoizes the CUDA check used by
+  `segment_stats`.
+* **Payload thinning** — `mesh` / `hybrid` materialise payloads only for the
+  returned `top_k` instead of every BFS-visited node.
+* **Tests** — added mesh-without-query, mesh-missing-seed, and
+  `get_data` limit/total cases; the API suite honours `NEBULONDB_URL`,
+  `NEBULONDB_USERNAME`, `NEBULONDB_PASSWORD`.
 
 ### Batch Cosmos ingestion + WAL group-commit + auth hardening
 
@@ -1005,12 +1120,29 @@ Within each **ORBIT** corpus, the Cosmos engine stores four normalized segments
 
 ### Tests
 * **`unittest/`** — pytest suite hitting the live API (server on
-  `127.0.0.1:6969`, user `sathya`): `test_auth.py` (registration, RBAC,
-  password policy, generic error responses), `test_corpus.py`, `test_segment.py`
-  (load/list/search/stats/record/mesh), `test_system.py`. Run:
+  `127.0.0.1:6969`): `test_auth.py` (registration, RBAC, password policy,
+  generic error responses), `test_corpus.py`, `test_segment.py`
+  (load/list/search/stats/record/mesh), `test_system.py`. Credentials and URL
+  can be overridden with `NEBULONDB_USERNAME`, `NEBULONDB_PASSWORD`, and
+  `NEBULONDB_URL`. Run from the project root with the project venv:
   ```bash
-  cd unittest
-  pytest -v
+  NEBULONDB_PASSWORD=<admin-password> .venv/bin/python -m pytest unittest/test_segment.py -v
   ```
-  > ⚠️ Tests expect an 8+-char password; the `sathya:sathya` credential is
-  > created via `nebulondb --create-user` (interactive prompt).
+* **Isolated suites** — `test_cosmos_durability.py`, `test_bulk_client.py`,
+  `test_server_config.py`, and `test_powerloss_oracle.py` build or use their own
+  temporary `NEBULONDB_HOME` and are marked `isolated`; the live-API modules are
+  marked `live`. They must run in **separate** pytest processes, and collection
+  fails fast if both kinds are selected together.
+  ```bash
+  .venv/bin/python -m pytest unittest/test_cosmos_durability.py -q
+  .venv/bin/python -m pytest unittest/test_bulk_client.py -q
+  .venv/bin/python -m pytest unittest/test_server_config.py -q
+  .venv/bin/python -m pytest unittest/test_powerloss_oracle.py -q
+  ```
+* **Power-loss harness (opt-in)** — `unittest/test_powerloss_wsl.py` runs one
+  SIGKILL/snapshot trial per mode; it is skipped unless `NDB_POWERLOSS=1` and
+  pytest runs as root inside WSL. The full 20-trials/mode matrix is
+  `ndb_host/tools/powerloss/run.sh`; see
+  [`docs/POWER_LOSS_VALIDATION_WSL.md`](docs/POWER_LOSS_VALIDATION_WSL.md).
+  > ⚠️ Tests expect an 8+-char password; create the admin user via
+  > `nebulondb --create-user` (interactive prompt).

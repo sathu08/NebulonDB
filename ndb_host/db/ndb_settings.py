@@ -80,6 +80,7 @@ class NDBConfig:
         self._load_rank_config()
         self._load_segments()
         self._load_server()
+        self._load_powerloss()
         self._load_llm()
 
     # ------------------------------
@@ -165,31 +166,15 @@ class NDBConfig:
         self.NEBULONDB_MODEL_CACHE_DIR = cache_dir
         self.NEBULONDB_EMBEDDING_MODEL = self._config.get('llm', 'NEBULONDB_EMBEDDING_MODEL')
         self.NEBULONDB_CROSS_ENCODER_MODEL = self._config.get('llm', 'NEBULONDB_CROSS_ENCODER_MODEL')
-        self.NEBULONDB_EMBEDDING_BATCH_SIZE = self._config.getint(
-            'llm', 'NEBULONDB_EMBEDDING_BATCH_SIZE', fallback=0
-        )
-        self.NEBULONDB_CROSS_ENCODER_BATCH_SIZE = self._config.getint(
-            'llm', 'NEBULONDB_CROSS_ENCODER_BATCH_SIZE', fallback=0
-        )
-        self.NEBULONDB_EMBEDDING_MODEL_DEVICE = self._config.get(
-            'llm', 'NEBULONDB_EMBEDDING_MODEL_DEVICE', fallback=''
-        )
-        self.NEBULONDB_CROSS_ENCODER_MODEL_DEVICE = self._config.get(
-            'llm', 'NEBULONDB_CROSS_ENCODER_MODEL_DEVICE', fallback=''
-        )
-        self.NEBULONDB_WARM_MODELS = self._config.getboolean(
-            'llm', 'NEBULONDB_WARM_MODELS', fallback=True
-        )
+        self.NEBULONDB_EMBEDDING_BATCH_SIZE = self._config.getint('llm', 'NEBULONDB_EMBEDDING_BATCH_SIZE', fallback=0)
+        self.NEBULONDB_CROSS_ENCODER_BATCH_SIZE = self._config.getint('llm', 'NEBULONDB_CROSS_ENCODER_BATCH_SIZE', fallback=0)
+        self.NEBULONDB_EMBEDDING_MODEL_DEVICE = self._config.get('llm', 'NEBULONDB_EMBEDDING_MODEL_DEVICE', fallback='')
+        self.NEBULONDB_CROSS_ENCODER_MODEL_DEVICE = self._config.get('llm', 'NEBULONDB_CROSS_ENCODER_MODEL_DEVICE', fallback='')
+        self.NEBULONDB_WARM_MODELS = self._config.getboolean('llm', 'NEBULONDB_WARM_MODELS', fallback=True)
 
     def _load_logging(self):
-        self.LOG_RETENTION_DAYS = self._config.getint(
-            'logging', 'DATE',
-            fallback=NDBMeta.Logging.DEFAULT_RETENTION_DAYS
-        )
-        self.LOG_AUTO_DELETE = self._config.getboolean(
-            'logging', 'AUTO_DELETE',
-            fallback=NDBMeta.Logging.DEFAULT_AUTO_DELETE
-        )
+        self.LOG_RETENTION_DAYS = self._config.getint('logging', 'DATE', fallback=NDBMeta.Logging.DEFAULT_RETENTION_DAYS)
+        self.LOG_AUTO_DELETE = self._config.getboolean('logging', 'AUTO_DELETE', fallback=NDBMeta.Logging.DEFAULT_AUTO_DELETE)
 
     def _load_search_config(self):
         self.DEFAULT_CORPUS_CONFIG_DATA = {
@@ -221,6 +206,13 @@ class NDBConfig:
         self.FLUSH_RECORD_THRESHOLD = self._config.getint('segments', 'FLUSH_RECORD_THRESHOLD')
         self.WAL_AUTO_FLUSH = self._config.getboolean('segments', 'WAL_AUTO_FLUSH', fallback=True)
         self.WAL_FSYNC_INTERVAL = self._config.getint('segments', 'wal_fsync_interval', fallback=65536)
+        self.DURABILITY_MODE = self._config.get('segments', 'durability_mode', fallback='process').strip().lower()
+        if self.DURABILITY_MODE not in ('process', 'batch', 'per_ack'):
+            raise ValueError(
+                "Invalid durability_mode "
+                f"{self.DURABILITY_MODE!r}; expected one of "
+                "('process', 'batch', 'per_ack')"
+            )
         self.COMPRESS_SEGMENTS = self._config.getboolean('segments', 'COMPRESS_SEGMENTS', fallback=True)
         self.BLOOM_FILTER_ENABLED = self._config.getboolean('segments', 'BLOOM_FILTER_ENABLED', fallback=True)
         self.MAX_OPEN_SEGMENTS = self._config.getint('segments', 'MAX_OPEN_SEGMENTS', fallback=50)
@@ -233,6 +225,13 @@ class NDBConfig:
         self.HOST = self._config.get('server', 'HOST')
         self.PORT = self._config.getint('server', 'PORT')
         self.WORKERS = self._config.getint('server', 'WORKERS')
+        if self.WORKERS != 1:
+            logger.warning(
+                "NebulonDB requires a single worker: in-memory Nova/Mesh state "
+                "is not shared across processes. Forcing WORKERS=%s to 1.",
+                self.WORKERS,
+            )
+            self.WORKERS = 1
         self.TIMEOUT = self._config.getint('server', 'TIMEOUT', fallback=30)
         self.KEEP_ALIVE = self._config.getint('server', 'KEEP_ALIVE', fallback=5)
         self.GRACEFUL_TIMEOUT = self._config.getint('server', 'GRACEFUL_TIMEOUT', fallback=30)
@@ -242,6 +241,95 @@ class NDBConfig:
         self.NEBULONDB_CLEAR_CACHE = self._config.getboolean(
             'server', 'NEBULONDB_CLEAR_CACHE', fallback=True
         )
+
+    def _load_powerloss(self):
+        self.POWERLOSS_ENABLED = self._config.getboolean('powerloss', 'enabled', fallback=False)
+        self.POWERLOSS_INTERVAL_SECONDS = self._config.getint('powerloss', 'interval_seconds', fallback=86400)
+        modes = self._config.get('powerloss', 'modes', fallback='process,batch,per_ack')
+        self.POWERLOSS_MODES = tuple(part.strip() for part in modes.split(',') if part.strip())
+        workloads = self._config.get('powerloss', 'workloads', fallback='insert,bulk,mixed')
+        self.POWERLOSS_WORKLOADS = tuple(part.strip() for part in workloads.split(',') if part.strip())
+        self.POWERLOSS_SEGMENT = self._config.get('powerloss', 'segment', fallback='_main')
+        self.POWERLOSS_SENTINEL_SEQ = NDBMeta.PowerLoss.SENTINEL_SEQ
+        self.POWERLOSS_DISABLE_BACKGROUND = NDBMeta.PowerLoss.DISABLE_BACKGROUND
+        self.POWERLOSS_KEEP_RUNS = self._config.getint('powerloss', 'keep_runs', fallback=7)
+        self.POWERLOSS_NO_SYSCTL = self._config.getboolean('powerloss', 'no_sysctl', fallback=False)
+        self.POWERLOSS_POLL_SECONDS = self._config.getint('powerloss', 'poll_seconds', fallback=60)
+        self.POWERLOSS_STATE_FILE = self._config.get('powerloss', 'state_file', fallback='.powerloss_state.json')
+        self.POWERLOSS_LOCK_FILE = self._config.get('powerloss', 'lock_file', fallback='.powerloss.lock')
+        self._load_powerloss_harness()
+        self._load_powerloss_worker()
+
+    def _load_powerloss_harness(self):
+        section = 'powerloss_harness'
+        self.POWERLOSS_HARNESS_RUN_ROOT = self._config.get(section, 'run_root', fallback='/var/tmp/ndb_powerloss')
+        self.POWERLOSS_HARNESS_RUN_DIR_FORMAT = self._config.get(section, 'run_dir_format', fallback='run_%Y%m%d_%H%M%S', raw=True)
+        self.POWERLOSS_HARNESS_DM_REAL = NDBMeta.PowerLoss.Harness.DM_REAL
+        self.POWERLOSS_HARNESS_DM_ORIGIN = NDBMeta.PowerLoss.Harness.DM_ORIGIN
+        self.POWERLOSS_HARNESS_DM_SNAP = NDBMeta.PowerLoss.Harness.DM_SNAP
+        self.POWERLOSS_HARNESS_DM_PREFIX = NDBMeta.PowerLoss.Harness.DM_PREFIX
+        self.POWERLOSS_HARNESS_FS_LABEL = NDBMeta.PowerLoss.Harness.FS_LABEL
+        self.POWERLOSS_HARNESS_SNAPSHOT_CHUNK_SIZE = self._config.getint(section, 'snapshot_chunk_size', fallback=8)
+        sysctls = self._config.get(
+            section, 'sysctls',
+            fallback=('dirty_writeback_centisecs=0,'
+                      'dirty_expire_centisecs=60000,'
+                      'dirty_background_ratio=95,'
+                      'dirty_ratio=95'),
+        )
+        self.POWERLOSS_HARNESS_SYSCTLS = {name.strip(): int(value.strip())
+            for name, _, value in (
+                item.partition('=') for item in sysctls.split(',') if item.strip()
+            )
+        }
+        self.POWERLOSS_HARNESS_DEFAULT_TRIALS = self._config.getint(section, 'default_trials', fallback=20)
+        self.POWERLOSS_HARNESS_DEFAULT_OPS = self._config.getint(section, 'default_ops', fallback=300)
+        self.POWERLOSS_HARNESS_DEFAULT_SETUP_COUNT = self._config.getint(section, 'default_setup_count', fallback=40)
+        self.POWERLOSS_HARNESS_DEFAULT_DELAY = self._config.getfloat(section, 'default_delay', fallback=0.005)
+        self.POWERLOSS_HARNESS_DEFAULT_PROCESS_FSYNC_INTERVAL = self._config.getint(section, 'default_process_fsync_interval', fallback=8192)
+        self.POWERLOSS_HARNESS_DEFAULT_MIN_DELAY = self._config.getfloat(section, 'default_min_delay', fallback=0.02)
+        self.POWERLOSS_HARNESS_DEFAULT_MAX_DELAY = self._config.getfloat(section, 'default_max_delay', fallback=1.2)
+        self.POWERLOSS_HARNESS_DEFAULT_READY_TIMEOUT = self._config.getfloat(section, 'default_ready_timeout', fallback=30.0)
+        self.POWERLOSS_HARNESS_DEFAULT_SEED = self._config.getint(section, 'default_seed', fallback=20261026)
+        self.POWERLOSS_HARNESS_DEFAULT_IMAGE_MB = self._config.getint(section, 'default_image_mb', fallback=256)
+        self.POWERLOSS_HARNESS_DEFAULT_COW_MB = self._config.getint(section, 'default_cow_mb', fallback=512)
+        self.POWERLOSS_HARNESS_CMD_TIMEOUT = self._config.getint(section, 'cmd_timeout', fallback=60)
+        self.POWERLOSS_HARNESS_UMOUNT_TIMEOUT = self._config.getint(section, 'umount_timeout', fallback=20)
+        self.POWERLOSS_HARNESS_CLEANUP_TIMEOUT = self._config.getint(section, 'cleanup_timeout', fallback=20)
+        self.POWERLOSS_HARNESS_DM_REMOVE_ATTEMPTS = self._config.getint(section, 'dm_remove_attempts', fallback=4)
+        self.POWERLOSS_HARNESS_DM_REMOVE_TIMEOUT = self._config.getint(section, 'dm_remove_timeout', fallback=20)
+        self.POWERLOSS_HARNESS_LOOP_TIMEOUT = self._config.getint(section, 'loop_timeout', fallback=20)
+        self.POWERLOSS_HARNESS_FSCK_TIMEOUT = self._config.getint(section, 'fsck_timeout', fallback=90)
+        self.POWERLOSS_HARNESS_FSCK_REPAIR_TIMEOUT = self._config.getint(section, 'fsck_repair_timeout', fallback=120)
+        self.POWERLOSS_HARNESS_MOUNT_TIMEOUT = self._config.getint(section, 'mount_timeout', fallback=30)
+        self.POWERLOSS_HARNESS_RECOVERY_TIMEOUT = self._config.getint(section, 'recovery_timeout', fallback=120)
+        self.POWERLOSS_HARNESS_KILL_WAIT_TIMEOUT = self._config.getint(section, 'kill_wait_timeout', fallback=15)
+        self.POWERLOSS_HARNESS_READY_POLL_INTERVAL = self._config.getfloat(section, 'ready_poll_interval', fallback=0.01)
+        self.POWERLOSS_HARNESS_RETRY_DELAY = self._config.getfloat(section, 'retry_delay', fallback=0.1)
+        self.POWERLOSS_HARNESS_DM_RETRY_DELAY = self._config.getfloat(section, 'dm_retry_delay', fallback=0.15)
+        self.POWERLOSS_HARNESS_KILL_DELAY_SEED_SALT = NDBMeta.PowerLoss.Harness.KILL_DELAY_SEED_SALT
+        self.POWERLOSS_HARNESS_SEED_MODE_STRIDE = NDBMeta.PowerLoss.Harness.SEED_MODE_STRIDE
+        self.POWERLOSS_HARNESS_SEED_WORKLOAD_STRIDE = NDBMeta.PowerLoss.Harness.SEED_WORKLOAD_STRIDE
+        self.POWERLOSS_HARNESS_SEED_TRIAL_STRIDE = NDBMeta.PowerLoss.Harness.SEED_TRIAL_STRIDE
+        self.POWERLOSS_HARNESS_SEED_MASK = NDBMeta.PowerLoss.Harness.SEED_MASK
+
+    def _load_powerloss_worker(self):
+        section = 'powerloss_worker'
+        self.POWERLOSS_WORKER_DEFAULT_SEED = self._config.getint(section, 'default_seed', fallback=1)
+        self.POWERLOSS_WORKER_DEFAULT_OPS = self._config.getint(section, 'default_ops', fallback=300)
+        self.POWERLOSS_WORKER_DEFAULT_SETUP_COUNT = self._config.getint(section, 'default_setup_count', fallback=40)
+        self.POWERLOSS_WORKER_DEFAULT_DELAY = self._config.getfloat(section, 'default_delay', fallback=0.002)
+        self.POWERLOSS_WORKER_DEFAULT_WAL_FSYNC_INTERVAL = self._config.getint(section, 'default_wal_fsync_interval', fallback=65536)
+        self.POWERLOSS_WORKER_IDLE_SLEEP = NDBMeta.PowerLoss.Worker.IDLE_SLEEP
+        self.POWERLOSS_WORKER_BULK_INSERT_MIN = self._config.getint(section, 'bulk_insert_min', fallback=5)
+        self.POWERLOSS_WORKER_BULK_INSERT_MAX = self._config.getint(section, 'bulk_insert_max', fallback=12)
+        self.POWERLOSS_WORKER_MIXED_BULK_MIN = self._config.getint(section, 'mixed_bulk_min', fallback=4)
+        self.POWERLOSS_WORKER_MIXED_BULK_MAX = self._config.getint(section, 'mixed_bulk_max', fallback=10)
+        self.POWERLOSS_WORKER_DELETE_MIN = self._config.getint(section, 'delete_min', fallback=1)
+        self.POWERLOSS_WORKER_DELETE_MAX = self._config.getint(section, 'delete_max', fallback=8)
+        self.POWERLOSS_WORKER_INSERT_ROLL = self._config.getfloat(section, 'insert_roll', fallback=0.40)
+        self.POWERLOSS_WORKER_BULK_ROLL = self._config.getfloat(section, 'bulk_roll', fallback=0.60)
+        self.POWERLOSS_WORKER_UPDATE_ROLL = self._config.getfloat(section, 'update_roll', fallback=0.80)
 
     def update_model_config(self, device: str, batch_size: int, model_type: str):
         section = 'llm'

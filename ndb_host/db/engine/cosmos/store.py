@@ -14,6 +14,7 @@ and delegates all logic to the purpose-built submodules:
     compactor      – LSM-tree compaction & background daemon
 """
 
+import os
 import time
 import shutil
 
@@ -43,6 +44,22 @@ from db.engine.utils import encode_object, decode_object
 # ==========================================================
 
 logger = NebulonDBLogger().get_logger()
+
+DURABILITY_MODES = ('process', 'batch', 'per_ack')
+
+
+class WalDurabilityError(RuntimeError):
+    """Raised when the WAL cannot guarantee the configured durability."""
+
+
+def resolve_durability_mode(value: Any) -> str:
+    """Validate/normalize the configured WAL durability mode."""
+    mode = str(value or 'process').strip().lower()
+    if mode not in DURABILITY_MODES:
+        raise ValueError(
+            f"Invalid durability_mode={value!r}; expected one of {DURABILITY_MODES}"
+        )
+    return mode
 
 
 class NebulonCosmos:
@@ -84,6 +101,9 @@ class NebulonCosmos:
         self.flush_interval               = self.config.FLUSH_INTERVAL
         self.flush_size_threshold         = self.config.FLUSH_SIZE_THRESHOLD
         self.wal_fsync_interval           = self.config.WAL_FSYNC_INTERVAL
+        self.durability_mode              = resolve_durability_mode(
+            getattr(self.config, 'DURABILITY_MODE', 'process')
+        )
 
         # ── format strings / constants ────────────────────────
         self.segment_magic         = self.config.MAGIC
@@ -103,6 +123,9 @@ class NebulonCosmos:
         self.meta:                 dict[str, Any]           = _meta_mod.default_meta()
         self.wal_count:            int                      = 0
         self._wal_bytes_since_fsync: int                    = 0
+        self.wal_fsync_count:      int                      = 0
+        self.wal_fsync_ms:         float                    = 0.0
+        self.wal_failed:           bool                     = False
         self.memtable_oldest_ts:   float                    = 0.0
         self.wal_handle:           Any | None            = None
         self.segment_cache:        OrderedDict              = OrderedDict()
@@ -144,6 +167,159 @@ class NebulonCosmos:
 
     def _load_manifest(self) -> None:
         self.manifest = _meta_mod.load_manifest(self.manifest_file, self.seg_dir)
+
+    # ── startup reconciliation ───────────────────────────────
+    @staticmethod
+    def _segment_id_from_name(fname: str) -> int | None:
+        try:
+            return int(fname.split("_")[1].split(".")[0])
+        except (IndexError, ValueError):
+            return None
+
+    def _discover_segment_files(self) -> list[str]:
+        if not self.seg_dir.exists():
+            return []
+        names = [
+            p.name
+            for p in self.seg_dir.iterdir()
+            if p.name.startswith("seg_") and p.name.endswith(".ndb")
+        ]
+        names.sort(key=lambda n: self._segment_id_from_name(n) or 0)
+        return names
+
+    def _adopt_orphan_segments(self) -> bool:
+        """Adopt durable segments that are missing from the manifest.
+
+        Only segments *newer* than everything already registered are adopted.
+        Older orphans are leftovers from an interrupted compaction and must not
+        be resurrected. This repairs the historic "WAL cleared before manifest
+        commit" crash (segment on disk, WAL empty, stale manifest) and the
+        "manifest not yet persisted" window.
+        """
+        current_max = max(
+            (self._segment_id_from_name(f) or 0 for f in self.manifest),
+            default=0,
+        )
+        adopted: list[str] = []
+        for fname in self._discover_segment_files():
+            if fname in self.manifest:
+                continue
+            seg_id = self._segment_id_from_name(fname)
+            if seg_id is None or seg_id <= current_max:
+                continue
+            valid, *_ = self._validate_segment(self.seg_dir / fname)
+            if not valid:
+                logger.warning(f"Orphan segment {fname} is invalid; not adopting")
+                continue
+            adopted.append(fname)
+        if not adopted:
+            return False
+        self.manifest.extend(adopted)
+        self.manifest.sort(key=lambda n: self._segment_id_from_name(n) or 0)
+        logger.warning(
+            f"Adopted {len(adopted)} orphan segment(s) missing from manifest: {adopted}"
+        )
+        return True
+
+    def _reconcile_segment_counter(self) -> bool:
+        """Keep ``last_segment_id`` monotonic with the files on disk."""
+        ids = [
+            self._segment_id_from_name(f)
+            for f in self._discover_segment_files()
+        ]
+        max_id = max((i for i in ids if i is not None), default=0)
+        if max_id > int(self.meta.get("last_segment_id", 0)):
+            self.meta["last_segment_id"] = max_id
+            return True
+        return False
+
+    def _reconcile_meta_from_index(self) -> bool:
+        """Re-derive record/version counters so stale meta can't reuse ids."""
+        if not self.latest:
+            return False
+        changed = False
+        max_rec = max(self.latest.keys())
+        if max_rec > int(self.meta.get("global_record_id", 0)):
+            self.meta["global_record_id"] = max_rec
+            changed = True
+        max_version = max((e.version for e in self.latest.values()), default=0)
+        if max_version > int(self.meta.get("global_version", 0)):
+            self.meta["global_version"] = max_version
+            changed = True
+        return changed
+
+    # ── WAL replay helpers ────────────────────────────────────
+    def _prune_replayed_duplicates(self) -> int:
+        """Drop replayed rows already durable in a segment (same/newer version).
+
+        This is the normal outcome of a crash after the manifest commit but
+        before the WAL truncate: the rows exist in both places.
+        """
+        if not self.memtable or not self.latest:
+            return 0
+        removed = 0
+        for key in list(self.memtable.keys()):
+            try:
+                rec = decode_object(self.memtable[key])
+            except Exception:
+                continue
+            rec_id = rec.get("_id")
+            if not isinstance(rec_id, int):
+                continue
+            version = rec.get("_version", 0)
+            version = version if isinstance(version, int) else 0
+            entry = self.latest.get(rec_id)
+            if entry is not None and entry.version >= version:
+                self.memtable.pop(key, None)
+                self._deleted.discard(key)
+                self._deleted.discard(rec_id)
+                removed += 1
+        if removed:
+            logger.info(
+                f"Pruned {removed} WAL-replayed record(s) already persisted in segments"
+            )
+        return removed
+
+    def _ensure_wal_writable(self) -> None:
+        if self.wal_failed:
+            raise WalDurabilityError(
+                "WAL is in a failed state after a previous write/fsync error; "
+                "restart the service before accepting writes"
+            )
+
+    def _mark_wal_failed(self) -> None:
+        self.wal_failed = True
+        # Stop background flush/compaction so they cannot truncate or rewrite
+        # the WAL while the process is in the read-only failed state.
+        self._flush_stop_event.set()
+        self._compaction_stop_event.set()
+
+    def _fsync_wal(self) -> None:
+        """Flush the WAL userspace buffer and fsync it to stable storage."""
+        if self.wal_handle is None:
+            return
+        started = time.monotonic()
+        try:
+            self.wal_handle.flush()
+            os.fsync(self.wal_handle.fileno())
+        except Exception as exc:
+            self._mark_wal_failed()
+            raise WalDurabilityError(f"WAL fsync failed: {exc}") from exc
+        self.wal_fsync_ms += (time.monotonic() - started) * 1000.0
+        self.wal_fsync_count += 1
+        self._wal_bytes_since_fsync = 0
+
+    def _truncate_wal(self) -> None:
+        if self.wal_handle is None:
+            return
+        try:
+            self.wal_handle.seek(0)
+            self.wal_handle.truncate(0)
+            self.wal_handle.flush()
+            os.fsync(self.wal_handle.fileno())
+            self._wal_bytes_since_fsync = 0
+        except Exception as e:
+            logger.error(f"Could not truncate fully-persisted WAL: {e}")
 
     # ── id / version generators ───────────────────────────────
     def _ensure_global_record_id(self) -> None:
@@ -231,22 +407,37 @@ class NebulonCosmos:
 
     # ── WAL ───────────────────────────────────────────────────
     def _write_wal_record(self, record_bytes: bytes) -> None:
-        self._wal_bytes_since_fsync = _wal_mod.write_wal_record(
-            self.wal_handle,
-            record_bytes,
-            self.wal_auto_flush,
-            self._wal_bytes_since_fsync,
-            self.wal_fsync_interval,
-        )
+        try:
+            self._wal_bytes_since_fsync = _wal_mod.write_wal_record(
+                self.wal_handle,
+                record_bytes,
+                self.wal_auto_flush,
+                self._wal_bytes_since_fsync,
+                self._implicit_fsync_interval(),
+            )
+        except Exception as exc:
+            self._mark_wal_failed()
+            raise WalDurabilityError(f"WAL write failed: {exc}") from exc
 
     def _write_wal_records_batch(self, record_bytes_list: list[bytes]) -> None:
-        self._wal_bytes_since_fsync = _wal_mod.write_wal_records_batch(
-            self.wal_handle,
-            record_bytes_list,
-            self.wal_auto_flush,
-            self._wal_bytes_since_fsync,
-            self.wal_fsync_interval,
-        )
+        try:
+            self._wal_bytes_since_fsync = _wal_mod.write_wal_records_batch(
+                self.wal_handle,
+                record_bytes_list,
+                self.wal_auto_flush,
+                self._wal_bytes_since_fsync,
+                self._implicit_fsync_interval(),
+            )
+        except Exception as exc:
+            self._mark_wal_failed()
+            raise WalDurabilityError(f"WAL batch write failed: {exc}") from exc
+
+    def _implicit_fsync_interval(self) -> int:
+        # batch/per_ack issue exactly one explicit fsync per request/record;
+        # suppress the size-triggered fsync so a large write isn't fsynced twice.
+        if self.durability_mode in ('batch', 'per_ack'):
+            return 2**63 - 1
+        return self.wal_fsync_interval
 
     def _recover_wal(self) -> None:
         _wal_mod.recover_wal(
@@ -311,7 +502,7 @@ class NebulonCosmos:
                 self._flush_stop_event.set()
                 return
             wal_count_ref = [self.wal_count]
-            _writer_mod.flush(
+            flushed = _writer_mod.flush(
                 memtable=self.memtable,
                 deleted=self._deleted,
                 wal_handle=self.wal_handle,
@@ -328,9 +519,14 @@ class NebulonCosmos:
                 force=force,
             )
             self.wal_count = wal_count_ref[0]
-            self._wal_bytes_since_fsync = 0
-            self.memtable_bytes = 0
-            self.memtable_oldest_ts = 0.0
+            if flushed:
+                self._wal_bytes_since_fsync = 0
+                self.memtable_bytes = 0
+                self.memtable_oldest_ts = 0.0
+            else:
+                # Nothing was persisted (threshold not met or the flush failed);
+                # keep the byte accounting truthful so the next check is correct.
+                self.memtable_bytes = sum(len(v) for v in self.memtable.values())
 
     # ── compaction ────────────────────────────────────────────
     def _cleanup_segments(self, fnames: list[str], delete_files: bool = True) -> None:
@@ -458,10 +654,13 @@ class NebulonCosmos:
             return self._write_record_unsafe(segment, doc, is_delete)
 
     def _write_record_unsafe(self, segment: str, doc: dict[str, Any], is_delete: bool = False) -> int:
+        self._ensure_wal_writable()
         rec_bytes, rec_id, version = self._build_record(segment, doc, is_delete)
         key       = (segment, rec_id)
 
         self._write_wal_record(rec_bytes)
+        if self.durability_mode in ('batch', 'per_ack'):
+            self._fsync_wal()
 
         was_empty = not self.memtable
         if is_delete:
@@ -503,6 +702,17 @@ class NebulonCosmos:
     # Public API
     # =========================================================
 
+    def wal_stats(self) -> dict[str, Any]:
+        """Expose WAL durability state for health/dashboard reporting."""
+        return {
+            "durability_mode": self.durability_mode,
+            "fsync_interval": self.wal_fsync_interval,
+            "bytes_since_fsync": self._wal_bytes_since_fsync,
+            "explicit_fsync_count": self.wal_fsync_count,
+            "explicit_fsync_ms": round(self.wal_fsync_ms, 3),
+            "failed": self.wal_failed,
+        }
+
     def insert(self, segment: str, doc: dict[str, Any]) -> int:
         doc.pop("id", None)
         return self._write_record(segment, doc, is_delete=False)
@@ -513,6 +723,7 @@ class NebulonCosmos:
         write, and update the memtable under one lock acquisition.
         """
         with self._lock:
+            self._ensure_wal_writable()
             built = []
             for doc in docs:
                 doc2 = doc.copy()
@@ -521,6 +732,8 @@ class NebulonCosmos:
                 built.append(((segment, rec_id), rec_bytes))
 
             self._write_wal_records_batch([rb for _, rb in built])
+            if self.durability_mode in ('batch', 'per_ack'):
+                self._fsync_wal()
 
             was_empty = not self.memtable
             rec_ids = []
@@ -561,6 +774,7 @@ class NebulonCosmos:
         Mirrors ``insert_many``.
         """
         with self._lock:
+            self._ensure_wal_writable()
             built = []
             for record_id in record_ids:
                 rec_bytes, rec_id, _ = self._build_record(
@@ -572,6 +786,8 @@ class NebulonCosmos:
                 return []
 
             self._write_wal_records_batch([rb for rb, _ in built])
+            if self.durability_mode in ('batch', 'per_ack'):
+                self._fsync_wal()
 
             was_empty = not self.memtable
             removed = []
@@ -749,8 +965,21 @@ class NebulonCosmos:
     # Lifecycle
     # =========================================================
 
+    @staticmethod
+    def _fsync_dir(path: Path) -> None:
+        """Make a directory entry durable (best-effort; unsupported on some OSes)."""
+        try:
+            fd = os.open(str(path), os.O_RDONLY)
+        except OSError:
+            return
+        try:
+            os.fsync(fd)
+        finally:
+            os.close(fd)
+
     def _init_db(self, reset: bool = False) -> None:
         with self._lock:
+            db_dir_existed = self.db_dir.exists()
             if reset and self.db_dir.exists():
                 shutil.rmtree(self.db_dir)
 
@@ -765,15 +994,52 @@ class NebulonCosmos:
             if not self.index_file.exists():
                 self.index_file.touch()
 
+            # A newly created WAL/index entry is only durable after its parent
+            # directory is fsynced (needed for per_ack/batch power-loss safety).
+            self._fsync_dir(self.db_dir)
+            if not db_dir_existed:
+                self._fsync_dir(self.db_dir.parent)
+
             self._load_meta()
             self._ensure_global_record_id()
             self._load_manifest()
-            self._load_index()
+
+            # Repair crash windows before touching the index/WAL:
+            #  * adopt durable segments missing from the manifest
+            #  * make the segment-id / record-id / version counters monotonic
+            manifest_changed = self._adopt_orphan_segments()
+            counter_changed = self._reconcile_segment_counter()
+
+            if manifest_changed:
+                # Index coverage may be incomplete after adopting an orphan, so
+                # rebuild it from the (now complete) segment list.
+                self._rebuild_index_from_all_segments()
+            else:
+                self._load_index()
+
+            counter_changed = self._reconcile_meta_from_index() or counter_changed
+            if manifest_changed or counter_changed:
+                try:
+                    _meta_mod.save_manifest_and_meta(
+                        self.manifest_file, self.meta_file,
+                        self.manifest, self.meta,
+                    )
+                except Exception as e:
+                    logger.error(
+                        f"Startup reconciliation could not persist manifest/meta: {e}"
+                    )
+
             self._recover_wal()
+            replayed = len(self.memtable)
+            if replayed and self._prune_replayed_duplicates() == replayed:
+                # Every replayed row was already durable in a segment.
+                self._truncate_wal()
+
             self.wal_count = len(self.memtable)
             self.memtable_bytes = sum(len(v) for v in self.memtable.values())
             if self.wal_count > 0:
                 logger.info(f"Recovered {self.wal_count} records – flushing immediately")
+                self._flush(force=True)
             self.segment_cache.clear()
 
             if self._compaction_thread is None or not self._compaction_thread.is_alive():

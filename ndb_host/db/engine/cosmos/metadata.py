@@ -111,7 +111,16 @@ def save_manifest(manifest_file: Path, manifest: list[str]) -> None:
 
 def save_manifest_and_meta(manifest_file: Path, meta_file: Path,
                            manifest: list[str], meta: dict[str, Any]) -> None:
-    """Atomically write manifest + meta using a temp directory entry."""
+    """Persist manifest + meta with a crash-consistent commit order.
+
+    Both temp files are fsynced first, then the *manifest* is renamed into
+    place before the *meta* file. A crash between the two renames therefore
+    leaves a newer manifest with a stale meta — never the reverse. Startup
+    reconciliation (``NebulonCosmos._init_db``) re-derives segment/record/
+    version counters from the manifest, the segment directory and the index,
+    so a stale meta is self-healing. Recovery also relies on the manifest
+    being the source of truth for which segments are live.
+    """
     # Write temp files
     manifest_tmp = manifest_file.parent / (manifest_file.name + ".tmp")
     meta_tmp = meta_file.parent / (meta_file.name + ".tmp")

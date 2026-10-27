@@ -96,6 +96,17 @@ include = ["ndb_host*"]
 requires = ["setuptools>=61"]
 build-backend = "setuptools.build_meta"
 
+[tool.pytest.ini_options]
+markers = [
+    "live: hits a running NebulonDB HTTP server",
+    "isolated: swaps NEBULONDB_HOME and runs the storage engine in-process",
+    "powerloss: opt-in root/WSL SIGKILL + dm-snapshot durability test",
+    "segment: segment API tests",
+    "corpus: corpus API tests",
+    "auth: auth API tests",
+    "system: system API tests",
+]
+
 [tool.ruff]
 target-version = "py310"
 line-length = 120
