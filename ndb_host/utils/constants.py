@@ -47,7 +47,7 @@ class NDBMeta:
         STORAGE_DIR = "Storage"
         SECRETS_DIR = "Secrets"
         LOG_DIR = "logs"
-        PID_FILE = "nebulon.pid"
+        PID_FILE = "nebulon_db.pid"
         WEB_DIR = "ndb_host/web_dir"
 
     class Logging:
