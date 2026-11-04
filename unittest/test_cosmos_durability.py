@@ -368,3 +368,146 @@ def test_acknowledged_writes_recover_after_sigkill_in_all_modes(tmp_path, mode):
         assert _texts(reopened) == [f"record-{i}" for i in range(20)]
     finally:
         _hard_close(reopened)
+
+
+def _manifest(store) -> list:
+    return list(store.manifest)
+
+
+def test_dead_prefix_merge_converges_and_preserves_live(tmp_path):
+    """A merge set with no live records must shrink the manifest.
+
+    Regression test for the compaction hot-loop: the old no-live path kept
+    every file listed, so the trigger condition never cleared.
+    """
+    store = _open(tmp_path)
+    try:
+        keep_ids = [store.insert("_main", {"text": f"keep-{i}"})
+                    for i in range(3)]
+        store.flush()
+        live = _manifest(store)
+        tmp_ids = []
+        for _ in range(3):
+            batch = [store.insert("_main", {"text": "tmp"}) for _ in range(3)]
+            store.flush()
+            for rid in batch:
+                assert store.delete("_main", rid) == rid
+            store.flush()
+            tmp_ids.extend(batch)
+        assert len(_manifest(store)) > len(live)
+        dead = [f for f in _manifest(store) if f not in live]
+        assert len(dead) >= 2
+        before = len(_manifest(store))
+        store._compact(dead)
+        assert len(_manifest(store)) < before
+        for fname in dead:
+            assert not (store.seg_dir / fname).exists()
+        for i, rid in enumerate(keep_ids):
+            doc = store.get(rid, "_main")
+            assert doc is not None and doc["text"] == f"keep-{i}"
+        for rid in tmp_ids:
+            assert store.get(rid, "_main") is None
+        # A second identical merge is a safe no-op (files already gone).
+        store._compact(dead)
+        assert len(_manifest(store)) < before
+    finally:
+        _hard_close(store)
+
+
+def test_merge_carries_tombstones_without_resurrection(tmp_path):
+    """Deleting a tombstone's file must never unmask an older version."""
+    store = _open(tmp_path)
+    try:
+        rid = store.insert("_main", {"text": "v1"})
+        store.flush()
+        assert store.delete("_main", rid) == rid
+        store.flush()
+        assert store.get(rid, "_main") is None
+        store._compact(_manifest(store)[-1:])
+        assert store.get(rid, "_main") is None
+    finally:
+        _hard_close(store)
+
+
+def test_merge_with_missing_files_converges(tmp_path):
+    """Lost segment files must drop out of the manifest, not crash merges."""
+    store = _open(tmp_path)
+    try:
+        store.insert("_main", {"text": "x"})
+        store.flush()
+        store.insert("_main", {"text": "y"})
+        store.flush()
+        doomed = _manifest(store)[-2:]
+        assert len(doomed) == 2
+        for fname in doomed:
+            (store.seg_dir / fname).unlink()
+        store._compact(doomed)
+        for fname in doomed:
+            assert fname not in _manifest(store)
+    finally:
+        _hard_close(store)
+
+
+def test_read_payload_missing_file_returns_none(tmp_path):
+    """A vanished segment file reads as a miss, never raises (stale-tolerant)."""
+    from db.engine.cosmos import segment_reader as reader_mod
+    from db.engine.utils.constants import (
+        RECORD_HEADER_FORMAT,
+        RECORD_HEADER_SIZE,
+    )
+
+    assert reader_mod.read_payload_at_offset(
+        4242, 0, tmp_path, {}, 16, {}, False,
+        RECORD_HEADER_SIZE, RECORD_HEADER_FORMAT) is None
+
+
+def test_get_after_segment_loss_returns_none(tmp_path):
+    """Reads racing a merge cleanup get None, not a 500."""
+    store = _open(tmp_path)
+    try:
+        rid = store.insert("_main", {"text": "x"})
+        store.flush()
+        assert store.get(rid, "_main") is not None
+        seg_dir = store.seg_dir
+    finally:
+        _hard_close(store)
+    for seg_file in seg_dir.glob("seg_*.ndb"):
+        seg_file.unlink()
+    reopened = _open(tmp_path)
+    try:
+        assert reopened.get(rid, "_main") is None
+    finally:
+        _hard_close(reopened)
+
+
+def test_background_daemon_survives_merge_failure():
+    """One bad merge must not kill the compaction daemon silently."""
+    import threading
+
+    from db.engine.cosmos import compactor as compactor_mod
+
+    calls = []
+
+    def _boom():
+        calls.append(1)
+        raise RuntimeError("simulated merge failure")
+
+    stop = threading.Event()
+    worker = threading.Thread(
+        target=compactor_mod.background_compaction_loop,
+        args=(stop, 0.01, ["seg_1.ndb"] * 11, 10, _boom), daemon=True)
+    worker.start()
+    stop.wait(0.2)
+    stop.set()
+    worker.join(timeout=5)
+    assert calls, "daemon never fired"
+    assert not worker.is_alive()
+
+
+def test_corpus_name_for_layouts(tmp_path):
+    from db.engine.cosmos.compactor import corpus_name_for
+
+    assert corpus_name_for(tmp_path / "mind_semantic" / "NebulonCosmos"
+                           / "segments") == "mind_semantic"
+    assert corpus_name_for(tmp_path / "mind_semantic") == "mind_semantic"
+    assert corpus_name_for(tmp_path / "nak_tasks") == "nak_tasks"

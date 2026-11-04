@@ -18,6 +18,8 @@ from pathlib import Path
 from db.engine.utils import BloomFilter, IndexEntry
 from utils.logger import NebulonDBLogger
 
+from db.engine.cosmos.compactor import corpus_name_for
+
 from db.engine.utils import decode_object
 
 
@@ -224,5 +226,6 @@ def rebuild_index_from_all_segments(
         idx_f.flush()
         os.fsync(idx_f.fileno())
 
-    logger.info(f"Index rebuilt with {len(latest_per_id)} live records")
+    logger.info(f"[{corpus_name_for(seg_dir)}] Index rebuilt with "
+                f"{len(latest_per_id)} live records")
     return latest_per_id

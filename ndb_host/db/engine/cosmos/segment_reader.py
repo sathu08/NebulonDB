@@ -12,6 +12,7 @@ Responsibilities
   with an LRU open-file cache for performance.
 """
 
+import contextlib
 import zlib
 import mmap
 import struct
@@ -135,8 +136,19 @@ def read_payload_at_offset(
             _, (f_old, mm_old) = segment_cache.popitem(last=False)
             mm_old.close()
             f_old.close()
-        f = seg_path.open("rb")
-        mm = mmap.mmap(f.fileno(), 0, access=mmap.ACCESS_READ)
+        # The file may vanish under us (concurrent merge cleanup) or be
+        # unmappable: report a miss, never raise. Callers already treat
+        # None as "record not here".
+        try:
+            f = seg_path.open("rb")
+        except OSError:
+            return None
+        try:
+            mm = mmap.mmap(f.fileno(), 0, access=mmap.ACCESS_READ)
+        except (OSError, ValueError):
+            with contextlib.suppress(Exception):
+                f.close()
+            return None
         segment_cache[seg_name] = (f, mm)
 
     # ── Read header ───────────────────────────────────────────

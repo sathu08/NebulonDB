@@ -17,6 +17,7 @@ import zlib
 import struct
 
 from pathlib import Path
+from typing import Any
 
 from db.engine.utils import BloomFilter
 from utils.logger import NebulonDBLogger
@@ -29,6 +30,25 @@ from db.engine.utils import decode_object
 # ==========================================================
 
 logger = NebulonDBLogger().get_logger()
+
+
+def corpus_name_for(path: Any) -> str:
+    """Best-effort corpus label for log lines (never raises).
+
+    Understands db_dir, seg_dir and NebulonCosmos layouts so compaction and
+    index messages say WHICH corpus they belong to.
+    """
+    try:
+        parts = Path(path).parts
+        if "NebulonCosmos" in parts:
+            idx = parts.index("NebulonCosmos")
+            if idx > 0:
+                return parts[idx - 1]
+        if parts[-1] == "segments" and len(parts) > 3:
+            return parts[-3]
+        return Path(path).name or "unknown"
+    except Exception:
+        return "unknown"
 
 # ==========================================================
 #  Segment cleanup helper
@@ -128,10 +148,14 @@ def compact(
         logger.info("Insufficient segments for compaction merge")
         return
 
-    # ── Pass 1: find latest non-deleted record locations ─────
+    # ── Pass 1: find latest record locations ─────
     # Key by (segment, rec_id) so records in different segments that happen to
     # share a record id are never silently dropped during the merge.
+    # Tombstones are collected alongside live records: a merge set with no
+    # live records still carries its tombstones forward, so dropping the old
+    # files can never resurrect masked versions living in other segments.
     latest_source: dict[tuple[str, int], tuple[str, int, int]] = {}
+    tombstoned: dict[tuple[str, int], tuple[str, int, int]] = {}
     for fname in sorted(
         segments_to_merge,
         key=lambda x: int(x.split('_')[1].split('.')[0]),
@@ -173,28 +197,44 @@ def compact(
                     continue
                 segment = rec_dict.get("_segment") or "_main"
                 skey = (segment, rec_id)
-                if skey not in latest_source and not rec_dict.get("_deleted", False):
-                    version = rec_dict.get("_version", 0)
+                if skey in latest_source or skey in tombstoned:
+                    continue
+                version = rec_dict.get("_version", 0)
+                if rec_dict.get("_deleted", False):
+                    tombstoned[skey] = (fname, offset, version)
+                else:
                     latest_source[skey] = (fname, offset, version)
 
-    if not latest_source:
-        logger.info("No live records found, cleaning up merged segments")
+    if not latest_source and not tombstoned:
+        # Nothing decodable at all (corrupt or already-removed files): drop
+        # the dead entries so the trigger condition clears and the daemon
+        # converges instead of spinning on the same files every interval.
+        logger.info("[%s] No live or tombstoned records found, removing %d dead segments",
+                    corpus_name_for(seg_dir), len(segments_to_merge))
+        for fname in segments_to_merge:
+            if fname in manifest:
+                manifest.remove(fname)
         cleanup_segments(
             segments_to_merge, seg_dir,
             segment_cache, segment_size_cache, bloom_filter_cache, segment_info,
-            delete_files=False,
+            delete_files=True,
         )
+        save_manifest_and_meta_fn()
         rewrite_index_fn()
         return
+    if not latest_source:
+        logger.info("[%s] No live records found, carrying %d tombstones forward",
+                    corpus_name_for(seg_dir), len(tombstoned))
 
     # ── Pass 2: write new segment ─────────────────────────────
     new_seg_id = get_next_segment_id_fn()
     new_seg_name = f"seg_{new_seg_id}.ndb"
     new_seg_path = seg_dir / new_seg_name
+    sources = latest_source or tombstoned
 
     # Append index entries for the new segment *before* the manifest/cleanup so
     # a crash can never leave the new segment registered but unindexed.
-    write_segment_streaming_fn(new_seg_path, latest_source, new_seg_id, append_index=True)
+    write_segment_streaming_fn(new_seg_path, sources, new_seg_id, append_index=True)
 
     # ── Atomic manifest update ────────────────────────────────
     untouched = [f for f in manifest if f not in segments_to_merge]
@@ -219,8 +259,8 @@ def compact(
     )
 
     logger.info(
-        f"Compaction merged {len(segments_to_merge)} segments, "
-        f"retained {len(latest_source)} active records"
+        f"[{corpus_name_for(seg_dir)}] Compaction merged {len(segments_to_merge)} segments, "
+        f"retained {len(sources)} records ({len(latest_source)} live)"
     )
 
 
@@ -250,5 +290,13 @@ def background_compaction_loop(
             stop_event.set()
             return
         if len(manifest) > max_segments_before_compact:
-            logger.info("Background compaction triggered")
-            compact_fn()
+            logger.info("[%s] Background compaction triggered",
+                        corpus_name_for(db_dir) if db_dir is not None else "?")
+            try:
+                compact_fn()
+            except Exception:
+                # Never let one bad merge kill the daemon silently: log with
+                # traceback and keep the cadence. Fatal states (WAL failure)
+                # self-terminate via their stop events.
+                logger.exception("[%s] Background compaction failed; will retry",
+                                 corpus_name_for(db_dir) if db_dir is not None else "?")

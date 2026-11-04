@@ -499,11 +499,12 @@ async def search_segment(
 
     except Exception as e:
         _raise_durability(e)
-        logger.exception(f"Failed to load segment into corpus '{segment_query.corpus_name}': {str(e)}")
+        logger.exception(f"Failed to search segment '{segment_query.segment_name}'"
+                         f" in corpus '{segment_query.corpus_name}': {str(e)}")
         return StandardResponse(
             success=False,
             corpus_name=corpus_name,
-            message=f"Internal server error while creating segment: {str(e)}"
+            message=f"Internal server error while searching segment: {str(e)}"
         )
 
 
