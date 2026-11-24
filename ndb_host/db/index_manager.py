@@ -21,10 +21,13 @@ from collections.abc import Sequence
 from db.ndb_settings import NDBConfig
 from core.model_hub import SemanticEmbeddingModel
 from utils.constants import ColumnPick, NDBMeta, normalize_doc_type, normalize_lang, CORPUS_NAME_PATTERN
+from utils.logger import NebulonDBLogger
 
 from db.engine import NebulonCosmos, NebulonOrbit, RankConfig, WalDurabilityError
 
 from utils.time_utils import utc_now_iso
+
+logger = NebulonDBLogger().get_logger()
 
 # ==========================================================
 #        Load Configuration
@@ -484,7 +487,8 @@ class CorpusManager:
             if not metadata_names:
                 return []
             return sorted(set(vector_dirs) & set(metadata_names))
-        except Exception:
+        except Exception as e:
+            logger.debug("get_available_corpus_list failed: %s", e)
             return []
 
     def get_corpus_info(self) -> dict[str, dict[str, Any]]:
@@ -511,7 +515,8 @@ class CorpusManager:
                         "created_by": record.get("created_by"),
                         "created_at": record.get("created_at"),
                     }
-        except Exception:
+        except Exception as e:
+            logger.debug("get_corpus_info failed: %s", e)
             # Do not cache a transient failure: callers would then see a
             # missing corpus until the TTL expires.
             return info
@@ -534,7 +539,8 @@ class CorpusManager:
                 if record.get("corpus_name") == corpus_name:
                     return record.get("status")
             return None
-        except Exception as _:
+        except Exception as e:
+            logger.debug("get_corpus_status failed: %s", e)
             return None
 
     def set_corpus_status(self, corpus_name: str, status: str) -> None:
@@ -551,7 +557,8 @@ class CorpusManager:
                     record["status"] = status
                     self.metadata_db.update_data(segment=self.metadata_segment, document=record)
             CorpusManager.invalidate_info_cache()
-        except Exception as _:
+        except Exception as e:
+            logger.debug("set_corpus_status failed: %s", e)
             return False
 
     def create_corpus(
@@ -681,7 +688,8 @@ class SegmentManager:
         """Return True if this corpus has a metadata record."""
         try:
             return bool(CorpusManager().get_corpus_info().get(self.corpus_name))
-        except Exception:
+        except Exception as e:
+            logger.debug("_corpus_exists check failed: %s", e)
             return False
 
     def _validate_paths(self) -> None:
@@ -777,7 +785,8 @@ class SegmentManager:
                 if record.get("corpus_name") == self.corpus_name:
                     segments = record.get("segments") or []
                     return [s.get("name") for s in segments if isinstance(s, dict) and s.get("name")]
-        except Exception as _:
+        except Exception as e:
+            logger.debug("segment list read failed: %s", e)
             return []
         return []
 
@@ -792,7 +801,8 @@ class SegmentManager:
             for record in self.metadata_db.read_data(segment=self.metadata_segment, include_internal=True):
                 if record.get("corpus_name") == self.corpus_name:
                     return [s for s in (record.get("segments") or []) if isinstance(s, dict)]
-        except Exception as _:
+        except Exception as e:
+            logger.debug("segment entries read failed: %s", e)
             return []
         return []
 
@@ -878,7 +888,8 @@ class SegmentManager:
                         self.metadata_db.update_data(segment=self.metadata_segment, document=record)
                         CorpusManager.invalidate_info_cache()
                         return True
-            except Exception as _:
+            except Exception as e:
+                logger.debug("segment metadata update failed: %s", e)
                 return False
             return False
 

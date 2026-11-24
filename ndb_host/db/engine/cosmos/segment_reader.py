@@ -183,7 +183,8 @@ def read_payload_at_offset(
     if compressed:
         try:
             payload = zlib.decompress(comp_data)
-        except Exception:
+        except Exception as e:
+            logger.debug("read_payload: zlib failure reads as miss: %s", e)
             return None
     else:
         payload = comp_data
@@ -234,7 +235,8 @@ def scan_segment_payloads(
                     if compressed:
                         try:
                             payload = zlib.decompress(comp_data)
-                        except Exception:
+                        except Exception as e:
+                            logger.debug("scan_segment: zlib skip: %s", e)
                             continue
                     else:
                         payload = comp_data
@@ -243,6 +245,7 @@ def scan_segment_payloads(
                     results.append((offset, payload))
             finally:
                 mm.close()
-    except Exception:
+    except Exception as e:
+        logger.debug("scan_segment_payloads failed for %s, returning partial: %s", seg_path, e)
         return []
     return results

@@ -75,7 +75,8 @@ def write_segment(
                 rec_id = rec_dict.get("_id")
                 if rec_id is not None:
                     bf.add(rec_id)
-            except Exception:
+            except Exception as e:
+                logger.debug("segment_writer: bloom skip for undecodable payload: %s", e)
                 pass
 
     bf_bytes = bf.to_bytes() if bf else b""
@@ -97,7 +98,8 @@ def write_segment(
                 rec_dict = decode_object(rec_payload)
                 rec_id = rec_dict.get("_id")
                 version = rec_dict.get("_version", 0)
-            except Exception:
+            except Exception as e:
+                logger.debug("segment_writer: undecodable payload, no index entry: %s", e)
                 rec_id = None
                 version = 0
 

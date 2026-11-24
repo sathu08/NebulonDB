@@ -261,7 +261,8 @@ class NebulonCosmos:
         for key in list(self.memtable.keys()):
             try:
                 rec = decode_object(self.memtable[key])
-            except Exception:
+            except Exception as e:
+                logger.debug("prune: skipping undecodable memtable entry: %s", e)
                 continue
             rec_id = rec.get("_id")
             if not isinstance(rec_id, int):
@@ -692,7 +693,8 @@ class NebulonCosmos:
             try:
                 rec = decode_object(self.memtable[key])
                 return not rec.get("_deleted", False)
-            except Exception:
+            except Exception as e:
+                logger.debug("exists check: undecodable entry treated as missing: %s", e)
                 return False
         if key in self._deleted or rec_id in self._deleted:
             return False
@@ -849,7 +851,8 @@ class NebulonCosmos:
 
             try:
                 rec_dict = decode_object(payload)
-            except Exception:
+            except Exception as e:
+                logger.debug("get: undecodable payload reads as miss: %s", e)
                 return None
 
             if rec_dict.get("_deleted", False):
@@ -964,7 +967,8 @@ class NebulonCosmos:
                         continue
                     try:
                         rec_dict = decode_object(payload)
-                    except Exception:
+                    except Exception as e:
+                        logger.debug("read_all: skipping undecodable record: %s", e)
                         continue
                     if rec_dict.get("_deleted", False):
                         continue

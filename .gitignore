@@ -50,6 +50,7 @@ Storage/
 # Mac / local additions
 # ===============================
 Storage.backup_*/
+backups/
 .DS_Store
 .vscode/
 .idea/

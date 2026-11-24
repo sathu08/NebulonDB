@@ -163,6 +163,7 @@ def rebuild_index_from_all_segments(
     import zlib
 
     latest_per_id: dict[int, IndexEntry] = {}
+    skipped_records = 0
 
     segment_size_cache.clear()
     bloom_filter_cache.clear()
@@ -198,15 +199,20 @@ def rebuild_index_from_all_segments(
                 if compressed:
                     try:
                         payload = zlib.decompress(comp_data)
-                    except Exception:
+                    except Exception as e:
+                        skipped_records += 1
+                        logger.debug("rebuild_index: zlib skip in %s: %s", fname, e)
                         continue
                 else:
                     payload = comp_data
                 if (zlib.crc32(payload) & 0xFFFFFFFF) != stored_crc:
+                    skipped_records += 1
                     continue
                 try:
                     rec_dict = decode_object(payload)
-                except Exception:
+                except Exception as e:
+                    skipped_records += 1
+                    logger.debug("rebuild_index: decode skip in %s: %s", fname, e)
                     continue
                 rec_id = rec_dict.get("_id")
                 if rec_id is None:
@@ -227,5 +233,5 @@ def rebuild_index_from_all_segments(
         os.fsync(idx_f.fileno())
 
     logger.info(f"[{corpus_name_for(seg_dir)}] Index rebuilt with "
-                f"{len(latest_per_id)} live records")
+                f"{len(latest_per_id)} live records, skipped {skipped_records} bad")
     return latest_per_id

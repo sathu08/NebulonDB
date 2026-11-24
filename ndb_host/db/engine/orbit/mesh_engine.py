@@ -106,7 +106,8 @@ class MeshEngine:
             if not self._store.is_visualization_stale():
                 return False
             return bool(self._store.write_visualization())
-        except Exception:
+        except Exception as e:
+            logger.debug("refresh_visualization skipped: %s", e)
             return False
 
     # ---------- Traversal ----------
