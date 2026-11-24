@@ -46,8 +46,9 @@ dist/
 build/
 *.egg-info
 Storage/
+
 # ===============================
-# Mac / local additions
+# Local additions
 # ===============================
 Storage.backup_*/
 backups/
