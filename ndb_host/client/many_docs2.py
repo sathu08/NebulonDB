@@ -12,8 +12,8 @@ Usage
     python -m client.many_docs2 delete   corpus segment --ids 1,2,3,4,5
     python -m client.many_docs2 delete   corpus segment docs.json --id-field id
 
-Credentials default to the ``NEBULONDB_USER`` / ``NEBULONDB_PASSWORD``
-environment variables (fallback ``sathya`` / ``sathya``).
+Credentials come from the ``NEBULONDB_USER`` / ``NEBULONDB_PASSWORD``
+environment variables (no hard-coded fallback).
 """
 
 from __future__ import annotations
@@ -31,16 +31,25 @@ from .pipeline import BoundedPipeline
 from .schema import ParallelRecord, make_records
 
 BASE_URL = os.environ.get("NEBULONDB_URL", "http://127.0.0.1:6969/api/NebulonDB")
-DEFAULT_USER = os.environ.get("NEBULONDB_USER", "sathya")
-DEFAULT_PASSWORD = os.environ.get("NEBULONDB_PASSWORD", "sathya")
+# F-09: no hard-coded credentials. Set NEBULONDB_USER / NEBULONDB_PASSWORD
+# in the environment; the client refuses to start without them so a
+# default password can never reach a live server.
+DEFAULT_USER = os.environ.get("NEBULONDB_USER")
+DEFAULT_PASSWORD = os.environ.get("NEBULONDB_PASSWORD")
 
 
 class NebulonClient:
     def __init__(self, base_url: str = BASE_URL,
-                 username: str = DEFAULT_USER,
-                 password: str = DEFAULT_PASSWORD,
+                 username: str | None = DEFAULT_USER,
+                 password: str | None = DEFAULT_PASSWORD,
                  timeout: float = 300.0,
                  session: Any | None = None) -> None:
+        if not username or not password:
+            raise ValueError(
+                "NebulonDB credentials missing: set NEBULONDB_USER and "
+                "NEBULONDB_PASSWORD environment variables or pass "
+                "username=/password= explicitly."
+            )
         self.base = base_url.rstrip("/")
         self.auth = (username, password)
         self.timeout = timeout

@@ -12,6 +12,13 @@ import os
 import threading
 import time
 
+try:
+    import bcrypt as _bcrypt
+    _HAS_BCRYPT = True
+except ImportError:
+    _bcrypt = None
+    _HAS_BCRYPT = False
+
 from passlib.context import CryptContext
 
 from utils.models import AuthenticationConfig
@@ -37,6 +44,9 @@ def verify_password(plain_password: str, hashed_password: str) -> bool:
     """
     Verify a plain password against a hashed password.
 
+    L-05: prefers maintained ``bcrypt`` directly; falls back to ``passlib``
+    so hashes created either way stay verifiable during migration.
+
     Args:
         plain_password: Plain text password to verify
         hashed_password: Hashed password from database
@@ -44,6 +54,14 @@ def verify_password(plain_password: str, hashed_password: str) -> bool:
     Returns:
         bool: True if password matches, False otherwise
     """
+    if _HAS_BCRYPT and isinstance(hashed_password, str) and hashed_password.startswith("$2"):
+        try:
+            return _bcrypt.checkpw(
+                plain_password.encode("utf-8"), hashed_password.encode("utf-8")
+            )
+        except Exception as e:
+            logger.error(f"Password verification error: {e}")
+            return False
     try:
         return password_context.verify(plain_password, hashed_password)
     except Exception as e:
@@ -54,6 +72,8 @@ def hash_password(password: str) -> str:
     """
     Hash a plain text password using bcrypt.
 
+    L-05: prefers maintained ``bcrypt`` directly; falls back to ``passlib``.
+
     Args:
         password: Plain text password to hash
 
@@ -63,6 +83,12 @@ def hash_password(password: str) -> str:
     Raises:
         ValueError: If password hashing fails
     """
+    if _HAS_BCRYPT:
+        try:
+            return _bcrypt.hashpw(password.encode("utf-8"), _bcrypt.gensalt()).decode("utf-8")
+        except Exception as e:
+            logger.error(f"Password hashing error: {e}")
+            raise ValueError("Password hashing failed") from e
     try:
         return password_context.hash(password)
     except Exception as e:

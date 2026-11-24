@@ -46,3 +46,12 @@ dist/
 build/
 *.egg-info
 Storage/
+# ===============================
+# Mac / local additions
+# ===============================
+Storage.backup_*/
+.DS_Store
+.vscode/
+.idea/
+.powerloss_state.json
+.powerloss.lock

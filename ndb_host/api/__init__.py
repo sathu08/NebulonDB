@@ -6,6 +6,8 @@ This module handles the FastAPI application setup and configuration.
 
 """
 
+import os
+
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
@@ -62,10 +64,20 @@ def create_app() -> FastAPI:
     )
 
     # === Middleware Setup ===
+    # F-11: same-origin console needs no wildcard. Allow an explicit list
+    # via NEBULONDB_CORS_ORIGINS (comma-separated); credentials stay off
+    # unless an explicit list is configured.
+    _cors_env = os.environ.get("NEBULONDB_CORS_ORIGINS", "").strip()
+    if _cors_env:
+        _origins = [o.strip() for o in _cors_env.split(",") if o.strip()]
+        _credentials = True
+    else:
+        _origins = ["http://127.0.0.1:6969", "http://localhost:6969"]
+        _credentials = False
     app.add_middleware(
         CORSMiddleware,
-        allow_origins=["*"],
-        allow_credentials=True,
+        allow_origins=_origins,
+        allow_credentials=_credentials,
         allow_methods=["*"],
         allow_headers=["*"],
     )

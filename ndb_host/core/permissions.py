@@ -39,8 +39,18 @@ def check_user_permission(current_user: AuthenticationResult, required_role: Use
         UserRole.SYSTEM: 4
     }
 
-    current_user_level = role_hierarchy.get(current_user.role, 0)
-    required_level = role_hierarchy.get(required_role, 0)
+    current_user_level = role_hierarchy.get(current_user.role)
+    required_level = role_hierarchy.get(required_role)
+
+    # Deny by default: unknown roles (or missing role) never pass.
+    if current_user_level is None or required_level is None:
+        logger.warning(
+            "Permission denied (unknown role): user=%s role=%s required=%s",
+            getattr(current_user, "username", "?"),
+            getattr(getattr(current_user, "role", None), "name", current_user.role),
+            getattr(required_role, "name", required_role),
+        )
+        return False
 
     has_permission = current_user_level >= required_level
 

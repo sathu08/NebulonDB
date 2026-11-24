@@ -11,10 +11,23 @@ import requests
 import pytest
 
 BASE_URL = os.environ.get("NEBULONDB_URL", "http://127.0.0.1:6969/api/NebulonDB")
-USERNAME = os.environ.get("NEBULONDB_USERNAME", "sathya")
-PASSWORD = os.environ.get("NEBULONDB_PASSWORD", "sathya")
-AUTH = (USERNAME, PASSWORD)
+# F-09: no hard-coded test credentials. Export NEBULONDB_USERNAME and
+# NEBULONDB_PASSWORD before running the live suite. Import stays safe so
+# isolated tests (which don't need AUTH) can still run without env.
+USERNAME = os.environ.get("NEBULONDB_USERNAME")
+PASSWORD = os.environ.get("NEBULONDB_PASSWORD")
+AUTH = (USERNAME, PASSWORD) if USERNAME and PASSWORD else None
 TIMEOUT = 300
+
+
+def require_auth() -> tuple:
+    """Fail fast with a clear message when live creds are missing."""
+    if AUTH is None:
+        raise pytest.UsageError(
+            "Live tests need NEBULONDB_USERNAME and NEBULONDB_PASSWORD "
+            "environment variables (no default password)."
+        )
+    return AUTH
 
 
 def unique_suffix() -> str:

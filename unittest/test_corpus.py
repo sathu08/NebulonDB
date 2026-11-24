@@ -224,24 +224,27 @@ def test_large_bulk_create_and_delete_all(client):
 
 
 def test_large_create_long_corpus_name(client):
+    # F-04: names are allow-listed to 64 chars; overlong names are rejected.
     name = "c_" + "a" * 80 + unique_suffix()
-    body = create_corpus(client, name, "cosmos")
-    assert body["success"] is True
-    delete_corpus(client, name)
+    r = client.post(f"{BASE_URL}/corpus/create_corpus", auth=AUTH, timeout=30,
+                    json={"corpus_name": name, "ndb_type": "cosmos"})
+    assert r.status_code == 422
 
 
 def test_large_create_unicode_corpus_name(client):
+    # F-04: non-ASCII names are rejected by the allow-list.
     name = f"c_unicodé_{unique_suffix()}"
-    body = create_corpus(client, name, "cosmos")
-    assert body["success"] is True
-    delete_corpus(client, name)
+    r = client.post(f"{BASE_URL}/corpus/create_corpus", auth=AUTH, timeout=30,
+                    json={"corpus_name": name, "ndb_type": "cosmos"})
+    assert r.status_code == 422
 
 
 def test_large_create_name_with_special_chars(client):
+    # F-04: only [A-Za-z0-9_-] names are accepted.
     name = f"c_special_{unique_suffix()}_@#-"
-    body = create_corpus(client, name, "cosmos")
-    assert body["success"] is True
-    delete_corpus(client, name)
+    r = client.post(f"{BASE_URL}/corpus/create_corpus", auth=AUTH, timeout=30,
+                    json={"corpus_name": name, "ndb_type": "cosmos"})
+    assert r.status_code == 422
 
 
 def test_large_full_lifecycle(client):

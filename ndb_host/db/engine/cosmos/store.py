@@ -911,7 +911,7 @@ class NebulonCosmos:
             for key in memtable:
                 mem_ids.add(key[1] if isinstance(key, tuple) else key)
 
-            for fname in self.manifest:
+            for fname in list(self.manifest):
                 seg_path = self.seg_dir / fname
                 try:
                     seg_id = int(fname.split("_")[1].split(".")[0])
@@ -924,16 +924,42 @@ class NebulonCosmos:
                 compressed = info.get("compressed", self.compress_segments)
                 bf = info.get("bf")
                 bf_size = len(bf.to_bytes()) if bf else 0
-                data_offset = self._get_segment_data_offset(seg_path, bf_size)
+                # F-10: a manifest entry whose file is missing must not fail
+                # the whole read. Skip it (and count it) so healthy segments
+                # still return data. Use the checker script to reconcile.
+                try:
+                    data_offset = self._get_segment_data_offset(seg_path, bf_size)
+                except FileNotFoundError:
+                    from utils.logger import NebulonDBLogger as _L
+                    _L().get_logger().warning(
+                        "read_all: manifest entry missing file, skipping: %s", seg_path)
+                    continue
+                except OSError:
+                    from utils.logger import NebulonDBLogger as _L
+                    _L().get_logger().warning(
+                        "read_all: I/O error probing segment, skipping: %s", seg_path)
+                    continue
 
-                for offset, payload in _reader_mod.scan_segment_payloads(
-                    seg_path=seg_path,
-                    data_offset=data_offset,
-                    count=count,
-                    compressed=compressed,
-                    record_header_size=self.record_header_size,
-                    record_header_format=self.record_header_format,
-                ):
+                try:
+                    payloads = _reader_mod.scan_segment_payloads(
+                        seg_path=seg_path,
+                        data_offset=data_offset,
+                        count=count,
+                        compressed=compressed,
+                        record_header_size=self.record_header_size,
+                        record_header_format=self.record_header_format,
+                    )
+                except FileNotFoundError:
+                    from utils.logger import NebulonDBLogger as _L
+                    _L().get_logger().warning(
+                        "read_all: segment disappeared mid-read, skipping: %s", seg_path)
+                    continue
+                except OSError:
+                    from utils.logger import NebulonDBLogger as _L
+                    _L().get_logger().warning(
+                        "read_all: I/O error scanning segment, skipping: %s", seg_path)
+                    continue
+                for offset, payload in payloads:
                     if (seg_id, offset) not in live_locations:
                         continue
                     try:

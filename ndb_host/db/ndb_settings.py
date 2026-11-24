@@ -9,6 +9,9 @@ This module handles configuration settings for the NDB API.
 import os
 import shutil
 import base64
+import contextlib
+import sys
+import tempfile
 
 import json
 import zipfile
@@ -22,6 +25,13 @@ from configparser import ConfigParser
 from cryptography.fernet import Fernet
 
 from platformdirs import user_cache_dir
+
+# F-15: unify dual import styles (``db.ndb_settings`` vs
+# ``ndb_host.db.ndb_settings``) so the config singleton is truly shared.
+_sys_mod = sys.modules.get(__name__)
+if _sys_mod is not None:
+    sys.modules.setdefault("db.ndb_settings", _sys_mod)
+    sys.modules.setdefault("ndb_host.db.ndb_settings", _sys_mod)
 
 from utils.constants import AuthenticationConfig, NDBMeta
 from utils.logger import NebulonDBLogger
@@ -45,7 +55,28 @@ class NDBConfig:
     supports environment overrides, safely resolves variables using
     string.Template and os.path.expandvars, and enforces secure permissions
     on sensitive directories.
+
+    F-15: singleton per resolved config path so runtime reloads are visible
+    to every module. Use ``NDBConfig.shared()`` or the existing constructor;
+    call ``reload()`` after a dashboard PUT instead of rebinding names.
     """
+
+    _instances: dict[str, "NDBConfig"] = {}
+
+    def __new__(cls, config_path: str | Path = None):
+        # Resolve the key without touching the filesystem beyond env/cwd.
+        if config_path is None:
+            neb_home = os.environ.get('NEBULONDB_HOME', os.getcwd())
+            key = str((Path(neb_home) / "nebulondb.cfg").resolve())
+        else:
+            key = str(Path(config_path).resolve())
+        existing = cls._instances.get(key)
+        if existing is not None:
+            return existing
+        inst = super().__new__(cls)
+        cls._instances[key] = inst
+        inst._ndb_initialized = False
+        return inst
 
     def __init__(self, config_path: str | Path = None):
         """
@@ -63,7 +94,15 @@ class NDBConfig:
 
         self.config_path = config_path.resolve()
         if not self.config_path.exists():
+            # Drop the cached singleton entry so a later retry can succeed.
+            type(self)._instances.pop(str(self.config_path), None)
             raise FileNotFoundError(f"Config file not found: {self.config_path}")
+
+        # F-15: same-path constructions share one object; re-init refreshes it.
+        if getattr(self, "_ndb_initialized", False) and getattr(self, "_config", None) is not None:
+            # Refresh in place so every holder sees the reload.
+            self.reload()
+            return
 
         try:
             self._config = ConfigParser()
@@ -82,6 +121,35 @@ class NDBConfig:
         self._load_server()
         self._load_powerloss()
         self._load_llm()
+        self._check_secure_permissions()
+        self._ndb_initialized = True
+
+    @classmethod
+    def shared(cls, config_path: str | Path = None) -> "NDBConfig":
+        """Return the shared instance (same as calling the constructor)."""
+        return cls(config_path)
+
+    def reload(self) -> "NDBConfig":
+        """Re-read the config file into this shared instance (F-15)."""
+        try:
+            cfg = ConfigParser()
+            cfg.read(self.config_path, encoding=AuthenticationConfig.ENCODING)
+        except Exception as e:
+            raise RuntimeError(f"Failed to load config file '{self.config_path}': {e}") from e
+        self._config = cfg
+        self._validate_sections()
+        self._apply_env_override()
+        self._load_environment()
+        self._load_paths()
+        self._load_logging()
+        self._load_search_config()
+        self._load_rank_config()
+        self._load_segments()
+        self._load_server()
+        self._load_powerloss()
+        self._load_llm()
+        self._check_secure_permissions()
+        return self
 
     # ------------------------------
     #  Private Utility Methods
@@ -94,9 +162,58 @@ class NDBConfig:
         return Path(resolved).resolve()
 
     def _write(self):
-        """Persist current config state back to disk."""
-        with self.config_path.open('w', encoding=AuthenticationConfig.ENCODING) as f:
-            self._config.write(f)
+        """Persist current config state back to disk (F-13: atomic + 600)."""
+        tmp = None
+        try:
+            fd, tmp = tempfile.mkstemp(
+                dir=str(self.config_path.parent),
+                prefix=self.config_path.name + ".",
+                suffix=".tmp",
+            )
+            with os.fdopen(fd, "w", encoding=AuthenticationConfig.ENCODING) as f:
+                self._config.write(f)
+                f.flush()
+                try:
+                    os.fsync(f.fileno())
+                except OSError:
+                    logger.warning("Config fsync failed for %s", self.config_path)
+            os.chmod(tmp, 0o600)
+            os.replace(tmp, self.config_path)
+        finally:
+            if tmp is not None:
+                with contextlib.suppress(OSError):
+                    if Path(tmp).exists() and Path(tmp).resolve() != self.config_path:
+                        os.remove(tmp)
+
+    def _check_secure_permissions(self) -> None:
+        """F-05: warn when the config or secrets dir is group/other-accessible.
+
+        The config holds NEBULONDB_MASTER_KEY in plaintext; Storage/Secrets
+        holds the encrypted user store. Both should be owner-only (600/700).
+        This check only warns — use chmod 600 / 700 to fix.
+        """
+        try:
+            mode = self.config_path.stat().st_mode
+            if mode & 0o077:
+                logger.warning(
+                    "Insecure permissions on %s (%o): run 'chmod 600 %s'. "
+                    "The file contains NEBULONDB_MASTER_KEY in plaintext.",
+                    self.config_path, mode & 0o777, self.config_path,
+                )
+        except OSError:
+            pass
+        try:
+            secrets_path = getattr(self, "NEBULONDB_ACCOUNTHUB_CORPUS_PATH", None)
+            if secrets_path is not None and Path(secrets_path).exists():
+                smode = Path(secrets_path).stat().st_mode
+                if smode & 0o077:
+                    logger.warning(
+                        "Insecure permissions on secrets dir %s (%o): "
+                        "run 'chmod 700 %s'.",
+                        secrets_path, smode & 0o777, secrets_path,
+                    )
+        except OSError:
+            pass
 
     def _validate_sections(self):
             required_sections = ['paths','vector', 'hnsw', 'server', 'environment']
@@ -138,7 +255,19 @@ class NDBConfig:
 
     def _load_paths(self):
         paths = dict(self._config['paths'])
-        self.NEBULONDB_HOME = Path(self._resolve_path(paths, self._config.get('paths', 'NEBULONDB_HOME')))
+        configured = Path(self._resolve_path(paths, self._config.get('paths', 'NEBULONDB_HOME')))
+        # F-14: hard-coded Linux homes (e.g. /home/sathya/...) do not exist on
+        # other machines. If the configured home is missing and no explicit
+        # NEBULONDB_HOME env is set, fall back to the config file's directory
+        # instead of silently using a wrong cwd-relative location.
+        if not configured.exists() and not os.environ.get('NEBULONDB_HOME'):
+            logger.warning(
+                "Configured NEBULONDB_HOME %s does not exist; falling back to %s. "
+                "Set NEBULONDB_HOME explicitly.",
+                configured, self.config_path.parent,
+            )
+            configured = self.config_path.parent
+        self.NEBULONDB_HOME = configured
 
         self.NEBULONDB_STORAGE_PATH = self.NEBULONDB_HOME / NDBMeta.Paths.STORAGE_DIR
 
@@ -159,9 +288,9 @@ class NDBConfig:
 
         cache_dir = Path(self._config.get('llm', 'NEBULONDB_MODEL_CACHE_DIR', fallback=''))
         if not cache_dir or not cache_dir.exists():
+            # F-13/F-14: use the platform cache dir in memory without
+            # rewriting nebulondb.cfg on every start on a new machine.
             cache_dir = str(Path(user_cache_dir(self.APP_NAME)))
-            self._config.set('llm', 'NEBULONDB_MODEL_CACHE_DIR', cache_dir)
-            self._write()
 
         self.NEBULONDB_MODEL_CACHE_DIR = cache_dir
         self.NEBULONDB_EMBEDDING_MODEL = self._config.get('llm', 'NEBULONDB_EMBEDDING_MODEL')

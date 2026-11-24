@@ -113,8 +113,15 @@ def recover_wal(
     if not wal_file.exists() or wal_file.stat().st_size == 0:
         return
 
+    # L-06: copy undecodable/corrupt entries aside instead of only warning.
+    bad_path = wal_file.with_name(wal_file.name + ".bad")
+    skipped_crc = 0
+    skipped_decode = 0
+    skipped_truncated = 0
+
     with wal_file.open("rb") as f:
         while True:
+            entry_start = f.tell()
             crc_bytes = f.read(4)
             if not crc_bytes:
                 break
@@ -124,21 +131,45 @@ def recover_wal(
             len_bytes = f.read(4)
             if len(len_bytes) != 4:
                 logger.warning("Truncated WAL entry (length missing)")
+                skipped_truncated += 1
                 break
 
             length = struct.unpack("<I", len_bytes)[0]
+            # A corrupt length field cannot be resynchronized; stop instead
+            # of consuming the rest of the file as payload.
+            if length > 16 * 1024 * 1024:
+                logger.warning("WAL entry length %d implausible, stopping recovery", length)
+                skipped_truncated += 1
+                break
             rec_data = f.read(length)
             if len(rec_data) != length:
                 logger.warning("Truncated WAL entry (payload missing)")
+                skipped_truncated += 1
                 break
 
             if (zlib.crc32(rec_data) & 0xFFFFFFFF) != stored_crc:
+                skipped_crc += 1
+                try:
+                    with bad_path.open("ab") as bf:
+                        bf.write(struct.pack("<I", stored_crc))
+                        bf.write(struct.pack("<I", length))
+                        bf.write(rec_data)
+                except OSError:
+                    pass
                 logger.warning("WAL entry corrupted (CRC mismatch), skipping")
                 continue
 
             try:
                 rec_dict = decode_object(rec_data)
             except Exception:
+                skipped_decode += 1
+                try:
+                    with bad_path.open("ab") as bf:
+                        bf.write(struct.pack("<I", stored_crc))
+                        bf.write(struct.pack("<I", length))
+                        bf.write(rec_data)
+                except OSError:
+                    pass
                 logger.warning("WAL entry decode failed, skipping")
                 continue
 
@@ -180,6 +211,12 @@ def recover_wal(
             f"(wal_count={len(memtable)} – no flush)"
         )
         save_meta_fn()
+
+    if skipped_crc or skipped_decode or skipped_truncated:
+        logger.warning(
+            "WAL recovery skipped entries: crc=%d decode=%d truncated=%d (copied to %s)",
+            skipped_crc, skipped_decode, skipped_truncated, bad_path,
+        )
 
     logger.info(
         f"WAL recovery complete. "

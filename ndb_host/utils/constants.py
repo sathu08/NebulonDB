@@ -107,3 +107,7 @@ class BatchConfig:
 
 class ConfigUpdate(BaseModel):
     config: dict[str, dict[str, Any]]
+
+# Allow-list for corpus / segment names (defense against path traversal).
+# Used by pydantic models (utils.models) and by index_manager._safe_corpus_path.
+CORPUS_NAME_PATTERN = r"^[A-Za-z0-9_-]{1,64}$"

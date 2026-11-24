@@ -6,7 +6,7 @@ Endpoint: GET /dashboard/config
 """
 
 import pytest
-from conftest import BASE_URL
+from conftest import BASE_URL, AUTH
 
 pytestmark = [pytest.mark.system, pytest.mark.live]
 
@@ -20,7 +20,7 @@ def client():
 
 
 def test_config_returns_host_port_url(client):
-    r = client.get(f"{BASE_URL}/dashboard/config", timeout=30)
+    r = client.get(f"{BASE_URL}/dashboard/config", auth=AUTH, timeout=30)
     body = r.json()
     assert r.status_code == 200
     assert "server" in body
@@ -31,16 +31,17 @@ def test_config_returns_host_port_url(client):
 
 
 def test_config_works_without_auth(client):
+    # F-12: config read requires authentication.
     r = client.get(f"{BASE_URL}/dashboard/config", timeout=30)
-    assert r.status_code == 200
+    assert r.status_code == 401
 
 
 def test_config_url_consistent_with_host_port(client):
-    body = client.get(f"{BASE_URL}/dashboard/config", timeout=30).json()
+    body = client.get(f"{BASE_URL}/dashboard/config", auth=AUTH, timeout=30).json()
     assert body["server"]["url"] == f"http://{body['server']['host']}:{body['server']['port']}"
 
 
 def test_config_host_is_nonempty(client):
-    body = client.get(f"{BASE_URL}/dashboard/config", timeout=30).json()
+    body = client.get(f"{BASE_URL}/dashboard/config", auth=AUTH, timeout=30).json()
     assert isinstance(body["server"]["host"], str)
     assert body["server"]["host"].strip() != ""

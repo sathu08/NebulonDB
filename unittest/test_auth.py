@@ -62,7 +62,8 @@ def test_register_duplicate_user(client):
     r = client.post(f"{BASE_URL}/auth/register", auth=AUTH, timeout=30,
                     json={"username": "sathya", "password": "testpass123", "user_role": "user"})
     body = r.json()
-    assert r.status_code == 201
+    # L-01: duplicates report 409 (was 201 before the fix).
+    assert r.status_code == 409
     assert body["success"] is False
     assert "already exists" in body["message"].lower()
 

@@ -13,6 +13,8 @@ Responsibilities
 
 import threading
 import contextlib
+import shutil
+import time
 import zlib
 import struct
 
@@ -108,6 +110,47 @@ def remove_segments_and_rebuild(
     rebuild_index_fn()
 
 
+def _quarantine_segments(
+    fnames: list[str],
+    seg_dir: Path,
+    manifest: list,
+    segment_cache: dict,
+    segment_size_cache: dict[int, int],
+    bloom_filter_cache: dict,
+    segment_info: dict[int, dict],
+    save_manifest_and_meta_fn,
+    rewrite_index_fn,
+    reason: str,
+) -> None:
+    """F-08: move suspect segments aside instead of deleting them.
+
+    Removes entries from the manifest/index caches and moves the files to
+    ``<seg_dir>/../quarantine/<timestamp>/`` so no data is lost on a
+    systematic decode failure.
+    """
+    stamp = time.strftime("%Y%m%d_%H%M%S")
+    qdir = seg_dir.parent / "quarantine" / stamp
+    qdir.mkdir(parents=True, exist_ok=True)
+    for fname in fnames:
+        src = seg_dir / fname
+        try:
+            if src.exists():
+                shutil.move(str(src), str(qdir / fname))
+        except OSError:
+            logger.exception("[%s] quarantine move failed for %s", corpus_name_for(seg_dir), fname)
+    remove_segments_and_rebuild(
+        fnames, seg_dir, manifest, segment_cache,
+        segment_size_cache, bloom_filter_cache, segment_info,
+        save_manifest_and_meta_fn, rewrite_index_fn,
+    )
+    # remove_segments_and_rebuild already unlinked (missing → suppressed);
+    # the files now live under qdir. Remove them from manifest only.
+    logger.warning(
+        "[%s] quarantined %d segments to %s (%s)",
+        corpus_name_for(seg_dir), len(fnames), qdir, reason,
+    )
+
+
 # ==========================================================
 #  Main compaction routine
 # ==========================================================
@@ -156,44 +199,79 @@ def compact(
     # files can never resurrect masked versions living in other segments.
     latest_source: dict[tuple[str, int], tuple[str, int, int]] = {}
     tombstoned: dict[tuple[str, int], tuple[str, int, int]] = {}
+    missing: list[str] = []
+    unreadable: list[str] = []
+    skipped_records = 0
     for fname in sorted(
         segments_to_merge,
         key=lambda x: int(x.split('_')[1].split('.')[0]),
         reverse=True,
     ):
         seg_path = seg_dir / fname
-        valid, count, bf_data, compressed = validate_segment_fn(seg_path)
-        if not valid:
+        try:
+            valid, count, bf_data, compressed = validate_segment_fn(seg_path)
+        except FileNotFoundError:
+            # F-10 style missing file: converge by dropping the manifest
+            # entry (file already gone), never crash the merge.
+            logger.warning("[%s] compaction: segment file missing: %s",
+                           corpus_name_for(seg_dir), fname)
+            missing.append(fname)
             continue
-        data_offset = get_segment_data_offset_fn(
-            seg_path, len(bf_data) if bf_data else 0
-        )
+        except OSError:
+            logger.warning("[%s] compaction: I/O error validating %s",
+                           corpus_name_for(seg_dir), fname)
+            unreadable.append(fname)
+            continue
+        if not valid:
+            # validate_segment swallows FileNotFoundError internally, so
+            # distinguish a vanished file (converge) from corruption/I/O
+            # (abort without deleting anything).
+            if not seg_path.exists():
+                missing.append(fname)
+            else:
+                unreadable.append(fname)
+            continue
+        try:
+            data_offset = get_segment_data_offset_fn(
+                seg_path, len(bf_data) if bf_data else 0
+            )
+        except (FileNotFoundError, OSError):
+            logger.warning("[%s] compaction skipped: cannot read %s",
+                           corpus_name_for(seg_dir), fname)
+            skipped_invalid.append(fname)
+            continue
         with seg_path.open("rb") as f:
             f.seek(data_offset)
             for _ in range(count):
                 offset = f.tell()
                 header_data = f.read(record_header_size)
                 if len(header_data) != record_header_size:
+                    skipped_records += 1
                     break
                 stored_crc, comp_len, _ = struct.unpack(record_header_format, header_data)
                 comp_data = f.read(comp_len)
                 if len(comp_data) != comp_len:
+                    skipped_records += 1
                     break
                 if compressed:
                     try:
                         payload = zlib.decompress(comp_data)
                     except zlib.error:
+                        skipped_records += 1
                         continue
                 else:
                     payload = comp_data
                 if (zlib.crc32(payload) & 0xFFFFFFFF) != stored_crc:
+                    skipped_records += 1
                     continue
                 try:
                     rec_dict = decode_object(payload)
                 except Exception:
+                    skipped_records += 1
                     continue
                 rec_id = rec_dict.get("_id")
                 if rec_id is None:
+                    skipped_records += 1
                     continue
                 segment = rec_dict.get("_segment") or "_main"
                 skey = (segment, rec_id)
@@ -205,22 +283,46 @@ def compact(
                 else:
                     latest_source[skey] = (fname, offset, version)
 
-    if not latest_source and not tombstoned:
-        # Nothing decodable at all (corrupt or already-removed files): drop
-        # the dead entries so the trigger condition clears and the daemon
-        # converges instead of spinning on the same files every interval.
-        logger.info("[%s] No live or tombstoned records found, removing %d dead segments",
-                    corpus_name_for(seg_dir), len(segments_to_merge))
-        for fname in segments_to_merge:
-            if fname in manifest:
-                manifest.remove(fname)
-        cleanup_segments(
-            segments_to_merge, seg_dir,
-            segment_cache, segment_size_cache, bloom_filter_cache, segment_info,
-            delete_files=True,
+    # F-08: never delete on a read/validation error (transient I/O or
+    # corruption). Abort this cycle; the daemon retries on the next tick.
+    # Vanished files are the exception: the data is already gone, so drop
+    # the manifest entries (converge) instead of spinning forever.
+    if unreadable:
+        logger.warning(
+            "[%s] compaction aborted: %d segments unreadable (%s); "
+            "deleted 0 files, skipped %d bad records",
+            corpus_name_for(seg_dir), len(unreadable),
+            ", ".join(unreadable[:5]), skipped_records,
         )
-        save_manifest_and_meta_fn()
-        rewrite_index_fn()
+        return
+
+    if missing:
+        logger.warning(
+            "[%s] compaction: %d segment files missing, dropping manifest entries: %s",
+            corpus_name_for(seg_dir), len(missing), ", ".join(missing[:5]),
+        )
+        remove_segments_and_rebuild(
+            missing, seg_dir, manifest, segment_cache,
+            segment_size_cache, bloom_filter_cache, segment_info,
+            save_manifest_and_meta_fn, rewrite_index_fn,
+        )
+        segments_to_merge = [f for f in segments_to_merge if f not in missing]
+        if len(segments_to_merge) < 2:
+            return
+
+    if not latest_source and not tombstoned:
+        # Nothing decodable at all (all records failed CRC/decode): quarantine
+        # instead of deleting so a systematic format failure cannot wipe data.
+        # The manifest entry is removed but files are preserved under quarantine/.
+        logger.warning("[%s] No live or tombstoned records found, quarantining %d segments "
+                       "(skipped %d bad records) instead of deleting",
+                       corpus_name_for(seg_dir), len(segments_to_merge), skipped_records)
+        _quarantine_segments(
+            segments_to_merge, seg_dir, manifest,
+            segment_cache, segment_size_cache, bloom_filter_cache, segment_info,
+            save_manifest_and_meta_fn, rewrite_index_fn,
+            reason=f"no decodable records, skipped={skipped_records}",
+        )
         return
     if not latest_source:
         logger.info("[%s] No live records found, carrying %d tombstones forward",
@@ -260,7 +362,8 @@ def compact(
 
     logger.info(
         f"[{corpus_name_for(seg_dir)}] Compaction merged {len(segments_to_merge)} segments, "
-        f"retained {len(sources)} records ({len(latest_source)} live)"
+        f"retained {len(sources)} records ({len(latest_source)} live, "
+        f"skipped {skipped_records} bad)"
     )
 
 

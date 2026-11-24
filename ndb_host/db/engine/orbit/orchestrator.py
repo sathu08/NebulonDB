@@ -385,13 +385,17 @@ class NebulonOrbit:
                     self._wal_bytes_since_fsync = 0
 
     def _wal_fsync(self) -> None:
-        """Persist any pending group-committed WAL bytes to disk."""
+        """Persist any pending group-committed WAL bytes to disk (F-17).
+
+        A failed fsync is no longer recorded as durable: the pending-byte
+        counter is kept and the error propagates so the caller can fail
+        the write instead of acknowledging it.
+        """
         with self._wal_lock:
             if self._wal_bytes_since_fsync <= 0:
                 return
-            with contextlib.suppress(OSError):
-                with open(self.nova_wal_path, "a") as f:
-                    os.fsync(f.fileno())
+            with open(self.nova_wal_path, "a") as f:
+                os.fsync(f.fileno())
             self._wal_bytes_since_fsync = 0
 
     def _wal_clear(self) -> None:

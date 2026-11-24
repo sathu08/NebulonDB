@@ -59,7 +59,16 @@ def validate_segment(
                 return False, 0, None, False
             bf_data = f.read(bf_size) if bf_size > 0 else None
             return True, count, bf_data, bool(compressed)
-    except Exception:
+    except FileNotFoundError:
+        # F-10/F-19: missing file is expected during races; debug only.
+        logger.debug("validate_segment: missing file %s", seg_path)
+        return False, 0, None, False
+    except OSError as e:
+        # F-19: I/O errors are distinct from corruption; logged, not silent.
+        logger.warning("validate_segment: I/O error on %s: %s", seg_path, e)
+        return False, 0, None, False
+    except Exception as e:
+        logger.warning("validate_segment: invalid header on %s: %s", seg_path, e)
         return False, 0, None, False
 
 

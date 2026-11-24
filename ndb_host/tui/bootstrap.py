@@ -265,18 +265,39 @@ class NebulonInitializer:
 
         try:
             system_password = generate_password()
-            service_create_user(
+            sys_result = service_create_user(
                 username=NDBMeta.User.NEBULONDB_USER,
                 password=system_password,
                 user_role=UserRole.SYSTEM,
             )
-            service_create_user(username=username, password=password, user_role=user_role)
-            logger.info(
-                f"Default users created successfully. System user password: {system_password} "
-                "Please store this password securely."
-            )
+            # F-07: never log the generated password. Log only the outcome.
+            # NOTE: if the SYSTEM user already exists the generated password
+            # was NOT set — the old password (if any) is unchanged.
+            if sys_result.get("success"):
+                logger.info(
+                    "SYSTEM user '%s' created. A generated password was set "
+                    "at creation time — store it securely now; it will not "
+                    "be shown again.",
+                    NDBMeta.User.NEBULONDB_USER,
+                )
+                # Operator must capture the password via a secure channel.
+                # It is intentionally NOT written to logs.
+            else:
+                logger.info(
+                    "SYSTEM user bootstrap skipped: %s",
+                    sys_result.get("message", "already exists or failed"),
+                )
+            user_result = service_create_user(username=username, password=password, user_role=user_role)
+            if user_result.get("success"):
+                logger.info("Default user '%s' created successfully.", username)
+            else:
+                logger.info(
+                    "Default user bootstrap skipped for '%s': %s",
+                    username, user_result.get("message", "already exists or failed"),
+                )
 
         except Exception as e:
+            # F-06: never delete the user store on failure. The store may
+            # pre-date this run; removing it would delete every account.
             logger.exception(f"Failed to create user: {e}")
-            shutil.rmtree(secrets_dir, ignore_errors=True)
             sys.exit(1)

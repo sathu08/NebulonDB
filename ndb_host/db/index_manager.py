@@ -9,6 +9,7 @@ It provides endpoints for index creation, listing, and deletion.
 
 import shutil
 import time
+import re
 import importlib.util
 import numpy as np
 import polars as pl
@@ -19,7 +20,7 @@ from collections.abc import Sequence
 
 from db.ndb_settings import NDBConfig
 from core.model_hub import SemanticEmbeddingModel
-from utils.constants import ColumnPick, NDBMeta, normalize_doc_type, normalize_lang
+from utils.constants import ColumnPick, NDBMeta, normalize_doc_type, normalize_lang, CORPUS_NAME_PATTERN
 
 from db.engine import NebulonCosmos, NebulonOrbit, RankConfig, WalDurabilityError
 
@@ -423,6 +424,21 @@ class CorpusManager:
         if errors:
             raise FileNotFoundError(" | ".join(errors))
 
+    def _safe_corpus_path(self, corpus_name: str) -> Path:
+        """Resolve a corpus name to a path guaranteed inside storage root.
+
+        Defense-in-depth for F-04: pydantic models already allow-list names,
+        but service-level callers must never trust the name. Raises
+        ValueError on traversal / invalid names.
+        """
+        if not isinstance(corpus_name, str) or not re.match(CORPUS_NAME_PATTERN, corpus_name):
+            raise ValueError(f"Invalid corpus name: {corpus_name!r}")
+        base = self.storage_path.resolve()
+        candidate = (base / corpus_name).resolve()
+        if candidate.parent != base:
+            raise ValueError(f"Corpus name escapes storage root: {corpus_name!r}")
+        return candidate
+
     @staticmethod
     def generate_corpus_metadata(
         corpus_name: str,
@@ -555,7 +571,7 @@ class CorpusManager:
             status (str): Status of the corpus (default: 'active').
         """
 
-        corpus_path = self.storage_path / corpus_name
+        corpus_path = self._safe_corpus_path(corpus_name)
 
         if ndb_type == NDBMeta.Type.ORBIT:
             # Corpus creation only registers the corpus + creates the directory.
@@ -582,7 +598,7 @@ class CorpusManager:
         Args:
             corpus_name (str): Name of the corpus to Delete
         """
-        corpus_path = self.storage_path / corpus_name
+        corpus_path = self._safe_corpus_path(corpus_name)
         if corpus_path.exists():
             shutil.rmtree(corpus_path)
 

@@ -9,7 +9,7 @@ from pydantic import BaseModel, Field, field_validator
 
 from db.ndb_settings import NDBConfig
 from utils.logger import NebulonDBLogger
-from utils.constants import AuthenticationConfig, NDBMeta, UserRole
+from utils.constants import AuthenticationConfig, NDBMeta, UserRole, CORPUS_NAME_PATTERN
 
 
 # ==========================================================
@@ -52,7 +52,7 @@ class DeleteUserRequest(BaseModel):
     username: str = Field(..., min_length=3, max_length=50)
 
 class CorpusQueryRequest(BaseModel):
-    corpus_name: str = Field(..., min_length=1)
+    corpus_name: str = Field(..., min_length=1, max_length=64, pattern=CORPUS_NAME_PATTERN)
     ndb_type: str = NDBMeta.Type.COSMOS
 
 class ParallelRecord(BaseModel):
@@ -70,8 +70,8 @@ class ParallelRecord(BaseModel):
 
 
 class SegmentQueryRequest(BaseModel):
-    corpus_name: str = Field(..., min_length=1)
-    segment_name: str = Field(..., min_length=1)
+    corpus_name: str = Field(..., min_length=1, max_length=64, pattern=CORPUS_NAME_PATTERN)
+    segment_name: str = Field(..., min_length=1, max_length=64, pattern=CORPUS_NAME_PATTERN)
     ndb_type: str = NDBMeta.Type.ORBIT
     limit: int | None = None
     segment_dataset: dict[str, list[Any]] | list[dict[str, Any]] | None = None

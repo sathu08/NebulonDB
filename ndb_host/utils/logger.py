@@ -111,17 +111,25 @@ class DatedTimedRotatingFileHandler(TimedRotatingFileHandler):
         self.rolloverAt = self.computeRollover(int(time.time()))
 
     def _cleanup_old(self):
-        """Delete date-stamped files older than backup_count."""
-        template = self.filename_template
-        glob_pattern = (
-            template.replace("%Y", "????")
-            .replace("%m", "??")
-            .replace("%d", "??")
-        )
-        files = sorted(self.log_dir.glob(glob_pattern), key=lambda p: p.name)
+        """Delete log files beyond backup_count (F-16).
+
+        Matches every ``nebulondb_*.log`` variant (dated ``%Y-%m-%d``,
+        compact ``%Y%m%d``, restart logs) instead of only the exact
+        template, keeps the newest ``backupCount`` by mtime, and never
+        deletes the file currently being written.
+        """
+        try:
+            current = Path(self.baseFilename).name
+        except Exception:
+            current = ""
+        try:
+            files = [p for p in self.log_dir.glob("nebulondb_*.log") if p.name != current]
+        except OSError:
+            return
         if len(files) <= self.backupCount:
             return
-        for old in files[:-self.backupCount]:
+        files.sort(key=lambda p: (p.stat().st_mtime, p.name) if p.exists() else (0, p.name))
+        for old in files[:len(files) - self.backupCount]:
             with contextlib.suppress(OSError):
                 old.unlink()
 
@@ -199,6 +207,14 @@ class NebulonDBLogger:
             retention_days=retention_days,
             auto_delete=auto_delete,
         )
+
+        # F-16: enforce retention at startup, not only at midnight rollover
+        # while the server happens to be running.
+        if auto_delete:
+            try:
+                handler._cleanup_old()
+            except Exception:
+                pass
 
         if handler not in self._logger.handlers:
             self._logger.addHandler(handler)

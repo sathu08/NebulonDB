@@ -7,12 +7,29 @@ It provides endpoints for viewing and updating NebulonDB
 configuration.
 """
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import FileResponse, HTMLResponse
 
+from core.permissions import check_user_permission
+from services.user_service import get_current_user
 from utils.logger import NebulonDBLogger
+from utils.models import AuthenticationResult, UserRole
 from utils.constants import ConfigUpdate
 from ndb_host.db.ndb_settings import NDBConfig
+
+# F-01: only these keys may be changed at runtime. Everything else
+# ([environment] master key, [paths] home, [powerloss], [server] host/port,
+# [llm] cache dir) requires an operator editing the file + restart.
+ALLOWED_CONFIG_WRITES: dict[str, set[str]] = {
+    "segments": {
+        "FLUSH_RECORD_THRESHOLD",
+        "FLUSH_INTERVAL",
+        "COMPACTION_INTERVAL",
+        "MAX_SEGMENTS_BEFORE_COMPACT",
+    },
+    "vector": {"TOP_MATCHES", "MIN_SCORE"},
+    "rank": {"RANK_TOPK"},
+}
 
 # ==========================================================
 #        Initialize Logger And Config
@@ -74,7 +91,9 @@ async def dashboard_page():
 # ==========================================================
 
 @router.get("/config")
-async def get_config():
+async def get_config(current_user: AuthenticationResult = Depends(get_current_user)):
+    if not current_user.is_authenticated:
+        raise HTTPException(status_code=401, detail=current_user.message or "Not authenticated")
     return {
         "segments": {
             "wal_auto_flush": config_settings.WAL_AUTO_FLUSH,
@@ -137,12 +156,24 @@ async def get_config():
 # ==========================================================
 
 @router.put("/config")
-async def update_config(payload: ConfigUpdate):
+async def update_config(
+    payload: ConfigUpdate,
+    current_user: AuthenticationResult = Depends(get_current_user),
+):
     global config_settings
+    if not current_user.is_authenticated:
+        raise HTTPException(status_code=401, detail=current_user.message or "Not authenticated")
+    if not check_user_permission(current_user, UserRole.SYSTEM):
+        raise HTTPException(status_code=403, detail="SYSTEM role required to update configuration")
     try:
         updated = []
 
         for section, values in payload.config.items():
+            if section not in ALLOWED_CONFIG_WRITES:
+                raise HTTPException(
+                    status_code=403,
+                    detail=f"Section '{section}' is not writable at runtime."
+                )
 
             if not config_settings._config.has_section(section):
                 raise HTTPException(
@@ -150,15 +181,25 @@ async def update_config(payload: ConfigUpdate):
                     detail=f"Section '{section}' not found."
                 )
 
+            allowed_keys = ALLOWED_CONFIG_WRITES[section]
             for key, value in values.items():
-                config_settings._config.set(section, key, str(value))
+                if key not in allowed_keys:
+                    raise HTTPException(
+                        status_code=403,
+                        detail=f"Key '{section}.{key}' is not writable at runtime."
+                    )
+                text = str(value)
+                if "\n" in text or "\r" in text:
+                    raise HTTPException(status_code=400, detail="Invalid value: newlines not allowed")
+                config_settings._config.set(section, key, text)
                 updated.append(f"{section}.{key}")
 
-        # Save to nebulondb.cfg
+        # Save to nebulondb.cfg (atomic, F-13) then reload the shared
+        # instance in place so other modules see the update (F-15).
         config_settings._write()
 
         # Reload configuration
-        config_settings = NDBConfig(config_settings.config_path)
+        config_settings.reload()
 
         logger.info("Configuration updated: %s", ", ".join(updated))
 

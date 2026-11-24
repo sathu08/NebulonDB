@@ -224,6 +224,20 @@ class UserManager:
 # Global Instance
 user_manager = UserManager()
 
+_timing_dummy_hash_value: str | None = None
+
+
+def _timing_dummy_hash() -> str:
+    """Lazily-created bcrypt hash used only for timing equalization (L-03)."""
+    global _timing_dummy_hash_value
+    if _timing_dummy_hash_value is None:
+        try:
+            _timing_dummy_hash_value = hash_password("timing-dummy-not-a-real-password")
+        except Exception:
+            # Fallback: a syntactically valid bcrypt hash; verify will fail fast.
+            _timing_dummy_hash_value = "$2b$12$......................................"
+    return _timing_dummy_hash_value
+
 def _validate_user_role(user_role: str) -> UserRole:
     try:
         return UserRole(user_role)
@@ -240,7 +254,24 @@ def get_current_user(credentials: HTTPBasicCredentials = Depends(http_basic_secu
 
         user_record = user_manager.get_user(credentials.username)
 
-        hashed_password = user_record.get("password") if user_record else None
+        # L-03: run a dummy bcrypt verification for unknown users so the
+        # response time does not reveal whether the username exists.
+        if user_record is None:
+            try:
+                verify_password_cached(
+                    credentials.username, credentials.password,
+                    _timing_dummy_hash(),
+                )
+            except Exception:
+                pass
+            logger.warning(f"Authentication failed for user: {credentials.username}")
+            return AuthenticationResult(
+                username=credentials.username,
+                is_authenticated=False,
+                message="Invalid credentials"
+            )
+
+        hashed_password = user_record.get("password")
         if not hashed_password or not verify_password_cached(
             credentials.username, credentials.password, hashed_password
         ):
@@ -324,7 +355,12 @@ def delete_user(username: str) -> dict[str, str]:
             logger.warning(f"User deletion failed - user not found: {username}")
             return {"success": False, "message": "User not found"}
 
-        user_manager.delete_user(username)
+        ok = user_manager.delete_user(username)
+
+        # F-18: surface storage failures instead of reporting success.
+        if not ok or user_manager.get_user(username) is not None:
+            logger.error(f"User deletion failed - user still present: {username}")
+            return {"success": False, "message": "Failed to delete user"}
 
         logger.info(f"User deleted successfully: {username}")
         return {"success": True, "message": f"User '{username}' deleted successfully"}
@@ -347,11 +383,15 @@ def change_password(username: str, current_password: str | None, new_password: s
             logger.warning(f"Password change failed - user not found: {username}")
             return {"success": False, "message": "User not found"}
 
-        if current_password:
-            hashed_password = user_record.get("password")
-            if not hashed_password or not verify_password(current_password, hashed_password):
-                logger.warning(f"Password change failed - current password incorrect: {username}")
-                return {"success": False, "message": "Current password is incorrect"}
+        if not current_password:
+            # L-02: current password is mandatory for a password change.
+            logger.warning(f"Password change failed - current password missing: {username}")
+            return {"success": False, "message": "Current password is required"}
+
+        hashed_password = user_record.get("password")
+        if not hashed_password or not verify_password(current_password, hashed_password):
+            logger.warning(f"Password change failed - current password incorrect: {username}")
+            return {"success": False, "message": "Current password is incorrect"}
 
         if not new_password or len(new_password) < 8:
             return {"success": False, "message": "Password must be at least 8 characters long"}
