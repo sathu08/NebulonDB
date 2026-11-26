@@ -6,7 +6,7 @@
 | **Review date** | 2026-11-24 (initial static review; remediation + verification same day) |
 | **Review type** | Static review, then code remediation with live verification on Mac. Code, config and test files were changed (see §7); `nebulondb.cfg` live values stay machine-local. |
 | **Overall rating** | **Remediated, localhost-only.** All Critical/High/Medium/Low code fixes applied and test-verified; server binds `127.0.0.1:6969`. Re-review before any LAN/internet exposure. |
-| **Status** | Remediated and test-verified 2026-11-24: live 79 passed, isolated 55 passed, manifest checker clean. Open: WSL block-layer power-loss, Phase 5 Mac port, master-key already rotated (done). |
+| **Status** | Remediated and test-verified (seeded-data run 2026-11-26: live 75 + isolated 59 passed; Mind 520 passed). Open: WSL block-layer run, Phase 5 Mac port. |
 | **Fix commit** | `dev` = `2e08284` (audit/tools/ignore) on top of `cedc581` (cfg cleanup) on top of `929032b` (F/L hardening). Pushed to `origin/dev`. |
 
 ---
@@ -329,6 +329,7 @@ Work through the phases in order. Tick items as they are completed.
 - [x] Power-loss unit tests pass on Mac (2026-11-24): `test_powerloss_oracle` + `test_powerloss_scheduler` 22 passed (no root/devices needed).
 - [x] Mac crash-recovery port added (2026-11-24): `test_powerloss_mac.py` (2 passed) — real child-process inserts + parent SIGKILL + WAL-replay recovery assert for `per_ack`/`process` modes. Covers OS-level crash consistency; true plug-pull loss still needs block-layer WSL.
 - [x] Post F-19-audit regression (2026-11-24): live 75 passed (auth/system/corpus/segment), isolated 55 passed, manifest checker clean (2/2). No behavior change — debug logging only.
+- [x] Seeded-data regression (2026-11-26): live 75 passed (auth 8, system 4, corpus 30, segment 33), isolated 59 passed (durability 23, server-config 8, bulk-client 4, power-loss 24: oracle/scheduler 22 + mac-SIGKILL 2). Seed users/corpus (`test_user`, `nmd_user_01`, `alice`, `seed_demo`) verified working; tokens in /tmp/md_seed_tokens.env (600).
 - [ ] Power-loss block-layer integration (`test_powerloss_wsl.py`, `run.sh` 20-trials): Linux-only — needs root + `dmsetup/losetup/mkfs.ext4/e2fsck/blockdev`. Run on the WSL box with `NDB_POWERLOSS=1` as root.
 
 ### Phase 5: macOS power-loss port (later)
